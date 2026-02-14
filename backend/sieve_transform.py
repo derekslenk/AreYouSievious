@@ -113,6 +113,14 @@ class SieveParser:
             if line.startswith('if ') or line.startswith('if\t'):
                 rule = self._try_parse_rule(pending_comment)
                 if rule:
+                    # Auto-name from first condition if no comment
+                    if not rule.name and rule.conditions:
+                        c = rule.conditions[0]
+                        action_summary = rule.actions[0].action_type if rule.actions else "?"
+                        arg = rule.actions[0].argument if rule.actions and rule.actions[0].argument else ""
+                        rule.name = f"{c.header} {c.match_type} {c.value}"
+                        if arg:
+                            rule.name += f" → {action_summary} {arg}"
                     idx = len(script.rules)
                     script.rules.append(rule)
                     script.order.append(("rule", idx))

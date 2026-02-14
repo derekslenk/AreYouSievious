@@ -73,6 +73,28 @@
     }
   }
 
+  function exportScript(name) {
+    window.open(api.exportScript(name), '_blank');
+  }
+
+  let importFile = null;
+  let importName = '';
+  let showImport = false;
+
+  async function handleImport() {
+    if (!importFile || !importName.trim()) return;
+    try {
+      await api.importScript(importName.trim(), importFile);
+      showToast(`${importName} imported`);
+      importFile = null;
+      importName = '';
+      showImport = false;
+      await loadScripts();
+    } catch (e) {
+      showToast(e.message, 'error');
+    }
+  }
+
   async function logout() {
     await api.logout();
     user.set(null);
@@ -95,10 +117,20 @@
   <div class="content">
     <div class="section-header">
       <h2>Scripts</h2>
-      <button class="btn-sm btn-accent" on:click={() => showCreate = !showCreate}>
-        + New Script
-      </button>
+      <div class="section-actions">
+        <button class="btn-sm" on:click={() => showImport = !showImport}>Import</button>
+        <button class="btn-sm btn-accent" on:click={() => showCreate = !showCreate}>+ New Script</button>
+      </div>
     </div>
+
+    {#if showImport}
+      <form class="create-form" on:submit|preventDefault={handleImport}>
+        <input type="text" bind:value={importName} placeholder="Script name" />
+        <input type="file" accept=".sieve,.txt" on:change={(e) => importFile = e.target.files[0]} />
+        <button type="submit" class="btn-sm btn-accent" disabled={!importFile || !importName.trim()}>Upload</button>
+        <button type="button" class="btn-sm" on:click={() => showImport = false}>Cancel</button>
+      </form>
+    {/if}
 
     {#if showCreate}
       <form class="create-form" on:submit|preventDefault={createScript}>
@@ -123,6 +155,7 @@
             <div class="script-actions">
               <button class="btn-sm" on:click={() => openScript(script.name)}>Edit Rules</button>
               <button class="btn-sm" on:click={() => openRaw(script.name)}>Raw</button>
+              <button class="btn-sm" on:click={() => exportScript(script.name)}>Export</button>
               {#if !script.active}
                 <button class="btn-sm" on:click={() => activate(script.name)}>Activate</button>
                 <button class="btn-sm btn-danger" on:click={() => deleteScript(script.name)}>Delete</button>
@@ -147,6 +180,7 @@
   .username { color: var(--text2); font-size: 0.85rem; }
   .section-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem; }
   .section-header h2 { margin: 0; font-size: 1.1rem; }
+  .section-actions { display: flex; gap: 0.5rem; }
   .create-form { display: flex; gap: 0.5rem; margin-bottom: 1rem; }
   .create-form input {
     flex: 1; padding: 0.5rem 0.75rem; border-radius: 6px;

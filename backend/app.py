@@ -138,6 +138,36 @@ async def get_script_raw(name: str, request: Request):
         return {"name": name, "content": client.get_script(name)}
 
 
+@app.get("/api/scripts/{name}/export")
+async def export_script(name: str, request: Request):
+    """Download script as a .sieve file."""
+    from fastapi.responses import Response
+    session = get_session(request)
+    with SieveClient(session) as client:
+        content = client.get_script(name)
+    return Response(
+        content=content,
+        media_type="application/sieve",
+        headers={"Content-Disposition": f'attachment; filename="{name}.sieve"'},
+    )
+
+
+@app.post("/api/scripts/import")
+async def import_script(request: Request):
+    """Import a .sieve file as a new script."""
+    from fastapi import UploadFile, File, Form
+    form = await request.form()
+    file = form.get("file")
+    name = form.get("name")
+    if not file or not name:
+        raise HTTPException(400, "name and file required")
+    content = (await file.read()).decode("utf-8")
+    session = get_session(request)
+    with SieveClient(session) as client:
+        client.put_script(name, content)
+    return {"ok": True, "name": name}
+
+
 class SaveScriptRequest(BaseModel):
     rules: list
     raw_blocks: list = []

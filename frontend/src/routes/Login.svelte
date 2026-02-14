@@ -3,7 +3,7 @@
   import { user, view, showToast } from '../lib/stores.js';
 
   let host = localStorage.getItem('ays_host') || '';
-  let username = '';
+  let username = localStorage.getItem('ays_username') || '';
   let password = '';
   let portImap = 993;
   let portSieve = 4190;
@@ -21,6 +21,7 @@
         port_sieve: portSieve,
       });
       localStorage.setItem('ays_host', host);
+      localStorage.setItem('ays_username', username);
       user.set({ username: result.username, host });
       view.set('dashboard');
       showToast('Connected');

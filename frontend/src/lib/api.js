@@ -41,6 +41,21 @@ export const api = {
   activateScript: (name) => request(`/scripts/${encodeURIComponent(name)}/activate`, { method: 'POST' }),
   deleteScript: (name) => request(`/scripts/${encodeURIComponent(name)}`, { method: 'DELETE' }),
 
+  // Export/Import
+  exportScript: (name) => `${BASE}/scripts/${encodeURIComponent(name)}/export`,
+  importScript: (name, file) => {
+    const form = new FormData();
+    form.append('name', name);
+    form.append('file', file);
+    return fetch(BASE + '/scripts/import', {
+      method: 'POST', credentials: 'include', body: form,
+    }).then(r => {
+      if (r.status === 401) { window.dispatchEvent(new CustomEvent('ays:logout')); throw new Error('Session expired'); }
+      if (!r.ok) return r.text().then(t => { throw new Error(`${r.status}: ${t}`); });
+      return r.json();
+    });
+  },
+
   // Folders
   listFolders: () => request('/folders'),
   createFolder: (name) => request('/folders', { method: 'POST', body: JSON.stringify({ name }) }),
