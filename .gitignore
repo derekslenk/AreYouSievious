@@ -5,3 +5,8 @@ __pycache__/
 frontend/dist/
 .DS_Store
 *.egg-info/
+*.key
+*.pem
+*.p12
+.env
+.env.*

@@ -28,7 +28,7 @@ app = FastAPI(title="AreYouSievious", version="0.1.0")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["http://localhost:5173"],  # Vite dev server only
     allow_methods=["*"],
     allow_headers=["*"],
     allow_credentials=True,
@@ -88,6 +88,7 @@ async def login(req: LoginRequest, response: Response):
     response.set_cookie(
         SESSION_COOKIE, token,
         httponly=True, samesite="strict", max_age=1800,
+        # TODO: add secure=True when serving over HTTPS
     )
     return {"ok": True, "username": req.username}
 
