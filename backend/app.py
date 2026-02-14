@@ -11,7 +11,7 @@ import imaplib
 from pathlib import Path
 from typing import Optional
 
-from fastapi import FastAPI, HTTPException, Request, Response, Cookie
+from fastapi import FastAPI, HTTPException, Request, Response, Cookie, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, JSONResponse
@@ -66,7 +66,7 @@ class LoginRequest(BaseModel):
 
 
 @app.post("/api/auth/login")
-async def login(req: LoginRequest, response: Response):
+def login(req: LoginRequest, response: Response):
     """Authenticate with IMAP credentials."""
     # Validate credentials against IMAP
     try:
@@ -94,7 +94,7 @@ async def login(req: LoginRequest, response: Response):
 
 
 @app.post("/api/auth/logout")
-async def logout(request: Request, response: Response):
+def logout(request: Request, response: Response):
     token = request.cookies.get(SESSION_COOKIE)
     if token:
         sessions.destroy(token)
@@ -114,14 +114,14 @@ async def auth_status(request: Request):
 # ── Script endpoints ──
 
 @app.get("/api/scripts")
-async def list_scripts(request: Request):
+def list_scripts(request: Request):
     session = get_session(request)
     with SieveClient(session) as client:
         return client.list_scripts()
 
 
 @app.get("/api/scripts/{name}")
-async def get_script(name: str, request: Request):
+def get_script(name: str, request: Request):
     """Get script parsed as JSON rules."""
     session = get_session(request)
     with SieveClient(session) as client:
@@ -131,7 +131,7 @@ async def get_script(name: str, request: Request):
 
 
 @app.get("/api/scripts/{name}/raw")
-async def get_script_raw(name: str, request: Request):
+def get_script_raw(name: str, request: Request):
     """Get raw Sieve text."""
     session = get_session(request)
     with SieveClient(session) as client:
@@ -139,23 +139,21 @@ async def get_script_raw(name: str, request: Request):
 
 
 @app.get("/api/scripts/{name}/export")
-async def export_script(name: str, request: Request):
+def export_script(name: str, request: Request):
     """Download script as a .sieve file."""
-    from fastapi.responses import Response
     session = get_session(request)
     with SieveClient(session) as client:
         content = client.get_script(name)
     return Response(
         content=content,
         media_type="application/sieve",
-        headers={"Content-Disposition": f'attachment; filename="{name}.sieve"'},
+        headers={"Content-Disposition": f'attachment; filename="{name.replace(chr(34), "").replace(chr(10), "").replace(chr(13), "")}.sieve"'},
     )
 
 
 @app.post("/api/scripts/import")
 async def import_script(request: Request):
     """Import a .sieve file as a new script."""
-    from fastapi import UploadFile, File, Form
     form = await request.form()
     file = form.get("file")
     name = form.get("name")
@@ -191,7 +189,7 @@ class SaveRawRequest(BaseModel):
 
 
 @app.put("/api/scripts/{name}/raw")
-async def save_script_raw(name: str, req: SaveRawRequest, request: Request):
+def save_script_raw(name: str, req: SaveRawRequest, request: Request):
     """Save raw Sieve text directly."""
     session = get_session(request)
     with SieveClient(session) as client:
@@ -200,7 +198,7 @@ async def save_script_raw(name: str, req: SaveRawRequest, request: Request):
 
 
 @app.post("/api/scripts/{name}/activate")
-async def activate_script(name: str, request: Request):
+def activate_script(name: str, request: Request):
     session = get_session(request)
     with SieveClient(session) as client:
         client.activate_script(name)
@@ -208,7 +206,7 @@ async def activate_script(name: str, request: Request):
 
 
 @app.delete("/api/scripts/{name}")
-async def delete_script(name: str, request: Request):
+def delete_script(name: str, request: Request):
     session = get_session(request)
     with SieveClient(session) as client:
         client.delete_script(name)
@@ -218,7 +216,7 @@ async def delete_script(name: str, request: Request):
 # ── Folder endpoints ──
 
 @app.get("/api/folders")
-async def list_folders(request: Request):
+def list_folders(request: Request):
     session = get_session(request)
     with IMAPClient(session) as client:
         return client.list_folders()
@@ -229,7 +227,7 @@ class CreateFolderRequest(BaseModel):
 
 
 @app.post("/api/folders")
-async def create_folder(req: CreateFolderRequest, request: Request):
+def create_folder(req: CreateFolderRequest, request: Request):
     session = get_session(request)
     with IMAPClient(session) as client:
         ok = client.create_folder(req.name)

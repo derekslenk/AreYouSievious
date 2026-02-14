@@ -39,6 +39,7 @@
     });
     const acts = rule.actions.map(a => {
       if (a.type === 'fileinto') return `    fileinto "${a.argument}";`;
+      if (a.type === 'fileinto_copy') return `    fileinto :copy "${a.argument}";`;
       if (a.type === 'redirect') return `    redirect "${a.argument}";`;
       if (a.type === 'keep') return '    keep;';
       if (a.type === 'discard') return '    discard;';
@@ -70,8 +71,10 @@
   function deleteRule(idx) {
     if (!confirm(`Delete rule "${script.rules[idx].name || 'Untitled'}"?`)) return;
     script.rules = script.rules.filter((_, i) => i !== idx);
-    // Rebuild order
-    script.order = script.rules.map((_, i) => ['rule', i]);
+    // Update order: remove the deleted rule entry and adjust remaining rule indices
+    script.order = script.order
+      .filter(([type, i]) => !(type === 'rule' && i === idx))
+      .map(([type, i]) => type === 'rule' && i > idx ? ['rule', i - 1] : [type, i]);
     if (selectedIdx >= script.rules.length) selectedIdx = Math.max(0, script.rules.length - 1);
     dirty = true;
   }
@@ -83,7 +86,13 @@
     script.rules[idx] = script.rules[newIdx];
     script.rules[newIdx] = temp;
     script.rules = [...script.rules];
-    script.order = script.rules.map((_, i) => ['rule', i]);
+    // Swap in order array too, preserving raw block positions
+    script.order = script.order.map(([type, i]) => {
+      if (type !== 'rule') return [type, i];
+      if (i === idx) return ['rule', newIdx];
+      if (i === newIdx) return ['rule', idx];
+      return [type, i];
+    });
     selectedIdx = newIdx;
     dirty = true;
   }
