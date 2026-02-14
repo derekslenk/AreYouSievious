@@ -1,0 +1,7 @@
+services:
+  areyousievious:
+    build: .
+    container_name: areyousievious
+    ports:
+      - "8091:8091"
+    restart: unless-stopped
