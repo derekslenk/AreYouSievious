@@ -174,7 +174,7 @@ class SaveScriptRequest(BaseModel):
 
 
 @app.put("/api/scripts/{name}")
-async def save_script(name: str, req: SaveScriptRequest, request: Request):
+def save_script(name: str, req: SaveScriptRequest, request: Request):
     """Save script from JSON rules (generates Sieve)."""
     session = get_session(request)
     script = json_to_script(req.model_dump())
