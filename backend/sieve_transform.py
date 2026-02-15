@@ -245,13 +245,13 @@ class SieveParser:
         """Parse actions from the body of an if block."""
         actions = []
 
-        # fileinto "Folder/Name";
-        for m in re.finditer(r'fileinto\s+"([^"]+)"', text):
-            actions.append(Action(action_type="fileinto", argument=m.group(1)))
-
-        # fileinto :copy "Folder";
+        # fileinto :copy "Folder";  (must check before plain fileinto)
         for m in re.finditer(r'fileinto\s+:copy\s+"([^"]+)"', text):
             actions.append(Action(action_type="fileinto_copy", argument=m.group(1)))
+
+        # fileinto "Folder/Name";  (exclude :copy matches)
+        for m in re.finditer(r'fileinto\s+(?!:copy)"([^"]+)"', text):
+            actions.append(Action(action_type="fileinto", argument=m.group(1)))
 
         # redirect "address";
         for m in re.finditer(r'redirect\s+"([^"]+)"', text):
@@ -272,6 +272,10 @@ class SieveParser:
         # addflag "\\Seen";
         for m in re.finditer(r'addflag\s+"([^"]+)"', text):
             actions.append(Action(action_type="addflag", argument=m.group(1)))
+
+        # reject "message";
+        for m in re.finditer(r'reject\s+"([^"]+)"', text):
+            actions.append(Action(action_type="reject", argument=m.group(1)))
 
         return actions
 
@@ -332,8 +336,7 @@ class SieveGenerator:
             for cond in rule.conditions:
                 if cond.match_type == "regex":
                     requires.add("regex")
-                if cond.address_test:
-                    requires.add("envelope")
+                # address test is core Sieve, no require needed
 
         return sorted(requires)
 

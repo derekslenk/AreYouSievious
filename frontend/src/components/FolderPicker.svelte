@@ -11,27 +11,6 @@
     f.name.toLowerCase().includes(search.toLowerCase())
   );
 
-  // Build tree structure
-  $: tree = buildTree(filtered);
-
-  function buildTree(folders) {
-    const nodes = [];
-    for (const f of folders) {
-      const parts = f.name.split(f.delimiter || '/');
-      let current = nodes;
-      for (let i = 0; i < parts.length; i++) {
-        const name = parts.slice(0, i + 1).join(f.delimiter || '/');
-        let existing = current.find(n => n.fullName === name);
-        if (!existing) {
-          existing = { label: parts[i], fullName: name, children: [] };
-          current.push(existing);
-        }
-        current = existing.children;
-      }
-    }
-    return nodes;
-  }
-
   function select(name) {
     dispatch('select', name);
   }
