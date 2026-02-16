@@ -8,13 +8,14 @@ REST API for ManageSieve + IMAP operations.
 
 import argparse
 import imaplib
+import os
+import re
 from pathlib import Path
 from typing import Optional
 
-from fastapi import FastAPI, HTTPException, Request, Response, Cookie, UploadFile, File, Form
+from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
 from auth import sessions, Session
@@ -26,15 +27,25 @@ from sieve_transform import (
 
 app = FastAPI(title="AreYouSievious", version="0.1.0")
 
+_cors_origins = os.environ.get("AYS_CORS_ORIGINS", "http://localhost:5173")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173"],  # Vite dev server only
+    allow_origins=[o.strip() for o in _cors_origins.split(",")],
     allow_methods=["*"],
     allow_headers=["*"],
     allow_credentials=True,
 )
 
 SESSION_COOKIE = "ays_session"
+MAX_UPLOAD_BYTES = 1 * 1024 * 1024  # 1 MB
+
+
+def _is_secure(request: Request) -> bool:
+    """Detect if the request arrived over HTTPS (directly or via reverse proxy)."""
+    if os.environ.get("AYS_SECURE_COOKIES", "").lower() in ("1", "true", "yes"):
+        return True
+    proto = request.headers.get("x-forwarded-proto", "")
+    return proto == "https"
 
 
 # ── Helpers ──
@@ -66,7 +77,7 @@ class LoginRequest(BaseModel):
 
 
 @app.post("/api/auth/login")
-def login(req: LoginRequest, response: Response):
+def login(req: LoginRequest, request: Request, response: Response):
     """Authenticate with IMAP credentials."""
     # Validate credentials against IMAP
     try:
@@ -88,7 +99,7 @@ def login(req: LoginRequest, response: Response):
     response.set_cookie(
         SESSION_COOKIE, token,
         httponly=True, samesite="strict", max_age=1800,
-        # TODO: add secure=True when serving over HTTPS
+        secure=_is_secure(request),
     )
     return {"ok": True, "username": req.username}
 
@@ -147,7 +158,7 @@ def export_script(name: str, request: Request):
     return Response(
         content=content,
         media_type="application/sieve",
-        headers={"Content-Disposition": f'attachment; filename="{name.replace(chr(34), "").replace(chr(10), "").replace(chr(13), "")}.sieve"'},
+        headers={"Content-Disposition": f'attachment; filename="{re.sub(r"[^a-zA-Z0-9._-]", "_", name)}.sieve"'},
     )
 
 
@@ -159,7 +170,13 @@ async def import_script(request: Request):
     name = form.get("name")
     if not file or not name:
         raise HTTPException(400, "name and file required")
-    content = (await file.read()).decode("utf-8")
+    raw = await file.read()
+    if len(raw) > MAX_UPLOAD_BYTES:
+        raise HTTPException(413, f"File too large (max {MAX_UPLOAD_BYTES // 1024}KB)")
+    try:
+        content = raw.decode("utf-8")
+    except UnicodeDecodeError:
+        raise HTTPException(400, "File must be valid UTF-8 text")
     session = get_session(request)
     with SieveClient(session) as client:
         client.put_script(name, content)
@@ -242,12 +259,16 @@ static_dir: Optional[Path] = None
 
 
 @app.get("/{full_path:path}")
-async def serve_frontend(full_path: str):
+def serve_frontend(full_path: str):
     """Serve Svelte build files, fallback to index.html for SPA routing."""
     if not static_dir:
         raise HTTPException(404)
 
-    file_path = static_dir / full_path
+    file_path = (static_dir / full_path).resolve()
+    try:
+        file_path.relative_to(static_dir.resolve())
+    except ValueError:
+        raise HTTPException(403, "Access denied")
     if file_path.is_file():
         return FileResponse(file_path)
 
