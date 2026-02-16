@@ -108,8 +108,7 @@
   @keyframes slideIn { from { transform: translateY(10px); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
 
   footer {
-    position: fixed; bottom: 0; left: 0; right: 0;
-    text-align: center; padding: 0.6rem;
+    text-align: center; padding: 1.5rem 0.6rem 0.6rem;
     font-size: 0.75rem; color: var(--text2);
   }
   footer a {
