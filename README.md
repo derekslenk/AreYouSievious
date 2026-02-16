@@ -8,6 +8,20 @@ Visual rule builder + raw editor + ManageSieve protocol. No database, no stored 
 
 **Live instance:** [areyousievious.com](https://areyousievious.com)
 
+## Screenshots
+
+<p align="center">
+  <img src="docs/screenshots/login.png" alt="Login" width="600">
+</p>
+
+<p align="center">
+  <img src="docs/screenshots/dashboard.png" alt="Dashboard" width="600">
+</p>
+
+<p align="center">
+  <img src="docs/screenshots/rule-editor.png" alt="Rule Editor" width="600">
+</p>
+
 ## Features
 
 - **Visual rule builder** — create filters with a point-and-click UI
