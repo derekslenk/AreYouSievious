@@ -8,15 +8,19 @@ REST API for ManageSieve + IMAP operations.
 
 import argparse
 import imaplib
+import ipaddress
 import os
 import re
+import socket
+import time
+from collections import defaultdict
 from pathlib import Path
 from typing import Optional
 
 from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
 from auth import sessions, Session
 from managesieve_client import SieveClient
@@ -25,9 +29,50 @@ from sieve_transform import (
     parse_sieve, generate_sieve, script_to_json, json_to_script,
 )
 
+
+# ── Rate limiter ──
+
+class RateLimiter:
+    """Simple in-memory rate limiter by IP."""
+
+    def __init__(self, max_attempts: int = 5, window_seconds: int = 300):
+        self.max_attempts = max_attempts
+        self.window = window_seconds
+        self._attempts: dict[str, list[float]] = defaultdict(list)
+
+    def check(self, key: str) -> bool:
+        """Return True if allowed, False if rate limited."""
+        now = time.time()
+        attempts = self._attempts[key]
+        # Prune old attempts
+        self._attempts[key] = [t for t in attempts if now - t < self.window]
+        if len(self._attempts[key]) >= self.max_attempts:
+            return False
+        self._attempts[key].append(now)
+        return True
+
+
+_login_limiter = RateLimiter(max_attempts=5, window_seconds=300)
+
+
+# ── SSRF protection ──
+
+def _validate_host(host: str) -> str:
+    """Validate that host is not a private/reserved IP (SSRF protection)."""
+    try:
+        # Resolve hostname to IP
+        resolved = socket.getaddrinfo(host, None, socket.AF_UNSPEC, socket.SOCK_STREAM)
+        for family, _, _, _, sockaddr in resolved:
+            ip = ipaddress.ip_address(sockaddr[0])
+            if ip.is_private or ip.is_loopback or ip.is_reserved or ip.is_link_local:
+                raise HTTPException(400, "Connection to private/internal addresses is not allowed")
+    except socket.gaierror:
+        raise HTTPException(400, f"Cannot resolve hostname: {host}")
+    return host
+
 app = FastAPI(title="AreYouSievious", version="0.1.0")
 
-_cors_origins = os.environ.get("AYS_CORS_ORIGINS", "http://localhost:5173")
+_cors_origins = os.environ.get("AYS_CORS_ORIGINS", "https://areyousievious.com")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[o.strip() for o in _cors_origins.split(",")],
@@ -75,19 +120,45 @@ class LoginRequest(BaseModel):
     port_imap: int = 993
     port_sieve: int = 4190
 
+    @field_validator("host")
+    @classmethod
+    def host_must_be_valid(cls, v: str) -> str:
+        v = v.strip().lower()
+        if not v or len(v) > 253:
+            raise ValueError("Invalid hostname")
+        # Block obviously bad patterns
+        if v in ("localhost", "0.0.0.0", "[::]"):
+            raise ValueError("Connection to local addresses is not allowed")
+        return v
+
+    @field_validator("port_imap", "port_sieve")
+    @classmethod
+    def port_must_be_valid(cls, v: int) -> int:
+        if not (1 <= v <= 65535):
+            raise ValueError("Invalid port number")
+        return v
+
 
 @app.post("/api/auth/login")
 def login(req: LoginRequest, request: Request, response: Response):
     """Authenticate with IMAP credentials."""
+    # Rate limit by IP
+    client_ip = request.headers.get("x-real-ip", request.client.host if request.client else "unknown")
+    if not _login_limiter.check(client_ip):
+        raise HTTPException(429, "Too many login attempts. Try again in 5 minutes.")
+
+    # SSRF protection — reject private/internal IPs
+    _validate_host(req.host)
+
     # Validate credentials against IMAP
     try:
         conn = imaplib.IMAP4_SSL(req.host, req.port_imap)
         conn.login(req.username, req.password)
         conn.logout()
     except imaplib.IMAP4.error as e:
-        raise HTTPException(401, f"Authentication failed: {e}")
+        raise HTTPException(401, "Authentication failed")
     except Exception as e:
-        raise HTTPException(502, f"Cannot connect to mail server: {e}")
+        raise HTTPException(502, "Cannot connect to mail server")
 
     token = sessions.create(
         host=req.host,

@@ -3,5 +3,8 @@ services:
     build: .
     container_name: areyousievious
     ports:
-      - "8091:8091"
+      - "127.0.0.1:8091:8091"
+    environment:
+      - AYS_CORS_ORIGINS=https://areyousievious.com,http://localhost:5173
+      - AYS_SECURE_COOKIES=true
     restart: unless-stopped
