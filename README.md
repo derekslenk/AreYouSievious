@@ -49,8 +49,6 @@ Open `http://localhost:8091` and log in with your IMAP credentials.
 | `AYS_CORS_ORIGINS` | `https://areyousievious.com` | Comma-separated allowed origins |
 | `AYS_SECURE_COOKIES` | _(unset)_ | Set to `true` when behind HTTPS reverse proxy |
 
-See [`.env.example`](.env.example) for a template.
-
 ## Quick Start (Manual)
 
 ```bash
