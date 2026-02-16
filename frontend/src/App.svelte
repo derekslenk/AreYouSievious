@@ -6,6 +6,7 @@
   import Dashboard from './routes/Dashboard.svelte';
   import RuleEditor from './routes/RuleEditor.svelte';
   import RawEditor from './routes/RawEditor.svelte';
+  import Privacy from './routes/Privacy.svelte';
 
   let skipPush = false;
 
@@ -52,6 +53,8 @@
     <RuleEditor />
   {:else if $view === 'raw'}
     <RawEditor />
+  {:else if $view === 'privacy'}
+    <Privacy />
   {/if}
 </main>
 
@@ -60,6 +63,12 @@
     {$toast.message}
   </div>
 {/if}
+
+<footer>
+  <a href="https://github.com/derekslenk/AreYouSievious" target="_blank" rel="noopener">GitHub</a>
+  <span class="sep">·</span>
+  <a href="#privacy" on:click|preventDefault={() => view.set('privacy')}>Privacy Policy</a>
+</footer>
 
 <style>
   :global(:root) {
@@ -97,4 +106,15 @@
   }
   .toast.error { background: var(--danger); }
   @keyframes slideIn { from { transform: translateY(10px); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
+
+  footer {
+    position: fixed; bottom: 0; left: 0; right: 0;
+    text-align: center; padding: 0.6rem;
+    font-size: 0.75rem; color: var(--text2);
+  }
+  footer a {
+    color: var(--text2); text-decoration: none;
+  }
+  footer a:hover { color: var(--text); }
+  footer .sep { margin: 0 0.4rem; }
 </style>
