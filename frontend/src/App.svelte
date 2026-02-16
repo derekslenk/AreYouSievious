@@ -7,7 +7,25 @@
   import RuleEditor from './routes/RuleEditor.svelte';
   import RawEditor from './routes/RawEditor.svelte';
 
+  let skipPush = false;
+
+  // Push history state when view changes
+  view.subscribe(v => {
+    if (!skipPush && typeof window !== 'undefined') {
+      history.pushState({ view: v }, '', `#${v}`);
+    }
+    skipPush = false;
+  });
+
   onMount(async () => {
+    // Handle browser back/forward
+    window.addEventListener('popstate', (e) => {
+      if (e.state?.view) {
+        skipPush = true;
+        view.set(e.state.view);
+      }
+    });
+
     // Check existing session
     try {
       const status = await api.status();
