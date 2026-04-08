@@ -4,6 +4,8 @@
   import {
     view, currentScript, currentScriptName, folders, showToast,
   } from '../lib/stores.js';
+  import { sortable } from '../lib/sortable.js';
+  import { arrayMove } from '../lib/utils.js';
   import ConditionBuilder from '../components/ConditionBuilder.svelte';
   import ActionBuilder from '../components/ActionBuilder.svelte';
   import FolderPicker from '../components/FolderPicker.svelte';
@@ -21,6 +23,17 @@
 
   onMount(async () => {
     script = $currentScript;
+    // Ensure all conditions and actions have IDs for keyed {#each} blocks
+    if (script) {
+      for (const rule of script.rules) {
+        for (const c of rule.conditions) {
+          if (!c.id) c.id = Math.random().toString(36).slice(2, 10);
+        }
+        for (const a of rule.actions) {
+          if (!a.id) a.id = Math.random().toString(36).slice(2, 10);
+        }
+      }
+    }
     try {
       folderList = await api.listFolders();
       folders.set(folderList);
@@ -59,8 +72,8 @@
       name: 'New Rule',
       enabled: true,
       match: 'anyof',
-      conditions: [{ header: 'from', match_type: 'contains', value: '', address_test: true, negate: false }],
-      actions: [{ type: 'fileinto', argument: 'INBOX' }],
+      conditions: [{ id: Math.random().toString(36).slice(2, 10), header: 'from', match_type: 'contains', value: '', address_test: true, negate: false }],
+      actions: [{ id: Math.random().toString(36).slice(2, 10), type: 'fileinto', argument: 'INBOX' }],
     };
     script.rules = [...script.rules, rule];
     script.order = [...script.order, ['rule', script.rules.length - 1]];
@@ -82,18 +95,29 @@
   function moveRule(idx, dir) {
     const newIdx = idx + dir;
     if (newIdx < 0 || newIdx >= script.rules.length) return;
-    const temp = script.rules[idx];
-    script.rules[idx] = script.rules[newIdx];
-    script.rules[newIdx] = temp;
-    script.rules = [...script.rules];
-    // Swap in order array too, preserving raw block positions
-    script.order = script.order.map(([type, i]) => {
-      if (type !== 'rule') return [type, i];
-      if (i === idx) return ['rule', newIdx];
-      if (i === newIdx) return ['rule', idx];
-      return [type, i];
+    reorderRule(idx, newIdx);
+  }
+
+  function reorderRule(oldIndex, newIndex) {
+    script.rules = arrayMove(script.rules, oldIndex, newIndex);
+    // Remap script.order: collect rule entries, apply same permutation, renumber
+    const ruleOrderIndices = [];
+    script.order.forEach((entry, i) => {
+      if (entry[0] === 'rule') ruleOrderIndices.push(i);
     });
-    selectedIdx = newIdx;
+    const ruleEntries = ruleOrderIndices.map(i => script.order[i]);
+    const reordered = arrayMove(ruleEntries, oldIndex, newIndex);
+    const newOrder = [...script.order];
+    ruleOrderIndices.forEach((orderIdx, i) => {
+      newOrder[orderIdx] = reordered[i];
+    });
+    // Renumber rule indices sequentially
+    let ruleIdx = 0;
+    script.order = newOrder.map(([type, idx]) => {
+      if (type === 'rule') return ['rule', ruleIdx++];
+      return [type, idx];
+    });
+    selectedIdx = newIndex;
     dirty = true;
   }
 
@@ -146,25 +170,27 @@
 
   {#if script}
     <div class="editor-layout">
-      <div class="rule-list">
-        {#each script.rules as rule, i}
+      <div class="rule-list" use:sortable={{ onReorder: reorderRule }}>
+        {#each script.rules as rule, i (rule.id)}
           <div
             class="rule-item"
             class:selected={i === selectedIdx}
             class:disabled={!rule.enabled}
             on:click={() => selectedIdx = i}
             on:keydown={(e) => e.key === 'Enter' && (selectedIdx = i)}
-            role="button"
             tabindex="0"
           >
-            <div class="rule-item-name">{rule.name || 'Untitled'}</div>
-            <div class="rule-item-meta">
-              {rule.conditions.length} condition{rule.conditions.length !== 1 ? 's' : ''}
-              &rarr; {rule.actions.map(a => a.type).join(', ')}
+            <span class="drag-icon" aria-hidden="true">&#9776;</span>
+            <div class="rule-item-content">
+              <div class="rule-item-name">{rule.name || 'Untitled'}</div>
+              <div class="rule-item-meta">
+                {rule.conditions.length} condition{rule.conditions.length !== 1 ? 's' : ''}
+                &rarr; {rule.actions.map(a => a.type).join(', ')}
+              </div>
             </div>
             <div class="rule-item-controls">
-              <button class="btn-xs" on:click|stopPropagation={() => moveRule(i, -1)} disabled={i === 0}>&#9650;</button>
-              <button class="btn-xs" on:click|stopPropagation={() => moveRule(i, 1)} disabled={i === script.rules.length - 1}>&#9660;</button>
+              <button class="btn-xs" on:click|stopPropagation={() => moveRule(i, -1)} disabled={i === 0} title="Move up">&#9650;</button>
+              <button class="btn-xs" on:click|stopPropagation={() => moveRule(i, 1)} disabled={i === script.rules.length - 1} title="Move down">&#9660;</button>
               <button class="btn-xs btn-danger" on:click|stopPropagation={() => deleteRule(i)}>&#10005;</button>
             </div>
           </div>
@@ -198,13 +224,13 @@
 
           <h3>Conditions</h3>
           <ConditionBuilder
-            bind:conditions={rule.conditions}
+            bind:conditions={script.rules[selectedIdx].conditions}
             on:change={markDirty}
           />
 
           <h3>Actions</h3>
           <ActionBuilder
-            bind:actions={rule.actions}
+            bind:actions={script.rules[selectedIdx].actions}
             on:change={markDirty}
             on:pickfolder={(e) => openFolderPicker(e.detail)}
           />
@@ -239,19 +265,37 @@
     border-right: 1px solid var(--border); padding-right: 1rem;
   }
   .rule-item {
-    padding: 0.6rem 0.75rem; border-radius: 6px; cursor: pointer;
-    margin-bottom: 0.35rem; position: relative;
+    padding: 0.6rem 0.75rem; border-radius: 6px; cursor: grab;
+    margin-bottom: 0.35rem; position: relative; display: flex; align-items: center; gap: 0.5rem;
+    user-select: none;
   }
+  .rule-item:active { cursor: grabbing; }
   .rule-item:hover { background: var(--surface); }
   .rule-item.selected { background: var(--surface); border-left: 3px solid var(--accent); }
   .rule-item.disabled { opacity: 0.5; }
+  .rule-item-content { flex: 1; min-width: 0; }
   .rule-item-name { font-weight: 500; font-size: 0.9rem; }
   .rule-item-meta { font-size: 0.75rem; color: var(--text2); margin-top: 0.15rem; }
+  .drag-icon {
+    opacity: 0.3; font-size: 0.85rem; flex-shrink: 0;
+  }
+  .rule-item:hover .drag-icon { opacity: 0.6; }
+  :global(.sortable-ghost) {
+    opacity: 0.3; background: var(--accent); border-radius: 6px;
+  }
+  :global(.sortable-chosen) {
+    box-shadow: 0 2px 8px rgba(0,0,0,0.15);
+  }
   .rule-item-controls {
     position: absolute; top: 0.5rem; right: 0.5rem;
-    display: none; gap: 0.2rem;
+    display: flex; gap: 0.2rem;
+    opacity: 0; pointer-events: none;
+    transition: opacity 0.15s;
   }
-  .rule-item:hover .rule-item-controls { display: flex; }
+  .rule-item:hover .rule-item-controls,
+  .rule-item:focus-within .rule-item-controls {
+    opacity: 1; pointer-events: auto;
+  }
   .rule-detail { flex: 1; min-width: 0; }
   .field { margin-bottom: 0.75rem; }
   .field label { display: block; font-size: 0.8rem; color: var(--text2); margin-bottom: 0.2rem; }

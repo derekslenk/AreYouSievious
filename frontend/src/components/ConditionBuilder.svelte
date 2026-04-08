@@ -1,5 +1,7 @@
 <script>
   import { createEventDispatcher } from 'svelte';
+  import { sortable } from '../lib/sortable.js';
+  import { arrayMove } from '../lib/utils.js';
   export let conditions = [];
   const dispatch = createEventDispatcher();
 
@@ -21,6 +23,7 @@
 
   function addCondition() {
     conditions = [...conditions, {
+      id: Math.random().toString(36).slice(2, 10),
       header: 'from', match_type: 'contains', value: '',
       address_test: true, negate: false,
     }];
@@ -30,6 +33,17 @@
   function removeCondition(idx) {
     conditions = conditions.filter((_, i) => i !== idx);
     dispatch('change');
+  }
+
+  function reorderCondition(oldIndex, newIndex) {
+    conditions = arrayMove(conditions, oldIndex, newIndex);
+    dispatch('change');
+  }
+
+  function moveCondition(idx, dir) {
+    const newIdx = idx + dir;
+    if (newIdx < 0 || newIdx >= conditions.length) return;
+    reorderCondition(idx, newIdx);
   }
 
   function onChange() {
@@ -42,9 +56,11 @@
   }
 </script>
 
-<div class="conditions">
-  {#each conditions as cond, i}
+<div class="conditions" use:sortable={{ handle: '.drag-handle', onReorder: reorderCondition }}>
+  {#each conditions as cond, i (cond.id)}
     <div class="condition-row">
+      <span class="drag-handle" aria-hidden="true" title="Drag to reorder">&#9776;</span>
+
       <select bind:value={cond.header} on:change={onChange}>
         {#each HEADERS as h}
           <option value={h.value}>{h.label}</option>
@@ -64,12 +80,16 @@
         NOT
       </label>
 
-      <button class="btn-xs btn-danger" on:click={() => removeCondition(i)} title="Remove">&#10005;</button>
+      <div class="row-controls">
+        <button class="btn-xs" on:click={() => moveCondition(i, -1)} disabled={i === 0} title="Move up">&#9650;</button>
+        <button class="btn-xs" on:click={() => moveCondition(i, 1)} disabled={i === conditions.length - 1} title="Move down">&#9660;</button>
+        <button class="btn-xs btn-danger" on:click={() => removeCondition(i)} title="Remove">&#10005;</button>
+      </div>
     </div>
   {/each}
-
-  <button class="btn-sm" on:click={addCondition}>+ Add Condition</button>
 </div>
+
+<button class="btn-sm" on:click={addCondition}>+ Add Condition</button>
 
 <style>
   .conditions { display: flex; flex-direction: column; gap: 0.4rem; }
@@ -84,6 +104,16 @@
   .negate-toggle {
     font-size: 0.7rem; color: var(--text2); display: flex;
     align-items: center; gap: 0.2rem; cursor: pointer; white-space: nowrap;
+  }
+  .drag-handle {
+    cursor: grab; opacity: 0.3; user-select: none;
+    font-size: 0.8rem; flex-shrink: 0;
+  }
+  .drag-handle:hover { opacity: 0.7; }
+  .drag-handle:active { cursor: grabbing; }
+  .row-controls { display: flex; gap: 0.15rem; flex-shrink: 0; }
+  :global(.sortable-ghost) {
+    opacity: 0.3; background: var(--accent); border-radius: 5px;
   }
   .btn-xs {
     padding: 0.2rem 0.4rem; font-size: 0.7rem; border-radius: 4px;
