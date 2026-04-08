@@ -156,10 +156,8 @@
               <button class="btn-sm" on:click={() => openScript(script.name)}>Edit Rules</button>
               <button class="btn-sm" on:click={() => openRaw(script.name)}>Raw</button>
               <button class="btn-sm" on:click={() => exportScript(script.name)}>Export</button>
-              {#if !script.active}
-                <button class="btn-sm" on:click={() => activate(script.name)}>Activate</button>
-                <button class="btn-sm btn-danger" on:click={() => deleteScript(script.name)}>Delete</button>
-              {/if}
+              <button class="btn-sm" on:click={() => activate(script.name)} disabled={script.active}>Activate</button>
+              <button class="btn-sm btn-danger" on:click={() => deleteScript(script.name)} disabled={script.active}>Delete</button>
             </div>
           </div>
         {/each}
@@ -200,5 +198,8 @@
     background: var(--accent); color: #fff;
   }
   .script-actions { display: flex; gap: 0.35rem; }
+  .script-actions button:disabled {
+    opacity: 0.3; cursor: not-allowed;
+  }
   .muted { color: var(--text2); }
 </style>

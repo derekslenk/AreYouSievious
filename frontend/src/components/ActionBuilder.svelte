@@ -1,5 +1,7 @@
 <script>
   import { createEventDispatcher } from 'svelte';
+  import { sortable } from '../lib/sortable.js';
+  import { arrayMove } from '../lib/utils.js';
   export let actions = [];
   const dispatch = createEventDispatcher();
 
@@ -15,7 +17,7 @@
   ];
 
   function addAction() {
-    actions = [...actions, { type: 'fileinto', argument: '' }];
+    actions = [...actions, { id: Math.random().toString(36).slice(2, 10), type: 'fileinto', argument: '' }];
     dispatch('change');
   }
 
@@ -24,13 +26,27 @@
     dispatch('change');
   }
 
+  function reorderAction(oldIndex, newIndex) {
+    actions = arrayMove(actions, oldIndex, newIndex);
+    dispatch('change');
+  }
+
+  function moveAction(idx, dir) {
+    const newIdx = idx + dir;
+    if (newIdx < 0 || newIdx >= actions.length) return;
+    reorderAction(idx, newIdx);
+  }
+
   function onChange() { dispatch('change'); }
 
-  function pickFolder(idx) {
+  function pickFolder(actionId) {
     dispatch('pickfolder', (folder) => {
-      actions[idx].argument = folder;
-      actions = [...actions];
-      dispatch('change');
+      const target = actions.find(a => a.id === actionId);
+      if (target) {
+        target.argument = folder;
+        actions = [...actions];
+        dispatch('change');
+      }
     });
   }
 
@@ -39,9 +55,11 @@
   }
 </script>
 
-<div class="actions">
-  {#each actions as action, i}
+<div class="actions" use:sortable={{ handle: '.drag-handle', onReorder: reorderAction }}>
+  {#each actions as action, i (action.id)}
     <div class="action-row">
+      <span class="drag-handle" aria-hidden="true" title="Drag to reorder">&#9776;</span>
+
       <select bind:value={action.type} on:change={onChange}>
         {#each ACTION_TYPES as at}
           <option value={at.value}>{at.label}</option>
@@ -55,16 +73,20 @@
           action.type === 'addflag' ? '\\Seen' : 'value'
         } />
         {#if action.type.startsWith('fileinto')}
-          <button class="btn-xs" on:click={() => pickFolder(i)} title="Browse folders">&#128193;</button>
+          <button class="btn-xs" on:click={() => pickFolder(action.id)} title="Browse folders">&#128193;</button>
         {/if}
       {/if}
 
-      <button class="btn-xs btn-danger" on:click={() => removeAction(i)} title="Remove">&#10005;</button>
+      <div class="row-controls">
+        <button class="btn-xs" on:click={() => moveAction(i, -1)} disabled={i === 0} title="Move up">&#9650;</button>
+        <button class="btn-xs" on:click={() => moveAction(i, 1)} disabled={i === actions.length - 1} title="Move down">&#9660;</button>
+        <button class="btn-xs btn-danger" on:click={() => removeAction(i)} title="Remove">&#10005;</button>
+      </div>
     </div>
   {/each}
-
-  <button class="btn-sm" on:click={addAction}>+ Add Action</button>
 </div>
+
+<button class="btn-sm" on:click={addAction}>+ Add Action</button>
 
 <style>
   .actions { display: flex; flex-direction: column; gap: 0.4rem; }
@@ -76,6 +98,16 @@
   }
   .action-row select { width: 180px; }
   .action-row input { flex: 1; min-width: 150px; }
+  .drag-handle {
+    cursor: grab; opacity: 0.3; user-select: none;
+    font-size: 0.8rem; flex-shrink: 0;
+  }
+  .drag-handle:hover { opacity: 0.7; }
+  .drag-handle:active { cursor: grabbing; }
+  .row-controls { display: flex; gap: 0.15rem; flex-shrink: 0; }
+  :global(.sortable-ghost) {
+    opacity: 0.3; background: var(--accent); border-radius: 5px;
+  }
   .btn-xs {
     padding: 0.2rem 0.4rem; font-size: 0.7rem; border-radius: 4px;
     border: 1px solid var(--border); background: var(--bg); color: var(--text);
