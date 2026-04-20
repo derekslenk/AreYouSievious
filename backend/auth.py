@@ -9,7 +9,9 @@ from dataclasses import dataclass
 from typing import Optional
 
 
-SESSION_TIMEOUT = 1800  # 30 minutes
+# ── Configuration Constants ──
+
+SESSION_TIMEOUT_SECONDS = 1800  # 30 minutes
 
 
 @dataclass
@@ -25,7 +27,7 @@ class Session:
 
 
 class SessionManager:
-    def __init__(self, timeout: int = SESSION_TIMEOUT):
+    def __init__(self, timeout: int = SESSION_TIMEOUT_SECONDS):
         self._sessions: dict[str, Session] = {}
         self._timeout = timeout
 

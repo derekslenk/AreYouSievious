@@ -9,9 +9,11 @@ REST API for ManageSieve + IMAP operations.
 import argparse
 import imaplib
 import ipaddress
+import logging
 import os
 import re
 import socket
+import sys
 import time
 from collections import defaultdict
 from pathlib import Path
@@ -21,6 +23,7 @@ from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, field_validator
+from starlette.middleware.base import BaseHTTPMiddleware
 
 from auth import sessions, Session
 from managesieve_client import SieveClient
@@ -30,12 +33,53 @@ from sieve_transform import (
 )
 
 
+# ── Logging Configuration ──
+
+def setup_logging(level: str = "INFO"):
+    """Configure structured logging for the application."""
+    log_level = getattr(logging, level.upper(), logging.INFO)
+
+    # Create formatter with structured output
+    formatter = logging.Formatter(
+        fmt='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+        datefmt='%Y-%m-%d %H:%M:%S'
+    )
+
+    # Console handler
+    console_handler = logging.StreamHandler(sys.stdout)
+    console_handler.setFormatter(formatter)
+    console_handler.setLevel(log_level)
+
+    # Configure root logger
+    root_logger = logging.getLogger()
+    root_logger.setLevel(log_level)
+    root_logger.addHandler(console_handler)
+
+    # Reduce noise from uvicorn
+    logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
+
+    return logging.getLogger("areyousievious")
+
+
+logger = setup_logging(os.environ.get("AYS_LOG_LEVEL", "INFO"))
+
+
+# ── Configuration Constants ──
+
+RATE_LIMIT_MAX_ATTEMPTS = 5
+RATE_LIMIT_WINDOW_SECONDS = 300  # 5 minutes
+MAX_UPLOAD_BYTES = 1 * 1024 * 1024  # 1 MB
+MAX_HOSTNAME_LENGTH = 253  # RFC 1035
+SESSION_COOKIE_NAME = "ays_session"
+SESSION_COOKIE_MAX_AGE = 1800  # 30 minutes
+
+
 # ── Rate limiter ──
 
 class RateLimiter:
     """Simple in-memory rate limiter by IP."""
 
-    def __init__(self, max_attempts: int = 5, window_seconds: int = 300):
+    def __init__(self, max_attempts: int = RATE_LIMIT_MAX_ATTEMPTS, window_seconds: int = RATE_LIMIT_WINDOW_SECONDS):
         self.max_attempts = max_attempts
         self.window = window_seconds
         self._attempts: dict[str, list[float]] = defaultdict(list)
@@ -52,7 +96,7 @@ class RateLimiter:
         return True
 
 
-_login_limiter = RateLimiter(max_attempts=5, window_seconds=300)
+_login_limiter = RateLimiter()
 
 
 # ── SSRF protection ──
@@ -72,6 +116,43 @@ def _validate_host(host: str) -> str:
 
 app = FastAPI(title="AreYouSievious", version="0.1.0")
 
+
+# ── Security Headers Middleware ──
+
+class SecurityHeadersMiddleware(BaseHTTPMiddleware):
+    """Add security headers to all responses."""
+
+    async def dispatch(self, request: Request, call_next):
+        response = await call_next(request)
+
+        # Content Security Policy - restrict resource loading
+        response.headers["Content-Security-Policy"] = (
+            "default-src 'self'; "
+            "script-src 'self' 'unsafe-inline'; "
+            "style-src 'self' 'unsafe-inline'; "
+            "img-src 'self' data:; "
+            "connect-src 'self'; "
+            "frame-ancestors 'none';"
+        )
+
+        # Prevent clickjacking
+        response.headers["X-Frame-Options"] = "DENY"
+
+        # Prevent MIME sniffing
+        response.headers["X-Content-Type-Options"] = "nosniff"
+
+        # Enable XSS protection (legacy browsers)
+        response.headers["X-XSS-Protection"] = "1; mode=block"
+
+        # HSTS - force HTTPS (only if request came via HTTPS)
+        if _is_secure(request):
+            response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+
+        return response
+
+
+app.add_middleware(SecurityHeadersMiddleware)
+
 _cors_origins = os.environ.get("AYS_CORS_ORIGINS", "https://areyousievious.com")
 app.add_middleware(
     CORSMiddleware,
@@ -81,8 +162,6 @@ app.add_middleware(
     allow_credentials=True,
 )
 
-SESSION_COOKIE = "ays_session"
-MAX_UPLOAD_BYTES = 1 * 1024 * 1024  # 1 MB
 
 
 def _is_secure(request: Request) -> bool:
@@ -97,7 +176,7 @@ def _is_secure(request: Request) -> bool:
 
 def get_session(request: Request) -> Session:
     """Extract and validate session from cookie or header."""
-    token = request.cookies.get(SESSION_COOKIE)
+    token = request.cookies.get(SESSION_COOKIE_NAME)
     if not token:
         # Also check Authorization header
         auth = request.headers.get("Authorization", "")
@@ -109,6 +188,14 @@ def get_session(request: Request) -> Session:
     if not session:
         raise HTTPException(401, "Session expired")
     return session
+
+
+# ── Health check endpoint ──
+
+@app.get("/health")
+def health_check():
+    """Health check endpoint for monitoring and load balancers."""
+    return {"status": "ok", "version": "0.1.0"}
 
 
 # ── Auth endpoints ──
@@ -124,10 +211,15 @@ class LoginRequest(BaseModel):
     @classmethod
     def host_must_be_valid(cls, v: str) -> str:
         v = v.strip().lower()
-        if not v or len(v) > 253:
+        if not v or len(v) > MAX_HOSTNAME_LENGTH:
             raise ValueError("Invalid hostname")
-        # Block obviously bad patterns
-        if v in ("localhost", "0.0.0.0", "[::]"):
+        # Block local/private addresses (SSRF protection)
+        blocked_hosts = {
+            "localhost", "0.0.0.0",
+            "[::]", "::1", "[::1]",  # IPv6 localhost variants
+            "127.0.0.1", "[127.0.0.1]",
+        }
+        if v in blocked_hosts:
             raise ValueError("Connection to local addresses is not allowed")
         return v
 
@@ -145,6 +237,7 @@ def login(req: LoginRequest, request: Request, response: Response):
     # Rate limit by IP
     client_ip = request.headers.get("x-real-ip", request.client.host if request.client else "unknown")
     if not _login_limiter.check(client_ip):
+        logger.warning(f"Rate limit exceeded for IP: {client_ip}")
         raise HTTPException(429, "Too many login attempts. Try again in 5 minutes.")
 
     # SSRF protection — reject private/internal IPs
@@ -152,12 +245,16 @@ def login(req: LoginRequest, request: Request, response: Response):
 
     # Validate credentials against IMAP
     try:
+        logger.info(f"Login attempt for user={req.username} host={req.host}")
         conn = imaplib.IMAP4_SSL(req.host, req.port_imap)
         conn.login(req.username, req.password)
         conn.logout()
+        logger.info(f"Successful login for user={req.username} host={req.host}")
     except imaplib.IMAP4.error as e:
+        logger.warning(f"Authentication failed for user={req.username} host={req.host}")
         raise HTTPException(401, "Authentication failed")
     except Exception as e:
+        logger.error(f"Connection error for host={req.host}: {type(e).__name__}")
         raise HTTPException(502, "Cannot connect to mail server")
 
     token = sessions.create(
@@ -168,8 +265,8 @@ def login(req: LoginRequest, request: Request, response: Response):
         port_sieve=req.port_sieve,
     )
     response.set_cookie(
-        SESSION_COOKIE, token,
-        httponly=True, samesite="strict", max_age=1800,
+        SESSION_COOKIE_NAME, token,
+        httponly=True, samesite="strict", max_age=SESSION_COOKIE_MAX_AGE,
         secure=_is_secure(request),
     )
     return {"ok": True, "username": req.username}
@@ -177,10 +274,13 @@ def login(req: LoginRequest, request: Request, response: Response):
 
 @app.post("/api/auth/logout")
 def logout(request: Request, response: Response):
-    token = request.cookies.get(SESSION_COOKIE)
+    token = request.cookies.get(SESSION_COOKIE_NAME)
     if token:
+        session = sessions.get(token)
+        if session:
+            logger.info(f"Logout for user={session.username}")
         sessions.destroy(token)
-    response.delete_cookie(SESSION_COOKIE)
+    response.delete_cookie(SESSION_COOKIE_NAME)
     return {"ok": True}
 
 
@@ -265,11 +365,16 @@ class SaveScriptRequest(BaseModel):
 def save_script(name: str, req: SaveScriptRequest, request: Request):
     """Save script from JSON rules (generates Sieve)."""
     session = get_session(request)
-    script = json_to_script(req.model_dump())
-    sieve_text = generate_sieve(script)
-    with SieveClient(session) as client:
-        client.put_script(name, sieve_text)
-    return {"ok": True, "sieve": sieve_text}
+    try:
+        script = json_to_script(req.model_dump())
+        sieve_text = generate_sieve(script)
+        with SieveClient(session) as client:
+            client.put_script(name, sieve_text)
+        logger.info(f"Saved script '{name}' for user={session.username}")
+        return {"ok": True, "sieve": sieve_text}
+    except Exception as e:
+        logger.error(f"Error saving script '{name}': {type(e).__name__} - {str(e)}")
+        raise
 
 
 class SaveRawRequest(BaseModel):
@@ -298,6 +403,7 @@ def delete_script(name: str, request: Request):
     session = get_session(request)
     with SieveClient(session) as client:
         client.delete_script(name)
+    logger.info(f"Deleted script '{name}' for user={session.username}")
     return {"ok": True}
 
 
@@ -357,16 +463,24 @@ def main():
     parser.add_argument("--port", type=int, default=8091)
     parser.add_argument("--host", default="0.0.0.0")
     parser.add_argument("--static", type=str, help="Path to frontend build dir")
+    parser.add_argument("--log-level", default="INFO", choices=["DEBUG", "INFO", "WARNING", "ERROR"])
     args = parser.parse_args()
+
+    # Reconfigure logging with CLI arg
+    global logger
+    logger = setup_logging(args.log_level)
 
     global static_dir
     if args.static:
         static_dir = Path(args.static).resolve()
         if not static_dir.is_dir():
-            print(f"Warning: static dir {static_dir} not found")
+            logger.warning(f"Static dir {static_dir} not found")
             static_dir = None
+        else:
+            logger.info(f"Serving static files from {static_dir}")
 
-    uvicorn.run(app, host=args.host, port=args.port)
+    logger.info(f"Starting AreYouSievious server on {args.host}:{args.port}")
+    uvicorn.run(app, host=args.host, port=args.port, log_level=args.log_level.lower())
 
 
 if __name__ == "__main__":

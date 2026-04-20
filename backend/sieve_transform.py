@@ -16,6 +16,32 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 
+# ── Pre-compiled Regex Patterns ──
+
+# Parser patterns
+_REQUIRE_PATTERN = re.compile(r'"([^"]+)"')
+_DECORATOR_PATTERN = re.compile(r'^[=\-\s]+$')
+_COND_ANYOF_ALLOF_PATTERN = re.compile(r'if\s+(anyof|allof)\s*\((.*?)\)\s*\{', re.DOTALL)
+_COND_SINGLE_PATTERN = re.compile(r'if\s+(.*?)\s*\{', re.DOTALL)
+_ACTION_BLOCK_PATTERN = re.compile(r'\{(.*)\}', re.DOTALL)
+
+# Test patterns
+_TEST_PATTERN = re.compile(
+    r'(not\s+)?(address|header)\s+:(contains|is|matches|regex)\s+"([^"]*(?:\\.[^"]*)*)"\s+"([^"]*(?:\\.[^"]*)*)"'
+)
+
+# Action patterns (quoted string helper)
+_QUOTED_STRING = r'"([^"]*(?:\\.[^"]*)*)"'
+_FILEINTO_COPY_PATTERN = re.compile(rf'fileinto\s+:copy\s+{_QUOTED_STRING}')
+_FILEINTO_PATTERN = re.compile(rf'fileinto\s+(?!:copy){_QUOTED_STRING}')
+_REDIRECT_PATTERN = re.compile(rf'redirect\s+{_QUOTED_STRING}')
+_KEEP_PATTERN = re.compile(r'\bkeep\s*;')
+_DISCARD_PATTERN = re.compile(r'\bdiscard\s*;')
+_STOP_PATTERN = re.compile(r'\bstop\s*;')
+_ADDFLAG_PATTERN = re.compile(rf'addflag\s+{_QUOTED_STRING}')
+_REJECT_PATTERN = re.compile(rf'reject\s+{_QUOTED_STRING}')
+
+
 # ── Data Model ──
 
 @dataclass
@@ -112,7 +138,7 @@ class SieveParser:
             if line.startswith('#'):
                 comment_text = line.lstrip('#').strip()
                 # Skip decorator lines (=== --- etc.)
-                if comment_text and not re.match(r'^[=\-\s]+$', comment_text):
+                if comment_text and not _DECORATOR_PATTERN.match(comment_text):
                     # Strip surrounding --- markers from comment names
                     clean = re.sub(r'^-+\s*', '', comment_text)
                     clean = re.sub(r'\s*-+$', '', clean)
@@ -149,8 +175,7 @@ class SieveParser:
 
     def _parse_require(self, line: str) -> list[str]:
         """Parse: require ["fileinto", "envelope", "regex"];"""
-        match = re.findall(r'"([^"]+)"', line)
-        return match
+        return _REQUIRE_PATTERN.findall(line)
 
     @staticmethod
     def _auto_name_rule(rule: Rule):
@@ -228,17 +253,14 @@ class SieveParser:
         rule = Rule(name=comment)
 
         # Parse the condition part: if anyof/allof (...) { or if <single test> {
-        cond_match = re.match(
-            r'if\s+(anyof|allof)\s*\((.*?)\)\s*\{',
-            block_text, re.DOTALL
-        )
+        cond_match = _COND_ANYOF_ALLOF_PATTERN.match(block_text)
         if cond_match:
             rule.match = cond_match.group(1)
             tests_text = cond_match.group(2)
             rule.conditions = self._parse_tests(tests_text)
         else:
             # Single condition: if <test> {
-            single_match = re.match(r'if\s+(.*?)\s*\{', block_text, re.DOTALL)
+            single_match = _COND_SINGLE_PATTERN.match(block_text)
             if single_match:
                 rule.match = "allof"
                 rule.conditions = self._parse_tests(single_match.group(1))
@@ -249,7 +271,7 @@ class SieveParser:
             raise ParseError("No conditions parsed")
 
         # Parse the action part (between { and })
-        action_match = re.search(r'\{(.*)\}', block_text, re.DOTALL)
+        action_match = _ACTION_BLOCK_PATTERN.search(block_text)
         if action_match:
             rule.actions = self._parse_actions(action_match.group(1))
         else:
@@ -287,14 +309,7 @@ class SieveParser:
         """Parse condition tests from text."""
         conditions = []
 
-        # Match patterns like:
-        # address :contains "from" "something"
-        # header :contains "subject" "something"
-        # not header :is "subject" "something"
-        # not address :matches "to" "something"
-        pattern = r'(not\s+)?(address|header)\s+:(contains|is|matches|regex)\s+"([^"]*(?:\\.[^"]*)*)"\s+"([^"]*(?:\\.[^"]*)*)"'
-
-        for m in re.finditer(pattern, text):
+        for m in _TEST_PATTERN.finditer(text):
             negate, test_type, match_type, header_name, value = m.groups()
             conditions.append(Condition(
                 header=self._unquote(header_name).lower(),
@@ -309,39 +324,37 @@ class SieveParser:
     def _parse_actions(self, text: str) -> list[Action]:
         """Parse actions from the body of an if block."""
         actions = []
-        # Pattern for quoted strings that handles escaped quotes
-        Q = r'"([^"]*(?:\\.[^"]*)*)"'
 
         # fileinto :copy "Folder";  (must check before plain fileinto)
-        for m in re.finditer(rf'fileinto\s+:copy\s+{Q}', text):
+        for m in _FILEINTO_COPY_PATTERN.finditer(text):
             actions.append(Action(action_type="fileinto_copy", argument=self._unquote(m.group(1))))
 
         # fileinto "Folder/Name";  (exclude :copy matches)
-        for m in re.finditer(rf'fileinto\s+(?!:copy){Q}', text):
+        for m in _FILEINTO_PATTERN.finditer(text):
             actions.append(Action(action_type="fileinto", argument=self._unquote(m.group(1))))
 
         # redirect "address";
-        for m in re.finditer(rf'redirect\s+{Q}', text):
+        for m in _REDIRECT_PATTERN.finditer(text):
             actions.append(Action(action_type="redirect", argument=self._unquote(m.group(1))))
 
         # keep;
-        if re.search(r'\bkeep\s*;', text):
+        if _KEEP_PATTERN.search(text):
             actions.append(Action(action_type="keep"))
 
         # discard;
-        if re.search(r'\bdiscard\s*;', text):
+        if _DISCARD_PATTERN.search(text):
             actions.append(Action(action_type="discard"))
 
         # stop;
-        if re.search(r'\bstop\s*;', text):
+        if _STOP_PATTERN.search(text):
             actions.append(Action(action_type="stop"))
 
         # addflag "\\Seen";
-        for m in re.finditer(rf'addflag\s+{Q}', text):
+        for m in _ADDFLAG_PATTERN.finditer(text):
             actions.append(Action(action_type="addflag", argument=self._unquote(m.group(1))))
 
         # reject "message";
-        for m in re.finditer(rf'reject\s+{Q}', text):
+        for m in _REJECT_PATTERN.finditer(text):
             actions.append(Action(action_type="reject", argument=self._unquote(m.group(1))))
 
         return actions
