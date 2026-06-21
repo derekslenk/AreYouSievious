@@ -225,6 +225,15 @@ class SieveParser:
         block_lines = self._collect_block_lines()
         block_text = '\n'.join(block_lines)
 
+        # Reject blocks with else/elsif — they are not single-rule shaped.
+        # The current AST has no representation for else branches, so admitting
+        # them here would silently merge the else body into the if body and
+        # corrupt user mail routing on round-trip (Quality C-2). Falling out of
+        # _try_parse_rule preserves the whole if/elsif/else chain verbatim as a
+        # RawBlock instead.
+        if re.search(r'\}\s*(?:else|elsif)\b', block_text):
+            raise ParseError("else/elsif not supported as single rule")
+
         rule = Rule(name=comment)
 
         # Parse the condition part: if anyof/allof (...) { or if <single test> {
@@ -284,7 +293,20 @@ class SieveParser:
         return s.replace('\\"', '"').replace('\\\\', '\\')
 
     def _parse_tests(self, text: str) -> list[Condition]:
-        """Parse condition tests from text."""
+        """Parse condition tests from text.
+
+        The quoted-string fragment `"((?:[^"\\]|\\.)*)"` is the linear-time
+        replacement for the previous `"([^"]*(?:\\.[^"]*)*)"`, which is
+        catastrophic-backtracking ReDoS-prone on unterminated strings
+        (CWE-1333). Each character is consumed by exactly one branch
+        (a non-escape char OR a complete `\\X` escape) — no nested `*`.
+
+        Optional `:all|:localpart|:domain` address-part modifier and
+        `:comparator "..."` option are now consumed (and ignored on output;
+        the round-trip falls back to the RawBlock path for now). This
+        prevents Roundcube/SOGo-generated `address :domain :is "from" "..."`
+        rules from being silently dropped from the parsed result.
+        """
         conditions = []
 
         # Match patterns like:
@@ -292,7 +314,17 @@ class SieveParser:
         # header :contains "subject" "something"
         # not header :is "subject" "something"
         # not address :matches "to" "something"
-        pattern = r'(not\s+)?(address|header)\s+:(contains|is|matches|regex)\s+"([^"]*(?:\\.[^"]*)*)"\s+"([^"]*(?:\\.[^"]*)*)"'
+        # address :domain :is "from" "example.com"          (Roundcube style)
+        # header :comparator "i;ascii-casemap" :is "x" "y"  (RFC 5228)
+        pattern = (
+            r'(not\s+)?'
+            r'(address|header)'
+            r'(?:\s+:(?:all|localpart|domain))?'      # address-part (consumed, not preserved)
+            r'(?:\s+:comparator\s+"(?:[^"\\]|\\.)*")?'  # comparator (consumed, not preserved)
+            r'\s+:(contains|is|matches|regex)'
+            r'\s+"((?:[^"\\]|\\.)*)"'
+            r'\s+"((?:[^"\\]|\\.)*)"'
+        )
 
         for m in re.finditer(pattern, text):
             negate, test_type, match_type, header_name, value = m.groups()
@@ -309,8 +341,10 @@ class SieveParser:
     def _parse_actions(self, text: str) -> list[Action]:
         """Parse actions from the body of an if block."""
         actions = []
-        # Pattern for quoted strings that handles escaped quotes
-        Q = r'"([^"]*(?:\\.[^"]*)*)"'
+        # Linear-time quoted-string fragment (no nested `*`, no catastrophic
+        # backtracking on unterminated strings). See `_parse_tests` for the
+        # security rationale (CWE-1333).
+        Q = r'"((?:[^"\\]|\\.)*)"'
 
         # fileinto :copy "Folder";  (must check before plain fileinto)
         for m in re.finditer(rf'fileinto\s+:copy\s+{Q}', text):
