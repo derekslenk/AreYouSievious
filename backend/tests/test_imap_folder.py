@@ -23,8 +23,8 @@ import pytest
 BACKEND = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(BACKEND))
 
-from auth import Session  # noqa: E402
-from imap_client import IMAPClient  # noqa: E402
+from auth import Session
+from imap_client import IMAPClient
 
 
 def _client_with_mock_conn() -> IMAPClient:
@@ -53,13 +53,13 @@ INJECTION_PAYLOADS = [
     pytest.param("Inbox\r", id="bare-CR"),
     pytest.param("Inbox\n", id="bare-LF"),
     pytest.param("Inbox\r\n", id="CRLF"),
-    pytest.param("Inbox\r\nDELETE \"Other\"", id="CRLF-then-command"),
+    pytest.param('Inbox\r\nDELETE "Other"', id="CRLF-then-command"),
     pytest.param("Inbox\x00", id="NUL"),
-    pytest.param("Inbox\x00DELETE \"Other\"", id="NUL-then-command"),
+    pytest.param('Inbox\x00DELETE "Other"', id="NUL-then-command"),
     pytest.param('Inbox"', id="trailing-doublequote"),
     pytest.param('Bad" CREATE "Evil', id="quote-break-then-command"),
     pytest.param("Inbox\\", id="trailing-backslash"),
-    pytest.param("Bad\\\" CREATE \"Evil", id="escaped-quote-injection"),
+    pytest.param('Bad\\" CREATE "Evil', id="escaped-quote-injection"),
 ]
 
 

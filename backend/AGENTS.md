@@ -25,7 +25,8 @@ FastAPI application that serves the Svelte SPA as static files and provides a RE
 ## For AI Agents
 
 ### Working In This Directory
-- Endpoints use sync `def` (not `async def`) except `auth_status` and `import_script`
+- Endpoints use sync `def` (not `async def`) by convention; `import_script` is sync so a slow ManageSieve PUT runs in the threadpool instead of blocking the event loop (see `tests/test_import_event_loop.py`). `auth_status` is the only intentionally-async handler.
+- Outbound IMAP TLS is verified by default. `AYS_IMAP_INSECURE=1` (or `true` / `yes`) skips chain + hostname verification for self-signed test setups and logs a warning — never set this in production (CWE-295).
 - Auth: `get_session(request)` extracts/validates session, raises HTTP 401
 - ManageSieve/IMAP ops use context managers: `with SieveClient(session) as client:`
 - Request bodies use Pydantic `BaseModel` subclasses

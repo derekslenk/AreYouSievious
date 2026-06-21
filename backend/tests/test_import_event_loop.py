@@ -27,9 +27,8 @@ import pytest
 BACKEND = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(BACKEND))
 
-import app as app_mod  # noqa: E402
-from auth import sessions  # noqa: E402
-
+import app as app_mod
+from auth import sessions
 
 SLOW_SECONDS = 1.0
 N_CONCURRENT = 5
@@ -72,7 +71,9 @@ async def test_import_script_does_not_block_event_loop():
     with patch.object(app_mod, "SieveClient", side_effect=_slow_sieve_client):
         transport = httpx.ASGITransport(app=app_mod.app)
         async with httpx.AsyncClient(
-            transport=transport, base_url="http://test", cookies=cookies,
+            transport=transport,
+            base_url="http://test",
+            cookies=cookies,
         ) as client:
 
             async def do_import(idx: int) -> httpx.Response:

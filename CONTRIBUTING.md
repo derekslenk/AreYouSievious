@@ -25,6 +25,36 @@ pip install -r requirements.txt
 python app.py --port 8091
 ```
 
+### Running tests
+
+```bash
+cd backend
+pip install -r requirements.txt -r requirements-dev.txt
+python -m pytest tests/ -v
+```
+
+Frontend unit tests (Vitest):
+```bash
+cd frontend
+npm install
+npm test
+```
+
+### Pre-commit hooks
+
+`ruff format` and `ruff check --fix` run on every commit once you opt in:
+
+```bash
+pip install -r backend/requirements-dev.txt
+pre-commit install
+```
+
+The hook config lives in `.pre-commit-config.yaml`. Lint rules are in
+`pyproject.toml` (`[tool.ruff]`, `[tool.basedpyright]`). The current baseline
+is permissive on purpose — see `# noqa` annotations in existing code for
+grandfathered violations. Tighten via a follow-up bead, don't bundle it
+with a feature change.
+
 ### Docker (full stack)
 ```bash
 docker compose up --build

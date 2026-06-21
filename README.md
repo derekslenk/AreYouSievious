@@ -48,6 +48,7 @@ Open `http://localhost:8091` and log in with your IMAP credentials.
 |---|---|---|
 | `AYS_CORS_ORIGINS` | `https://areyousievious.com` | Comma-separated allowed origins |
 | `AYS_SECURE_COOKIES` | _(unset)_ | Set to `true` when behind HTTPS reverse proxy |
+| `AYS_IMAP_INSECURE` | _(unset)_ | ⚠️ **Testing only.** `1` / `true` / `yes` disables outbound IMAP TLS chain + hostname verification (for self-signed mail servers). Leaving this unset is mandatory in production — without it, an on-path attacker can MITM the IMAP login and steal credentials (CWE-295). |
 
 ## Quick Start (Manual)
 

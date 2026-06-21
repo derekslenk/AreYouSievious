@@ -1,0 +1,45 @@
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+extend-exclude = [
+    ".venv",
+    "node_modules",
+    "frontend",
+    "static",
+    "backend/test_scripts",
+]
+
+[tool.ruff.lint]
+select = [
+    "E",
+    "F",
+    "W",
+    "I",
+    "B",
+    "UP",
+    "RUF",
+]
+ignore = [
+    "E501",
+    "B008",
+]
+
+[tool.ruff.lint.per-file-ignores]
+"backend/tests/*.py" = ["E402"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+line-ending = "lf"
+
+[tool.basedpyright]
+include = ["backend"]
+exclude = [
+    "**/__pycache__",
+    ".venv",
+    "backend/test_scripts",
+]
+typeCheckingMode = "basic"
+reportMissingTypeStubs = false
+pythonVersion = "3.12"
+pythonPlatform = "All"

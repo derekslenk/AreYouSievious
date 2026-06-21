@@ -1,0 +1,26 @@
+# https://editorconfig.org
+# Matches the codebase's existing conventions; the .py / .js / .svelte split
+# mirrors what the formatters expect.
+
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+indent_style = space
+
+[*.py]
+indent_size = 4
+
+[*.{js,svelte,json,yml,yaml,toml,html,css}]
+indent_size = 2
+
+[*.md]
+# Markdown: leave trailing whitespace alone (two-space line breaks).
+trim_trailing_whitespace = false
+indent_size = 2
+
+[Makefile]
+indent_style = tab

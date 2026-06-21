@@ -16,22 +16,23 @@ import ssl
 import time
 from collections import defaultdict
 from pathlib import Path
-from typing import Optional
 
+from auth import Session, sessions
 from fastapi import FastAPI, File, Form, HTTPException, Request, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
-from pydantic import BaseModel, field_validator
-
-from auth import sessions, Session
+from imap_client import IMAP_TIMEOUT, TLS_CONTEXT, IMAPClient
 from managesieve_client import SieveClient
-from imap_client import IMAPClient, TLS_CONTEXT, IMAP_TIMEOUT
+from pydantic import BaseModel, field_validator
 from sieve_transform import (
-    parse_sieve, generate_sieve, script_to_json, json_to_script,
+    generate_sieve,
+    json_to_script,
+    parse_sieve,
+    script_to_json,
 )
 
-
 # ── Rate limiter ──
+
 
 class RateLimiter:
     """Simple in-memory rate limiter by IP."""
@@ -58,18 +59,20 @@ _login_limiter = RateLimiter(max_attempts=5, window_seconds=300)
 
 # ── SSRF protection ──
 
+
 def _validate_host(host: str) -> str:
     """Validate that host is not a private/reserved IP (SSRF protection)."""
     try:
         # Resolve hostname to IP
         resolved = socket.getaddrinfo(host, None, socket.AF_UNSPEC, socket.SOCK_STREAM)
-        for family, _, _, _, sockaddr in resolved:
+        for family, _, _, _, sockaddr in resolved:  # noqa: B007
             ip = ipaddress.ip_address(sockaddr[0])
             if ip.is_private or ip.is_loopback or ip.is_reserved or ip.is_link_local:
                 raise HTTPException(400, "Connection to private/internal addresses is not allowed")
     except socket.gaierror:
-        raise HTTPException(400, f"Cannot resolve hostname: {host}")
+        raise HTTPException(400, f"Cannot resolve hostname: {host}")  # noqa: B904
     return host
+
 
 app = FastAPI(title="AreYouSievious", version="0.1.0")
 
@@ -96,6 +99,7 @@ def _is_secure(request: Request) -> bool:
 
 # ── Helpers ──
 
+
 def get_session(request: Request) -> Session:
     """Extract and validate session from cookie or header."""
     token = request.cookies.get(SESSION_COOKIE)
@@ -113,6 +117,7 @@ def get_session(request: Request) -> Session:
 
 
 # ── Auth endpoints ──
+
 
 class LoginRequest(BaseModel):
     host: str
@@ -144,7 +149,9 @@ class LoginRequest(BaseModel):
 def login(req: LoginRequest, request: Request, response: Response):
     """Authenticate with IMAP credentials."""
     # Rate limit by IP
-    client_ip = request.headers.get("x-real-ip", request.client.host if request.client else "unknown")
+    client_ip = request.headers.get(
+        "x-real-ip", request.client.host if request.client else "unknown"
+    )
     if not _login_limiter.check(client_ip):
         raise HTTPException(429, "Too many login attempts. Try again in 5 minutes.")
 
@@ -163,12 +170,12 @@ def login(req: LoginRequest, request: Request, response: Response):
         )
         conn.login(req.username, req.password)
         conn.logout()
-    except imaplib.IMAP4.error as e:
-        raise HTTPException(401, "Authentication failed")
-    except ssl.SSLCertVerificationError as e:
-        raise HTTPException(502, "Mail server TLS certificate could not be verified")
-    except Exception as e:
-        raise HTTPException(502, "Cannot connect to mail server")
+    except imaplib.IMAP4.error:
+        raise HTTPException(401, "Authentication failed")  # noqa: B904
+    except ssl.SSLCertVerificationError:
+        raise HTTPException(502, "Mail server TLS certificate could not be verified")  # noqa: B904
+    except Exception:
+        raise HTTPException(502, "Cannot connect to mail server")  # noqa: B904
 
     token = sessions.create(
         host=req.host,
@@ -178,8 +185,11 @@ def login(req: LoginRequest, request: Request, response: Response):
         port_sieve=req.port_sieve,
     )
     response.set_cookie(
-        SESSION_COOKIE, token,
-        httponly=True, samesite="strict", max_age=1800,
+        SESSION_COOKIE,
+        token,
+        httponly=True,
+        samesite="strict",
+        max_age=1800,
         secure=_is_secure(request),
     )
     return {"ok": True, "username": req.username}
@@ -204,6 +214,7 @@ async def auth_status(request: Request):
 
 
 # ── Script endpoints ──
+
 
 @app.get("/api/scripts")
 def list_scripts(request: Request):
@@ -239,7 +250,9 @@ def export_script(name: str, request: Request):
     return Response(
         content=content,
         media_type="application/sieve",
-        headers={"Content-Disposition": f'attachment; filename="{re.sub(r"[^a-zA-Z0-9._-]", "_", name)}.sieve"'},
+        headers={
+            "Content-Disposition": f'attachment; filename="{re.sub(r"[^a-zA-Z0-9._-]", "_", name)}.sieve"'
+        },
     )
 
 
@@ -260,7 +273,7 @@ def import_script(
     try:
         content = raw.decode("utf-8")
     except UnicodeDecodeError:
-        raise HTTPException(400, "File must be valid UTF-8 text")
+        raise HTTPException(400, "File must be valid UTF-8 text")  # noqa: B904
     session = get_session(request)
     with SieveClient(session) as client:
         client.put_script(name, content)
@@ -316,6 +329,7 @@ def delete_script(name: str, request: Request):
 
 # ── Folder endpoints ──
 
+
 @app.get("/api/folders")
 def list_folders(request: Request):
     session = get_session(request)
@@ -339,7 +353,7 @@ def create_folder(req: CreateFolderRequest, request: Request):
 
 # ── Static file serving ──
 
-static_dir: Optional[Path] = None
+static_dir: Path | None = None
 
 
 @app.get("/{full_path:path}")
@@ -352,7 +366,7 @@ def serve_frontend(full_path: str):
     try:
         file_path.relative_to(static_dir.resolve())
     except ValueError:
-        raise HTTPException(403, "Access denied")
+        raise HTTPException(403, "Access denied")  # noqa: B904
     if file_path.is_file():
         return FileResponse(file_path)
 

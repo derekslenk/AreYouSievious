@@ -10,7 +10,6 @@ import ssl
 
 from auth import Session
 
-
 _log = logging.getLogger("ays.imap")
 
 
@@ -92,11 +91,13 @@ class IMAPClient:
             if match:
                 flags_str, delimiter, name = match.groups()
                 flags = [f.strip() for f in flags_str.split() if f.strip()]
-                folders.append({
-                    "name": name.strip('"'),
-                    "delimiter": delimiter,
-                    "flags": flags,
-                })
+                folders.append(
+                    {
+                        "name": name.strip('"'),
+                        "delimiter": delimiter,
+                        "flags": flags,
+                    }
+                )
 
         folders.sort(key=lambda f: f["name"].lower())
         return folders
