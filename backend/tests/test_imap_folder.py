@@ -33,6 +33,7 @@ def _client_with_mock_conn() -> IMAPClient:
     session = Session(
         token="t",
         host="imap.example.com",
+        host_ip="93.184.216.34",
         port_imap=993,
         port_sieve=4190,
         username="user@example.com",

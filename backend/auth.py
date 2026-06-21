@@ -14,6 +14,7 @@ SESSION_TIMEOUT = 1800  # 30 minutes
 class Session:
     token: str
     host: str
+    host_ip: str
     port_imap: int
     port_sieve: int
     username: str
@@ -28,14 +29,26 @@ class SessionManager:
         self._timeout = timeout
 
     def create(
-        self, host: str, username: str, password: str, port_imap: int = 993, port_sieve: int = 4190
+        self,
+        host: str,
+        host_ip: str,
+        username: str,
+        password: str,
+        port_imap: int = 993,
+        port_sieve: int = 4190,
     ) -> str:
-        """Create a new session, return token."""
+        """Create a new session, return token.
+
+        `host_ip` is the address `host` resolved to at login time. The
+        outbound clients re-resolve at every connect and abort if the
+        answer no longer includes this IP — the DNS-rebinding guard.
+        """
         token = secrets.token_urlsafe(32)
         now = time.time()
         self._sessions[token] = Session(
             token=token,
             host=host,
+            host_ip=host_ip,
             port_imap=port_imap,
             port_sieve=port_sieve,
             username=username,
