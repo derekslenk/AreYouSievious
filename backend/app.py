@@ -12,6 +12,7 @@ import ipaddress
 import os
 import re
 import socket
+import ssl
 import time
 from collections import defaultdict
 from pathlib import Path
@@ -24,7 +25,7 @@ from pydantic import BaseModel, field_validator
 
 from auth import sessions, Session
 from managesieve_client import SieveClient
-from imap_client import IMAPClient
+from imap_client import IMAPClient, TLS_CONTEXT, IMAP_TIMEOUT
 from sieve_transform import (
     parse_sieve, generate_sieve, script_to_json, json_to_script,
 )
@@ -150,13 +151,22 @@ def login(req: LoginRequest, request: Request, response: Response):
     # SSRF protection — reject private/internal IPs
     _validate_host(req.host)
 
-    # Validate credentials against IMAP
+    # Validate credentials against IMAP. ssl_context + timeout are critical:
+    # without them the connection accepts any cert (MITM, Security C-1) and a
+    # slow upstream can pin this worker indefinitely (Security H-2).
     try:
-        conn = imaplib.IMAP4_SSL(req.host, req.port_imap)
+        conn = imaplib.IMAP4_SSL(
+            req.host,
+            req.port_imap,
+            ssl_context=TLS_CONTEXT,
+            timeout=IMAP_TIMEOUT,
+        )
         conn.login(req.username, req.password)
         conn.logout()
     except imaplib.IMAP4.error as e:
         raise HTTPException(401, "Authentication failed")
+    except ssl.SSLCertVerificationError as e:
+        raise HTTPException(502, "Mail server TLS certificate could not be verified")
     except Exception as e:
         raise HTTPException(502, "Cannot connect to mail server")
 
