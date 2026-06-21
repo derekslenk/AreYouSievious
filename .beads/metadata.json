@@ -1,0 +1,7 @@
+{
+  "database": "dolt",
+  "backend": "dolt",
+  "dolt_mode": "embedded",
+  "dolt_database": "areyousievious",
+  "project_id": "95648840-1aa0-4acd-b464-e0b1bf0f7720"
+}
