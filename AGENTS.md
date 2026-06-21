@@ -3,7 +3,7 @@
 # AreYouSievious
 
 ## Purpose
-Self-hosted Sieve email filter management UI. Single-process FastAPI backend serves a Svelte SPA and proxies ManageSieve/IMAP to the user's mail server. No database — all state lives on the mail server. Session-only auth with in-memory encrypted credentials.
+Self-hosted Sieve email filter management UI. Single-process FastAPI backend serves a Svelte SPA and proxies ManageSieve/IMAP to the user's mail server. No database — all state lives on the mail server. Session-only auth with in-memory credentials (plaintext for session lifetime; expects a single-tenant host).
 
 ## Key Files
 | File | Description |
@@ -43,3 +43,12 @@ Browser -> FastAPI REST API -> ManageSieve (4190) / IMAP (993) -> Mail server
 - Frontend uses Svelte 4 compat syntax (`export let`, `$:`, `on:click`) despite Svelte 5
 
 <!-- MANUAL: -->
+
+<!-- lean-ctx -->
+## lean-ctx
+
+Prefer lean-ctx MCP tools over native equivalents for token savings:
+`ctx_read` > Read/cat, `ctx_search` > Grep/rg, `ctx_shell` > bash, `ctx_tree` > ls/find.
+Native Edit/Write/Glob stay as-is; use `ctx_edit` only when Edit needs an unavailable Read.
+Full rules: LEAN-CTX.md (open on demand — do not auto-load).
+<!-- /lean-ctx -->

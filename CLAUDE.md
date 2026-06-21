@@ -22,7 +22,7 @@ No test suite, linter, or formatter is configured.
 
 ## Architecture
 
-Self-hosted Sieve email filter management UI. Single-process FastAPI backend serves the Svelte SPA as static files and proxies ManageSieve/IMAP to the user's mail server. No database — all state lives on the mail server. No stored credentials — session-only with in-memory encrypted creds (30 min timeout).
+Self-hosted Sieve email filter management UI. Single-process FastAPI backend serves the Svelte SPA as static files and proxies ManageSieve/IMAP to the user's mail server. No database — all state lives on the mail server. No stored credentials — session-only, plaintext in process memory for the session lifetime (30 min timeout). Expects a single-tenant host.
 
 ### Request flow
 
