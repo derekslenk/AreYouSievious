@@ -6,8 +6,6 @@ No credentials are persisted to disk.
 import secrets
 import time
 from dataclasses import dataclass
-from typing import Optional
-
 
 SESSION_TIMEOUT = 1800  # 30 minutes
 
@@ -29,8 +27,9 @@ class SessionManager:
         self._sessions: dict[str, Session] = {}
         self._timeout = timeout
 
-    def create(self, host: str, username: str, password: str,
-               port_imap: int = 993, port_sieve: int = 4190) -> str:
+    def create(
+        self, host: str, username: str, password: str, port_imap: int = 993, port_sieve: int = 4190
+    ) -> str:
         """Create a new session, return token."""
         token = secrets.token_urlsafe(32)
         now = time.time()
@@ -47,7 +46,7 @@ class SessionManager:
         self._cleanup()
         return token
 
-    def get(self, token: str) -> Optional[Session]:
+    def get(self, token: str) -> Session | None:
         """Get session by token, or None if expired/missing."""
         session = self._sessions.get(token)
         if not session:
@@ -65,10 +64,7 @@ class SessionManager:
     def _cleanup(self):
         """Remove expired sessions."""
         now = time.time()
-        expired = [
-            k for k, v in self._sessions.items()
-            if now - v.last_used > self._timeout
-        ]
+        expired = [k for k, v in self._sessions.items() if now - v.last_used > self._timeout]
         for k in expired:
             del self._sessions[k]
 

@@ -13,15 +13,14 @@ Design principles:
 import re
 import uuid
 from dataclasses import dataclass, field
-from typing import Optional
-
 
 # ── Data Model ──
 
+
 @dataclass
 class Condition:
-    header: str           # "from", "to", "subject", "cc", etc.
-    match_type: str       # "contains", "is", "matches", "regex"
+    header: str  # "from", "to", "subject", "cc", etc.
+    match_type: str  # "contains", "is", "matches", "regex"
     value: str
     address_test: bool = False  # True = address test, False = header test
     negate: bool = False
@@ -29,8 +28,8 @@ class Condition:
 
 @dataclass
 class Action:
-    action_type: str      # "fileinto", "redirect", "keep", "discard", "stop", "addflag"
-    argument: str = ""    # folder name, address, flag value, etc.
+    action_type: str  # "fileinto", "redirect", "keep", "discard", "stop", "addflag"
+    argument: str = ""  # folder name, address, flag value, etc.
 
 
 @dataclass
@@ -50,6 +49,7 @@ class Rule:
 @dataclass
 class RawBlock:
     """Opaque Sieve text we don't parse into rules."""
+
     text: str
     comment: str = ""
 
@@ -57,6 +57,7 @@ class RawBlock:
 @dataclass
 class SieveScript:
     """Full parsed representation of a Sieve script."""
+
     requires: list[str] = field(default_factory=list)
     rules: list[Rule] = field(default_factory=list)
     raw_blocks: list[RawBlock] = field(default_factory=list)
@@ -65,6 +66,7 @@ class SieveScript:
 
 
 # ── Parser (Sieve text -> SieveScript) ──
+
 
 class SieveParser:
     """
@@ -76,7 +78,7 @@ class SieveParser:
     def __init__(self, text: str):
         self.text = text
         self.pos = 0
-        self.lines = text.split('\n')
+        self.lines = text.split("\n")
         self.line_idx = 0
 
     def parse(self) -> SieveScript:
@@ -92,13 +94,13 @@ class SieveParser:
                 continue
 
             # Require statement
-            if line.startswith('require'):
+            if line.startswith("require"):
                 script.requires = self._parse_require(line)
                 self.line_idx += 1
                 continue
 
             # Disabled rule (commented out with ## prefix) — check before comment handler
-            if line.startswith('## '):
+            if line.startswith("## "):
                 disabled_rule = self._try_parse_disabled_block(pending_comment)
                 if disabled_rule:
                     idx = len(script.rules)
@@ -109,19 +111,19 @@ class SieveParser:
                 # Not a disabled rule — fall through to comment handler
 
             # Comments - accumulate as potential rule name
-            if line.startswith('#'):
-                comment_text = line.lstrip('#').strip()
+            if line.startswith("#"):
+                comment_text = line.lstrip("#").strip()
                 # Skip decorator lines (=== --- etc.)
-                if comment_text and not re.match(r'^[=\-\s]+$', comment_text):
+                if comment_text and not re.match(r"^[=\-\s]+$", comment_text):
                     # Strip surrounding --- markers from comment names
-                    clean = re.sub(r'^-+\s*', '', comment_text)
-                    clean = re.sub(r'\s*-+$', '', clean)
+                    clean = re.sub(r"^-+\s*", "", comment_text)
+                    clean = re.sub(r"\s*-+$", "", clean)
                     pending_comment = clean.strip() or comment_text
                 self.line_idx += 1
                 continue
 
             # If/elsif/else block - try to parse as a rule
-            if line.startswith('if ') or line.startswith('if\t'):
+            if line.startswith("if ") or line.startswith("if\t"):
                 rule = self._try_parse_rule(pending_comment)
                 if rule:
                     self._auto_name_rule(rule)
@@ -163,7 +165,7 @@ class SieveParser:
             if arg:
                 rule.name += f" → {action_summary} {arg}"
 
-    def _try_parse_rule(self, comment: str) -> Optional[Rule]:
+    def _try_parse_rule(self, comment: str) -> Rule | None:
         """Try to parse current position as a rule. Returns None if too complex."""
         start_line = self.line_idx
         try:
@@ -174,7 +176,7 @@ class SieveParser:
             self.line_idx = start_line
             return None
 
-    def _try_parse_disabled_block(self, comment: str) -> Optional[Rule]:
+    def _try_parse_disabled_block(self, comment: str) -> Rule | None:
         """Try to parse a ## commented-out block as a disabled rule."""
         start_line = self.line_idx
         # Peek ahead to see if there's an 'if' line in this ## block
@@ -182,10 +184,10 @@ class SieveParser:
         peek = self.line_idx
         while peek < len(self.lines):
             stripped = self.lines[peek].strip()
-            if not stripped.startswith('## ') and stripped != '##':
+            if not stripped.startswith("## ") and stripped != "##":
                 break
-            content = stripped[3:] if stripped.startswith('## ') else ''
-            if content.startswith('if ') or content.startswith('if\t'):
+            content = stripped[3:] if stripped.startswith("## ") else ""
+            if content.startswith("if ") or content.startswith("if\t"):
                 has_if = True
                 break
             peek += 1
@@ -195,11 +197,11 @@ class SieveParser:
         disabled_lines = []
         while self.line_idx < len(self.lines):
             stripped = self.lines[self.line_idx].strip()
-            if stripped.startswith('## '):
+            if stripped.startswith("## "):
                 disabled_lines.append(stripped[3:])
                 self.line_idx += 1
-            elif stripped == '##':
-                disabled_lines.append('')
+            elif stripped == "##":
+                disabled_lines.append("")
                 self.line_idx += 1
             else:
                 break
@@ -207,7 +209,7 @@ class SieveParser:
             self.line_idx = start_line
             return None
         # Try to parse the uncommented text as a normal rule
-        uncommented = '\n'.join(disabled_lines)
+        uncommented = "\n".join(disabled_lines)
         sub_parser = SieveParser(uncommented)
         sub_parser.line_idx = 0
         try:
@@ -223,7 +225,7 @@ class SieveParser:
         """Parse an if block into a Rule."""
         # Collect lines until matching closing brace
         block_lines = self._collect_block_lines()
-        block_text = '\n'.join(block_lines)
+        block_text = "\n".join(block_lines)
 
         # Reject blocks with else/elsif — they are not single-rule shaped.
         # The current AST has no representation for else branches, so admitting
@@ -231,23 +233,20 @@ class SieveParser:
         # corrupt user mail routing on round-trip (Quality C-2). Falling out of
         # _try_parse_rule preserves the whole if/elsif/else chain verbatim as a
         # RawBlock instead.
-        if re.search(r'\}\s*(?:else|elsif)\b', block_text):
+        if re.search(r"\}\s*(?:else|elsif)\b", block_text):
             raise ParseError("else/elsif not supported as single rule")
 
         rule = Rule(name=comment)
 
         # Parse the condition part: if anyof/allof (...) { or if <single test> {
-        cond_match = re.match(
-            r'if\s+(anyof|allof)\s*\((.*?)\)\s*\{',
-            block_text, re.DOTALL
-        )
+        cond_match = re.match(r"if\s+(anyof|allof)\s*\((.*?)\)\s*\{", block_text, re.DOTALL)
         if cond_match:
             rule.match = cond_match.group(1)
             tests_text = cond_match.group(2)
             rule.conditions = self._parse_tests(tests_text)
         else:
             # Single condition: if <test> {
-            single_match = re.match(r'if\s+(.*?)\s*\{', block_text, re.DOTALL)
+            single_match = re.match(r"if\s+(.*?)\s*\{", block_text, re.DOTALL)
             if single_match:
                 rule.match = "allof"
                 rule.conditions = self._parse_tests(single_match.group(1))
@@ -258,7 +257,7 @@ class SieveParser:
             raise ParseError("No conditions parsed")
 
         # Parse the action part (between { and })
-        action_match = re.search(r'\{(.*)\}', block_text, re.DOTALL)
+        action_match = re.search(r"\{(.*)\}", block_text, re.DOTALL)
         if action_match:
             rule.actions = self._parse_actions(action_match.group(1))
         else:
@@ -278,8 +277,8 @@ class SieveParser:
         while self.line_idx < len(self.lines):
             line = self.lines[self.line_idx]
             lines.append(line)
-            depth += line.count('{') - line.count('}')
-            if '{' in line:
+            depth += line.count("{") - line.count("}")
+            if "{" in line:
                 started = True
             self.line_idx += 1
             if started and depth <= 0:
@@ -290,7 +289,7 @@ class SieveParser:
     @staticmethod
     def _unquote(s: str) -> str:
         """Unescape a Sieve quoted string (reverse of SieveGenerator._quote)."""
-        return s.replace('\\"', '"').replace('\\\\', '\\')
+        return s.replace('\\"', '"').replace("\\\\", "\\")
 
     def _parse_tests(self, text: str) -> list[Condition]:
         """Parse condition tests from text.
@@ -317,24 +316,26 @@ class SieveParser:
         # address :domain :is "from" "example.com"          (Roundcube style)
         # header :comparator "i;ascii-casemap" :is "x" "y"  (RFC 5228)
         pattern = (
-            r'(not\s+)?'
-            r'(address|header)'
-            r'(?:\s+:(?:all|localpart|domain))?'      # address-part (consumed, not preserved)
+            r"(not\s+)?"
+            r"(address|header)"
+            r"(?:\s+:(?:all|localpart|domain))?"  # address-part (consumed, not preserved)
             r'(?:\s+:comparator\s+"(?:[^"\\]|\\.)*")?'  # comparator (consumed, not preserved)
-            r'\s+:(contains|is|matches|regex)'
+            r"\s+:(contains|is|matches|regex)"
             r'\s+"((?:[^"\\]|\\.)*)"'
             r'\s+"((?:[^"\\]|\\.)*)"'
         )
 
         for m in re.finditer(pattern, text):
             negate, test_type, match_type, header_name, value = m.groups()
-            conditions.append(Condition(
-                header=self._unquote(header_name).lower(),
-                match_type=match_type,
-                value=self._unquote(value),
-                address_test=(test_type == "address"),
-                negate=bool(negate),
-            ))
+            conditions.append(
+                Condition(
+                    header=self._unquote(header_name).lower(),
+                    match_type=match_type,
+                    value=self._unquote(value),
+                    address_test=(test_type == "address"),
+                    negate=bool(negate),
+                )
+            )
 
         return conditions
 
@@ -347,35 +348,35 @@ class SieveParser:
         Q = r'"((?:[^"\\]|\\.)*)"'
 
         # fileinto :copy "Folder";  (must check before plain fileinto)
-        for m in re.finditer(rf'fileinto\s+:copy\s+{Q}', text):
+        for m in re.finditer(rf"fileinto\s+:copy\s+{Q}", text):
             actions.append(Action(action_type="fileinto_copy", argument=self._unquote(m.group(1))))
 
         # fileinto "Folder/Name";  (exclude :copy matches)
-        for m in re.finditer(rf'fileinto\s+(?!:copy){Q}', text):
+        for m in re.finditer(rf"fileinto\s+(?!:copy){Q}", text):
             actions.append(Action(action_type="fileinto", argument=self._unquote(m.group(1))))
 
         # redirect "address";
-        for m in re.finditer(rf'redirect\s+{Q}', text):
+        for m in re.finditer(rf"redirect\s+{Q}", text):
             actions.append(Action(action_type="redirect", argument=self._unquote(m.group(1))))
 
         # keep;
-        if re.search(r'\bkeep\s*;', text):
+        if re.search(r"\bkeep\s*;", text):
             actions.append(Action(action_type="keep"))
 
         # discard;
-        if re.search(r'\bdiscard\s*;', text):
+        if re.search(r"\bdiscard\s*;", text):
             actions.append(Action(action_type="discard"))
 
         # stop;
-        if re.search(r'\bstop\s*;', text):
+        if re.search(r"\bstop\s*;", text):
             actions.append(Action(action_type="stop"))
 
         # addflag "\\Seen";
-        for m in re.finditer(rf'addflag\s+{Q}', text):
+        for m in re.finditer(rf"addflag\s+{Q}", text):
             actions.append(Action(action_type="addflag", argument=self._unquote(m.group(1))))
 
         # reject "message";
-        for m in re.finditer(rf'reject\s+{Q}', text):
+        for m in re.finditer(rf"reject\s+{Q}", text):
             actions.append(Action(action_type="reject", argument=self._unquote(m.group(1))))
 
         return actions
@@ -383,7 +384,7 @@ class SieveParser:
     def _consume_block(self) -> str:
         """Consume lines for current block as raw text."""
         lines = self._collect_block_lines()
-        return '\n'.join(lines)
+        return "\n".join(lines)
 
 
 class ParseError(Exception):
@@ -391,6 +392,7 @@ class ParseError(Exception):
 
 
 # ── Generator (SieveScript -> Sieve text) ──
+
 
 class SieveGenerator:
     """Generate Sieve script text from a SieveScript."""
@@ -401,9 +403,9 @@ class SieveGenerator:
         # Require statement
         requires = self._compute_requires(script)
         if requires:
-            req_list = ', '.join(f'"{r}"' for r in requires)
-            parts.append(f'require [{req_list}];')
-            parts.append('')
+            req_list = ", ".join(f'"{r}"' for r in requires)
+            parts.append(f"require [{req_list}];")
+            parts.append("")
 
         # Generate in order
         for kind, idx in script.order:
@@ -411,20 +413,19 @@ class SieveGenerator:
                 rule = script.rules[idx]
                 rule_text = self._generate_rule(rule)
                 if not rule.enabled:
-                    rule_text = '\n'.join(
-                        '## ' + line if line.strip() else '##'
-                        for line in rule_text.split('\n')
+                    rule_text = "\n".join(
+                        "## " + line if line.strip() else "##" for line in rule_text.split("\n")
                     )
                 parts.append(rule_text)
-                parts.append('')
+                parts.append("")
             elif kind == "raw":
                 raw = script.raw_blocks[idx]
                 if raw.comment:
-                    parts.append(f'# {raw.comment}')
+                    parts.append(f"# {raw.comment}")
                 parts.append(raw.text)
-                parts.append('')
+                parts.append("")
 
-        return '\n'.join(parts).rstrip() + '\n'
+        return "\n".join(parts).rstrip() + "\n"
 
     def _compute_requires(self, script: SieveScript) -> list[str]:
         """Compute required extensions from rules."""
@@ -454,32 +455,32 @@ class SieveGenerator:
 
         # Comment with rule name
         if rule.name:
-            lines.append(f'# --- {rule.name.upper()} ---')
+            lines.append(f"# --- {rule.name.upper()} ---")
 
         # Conditions
         if len(rule.conditions) == 1:
             cond = rule.conditions[0]
             test_str = self._generate_test(cond)
-            lines.append(f'if {test_str} {{')
+            lines.append(f"if {test_str} {{")
         else:
             tests = []
             for cond in rule.conditions:
-                tests.append(f'    {self._generate_test(cond)}')
-            lines.append(f'if {rule.match} (')
-            lines.append(',\n'.join(tests))
-            lines.append(') {')
+                tests.append(f"    {self._generate_test(cond)}")
+            lines.append(f"if {rule.match} (")
+            lines.append(",\n".join(tests))
+            lines.append(") {")
 
         # Actions
         for action in rule.actions:
-            lines.append(f'    {self._generate_action(action)}')
+            lines.append(f"    {self._generate_action(action)}")
 
-        lines.append('}')
-        return '\n'.join(lines)
+        lines.append("}")
+        return "\n".join(lines)
 
     @staticmethod
     def _quote(s: str) -> str:
         """Escape a string for use inside Sieve double quotes."""
-        return s.replace('\\', '\\\\').replace('"', '\\"')
+        return s.replace("\\", "\\\\").replace('"', '\\"')
 
     def _generate_test(self, cond: Condition) -> str:
         test_type = "address" if cond.address_test else "header"
@@ -495,19 +496,20 @@ class SieveGenerator:
         elif action.action_type == "redirect":
             return f'redirect "{arg}";'
         elif action.action_type == "keep":
-            return 'keep;'
+            return "keep;"
         elif action.action_type == "discard":
-            return 'discard;'
+            return "discard;"
         elif action.action_type == "stop":
-            return 'stop;'
+            return "stop;"
         elif action.action_type == "addflag":
             return f'addflag "{arg}";'
         elif action.action_type == "reject":
             return f'reject "{arg}";'
-        return f'# unknown action: {action.action_type}'
+        return f"# unknown action: {action.action_type}"
 
 
 # ── JSON serialization ──
+
 
 def script_to_json(script: SieveScript) -> dict:
     """Convert SieveScript to JSON-serializable dict."""
@@ -529,17 +531,11 @@ def script_to_json(script: SieveScript) -> dict:
                     }
                     for c in r.conditions
                 ],
-                "actions": [
-                    {"type": a.action_type, "argument": a.argument}
-                    for a in r.actions
-                ],
+                "actions": [{"type": a.action_type, "argument": a.argument} for a in r.actions],
             }
             for r in script.rules
         ],
-        "raw_blocks": [
-            {"text": rb.text, "comment": rb.comment}
-            for rb in script.raw_blocks
-        ],
+        "raw_blocks": [{"text": rb.text, "comment": rb.comment} for rb in script.raw_blocks],
         "order": script.order,
     }
 
@@ -553,21 +549,25 @@ def json_to_script(data: dict) -> SieveScript:
         for c in r.get("conditions", []):
             if not isinstance(c, dict) or "header" not in c or "match_type" not in c:
                 continue
-            conditions.append(Condition(
-                header=c["header"],
-                match_type=c["match_type"],
-                value=c.get("value", ""),
-                address_test=c.get("address_test", False),
-                negate=c.get("negate", False),
-            ))
+            conditions.append(
+                Condition(
+                    header=c["header"],
+                    match_type=c["match_type"],
+                    value=c.get("value", ""),
+                    address_test=c.get("address_test", False),
+                    negate=c.get("negate", False),
+                )
+            )
         actions = []
         for a in r.get("actions", []):
             if not isinstance(a, dict) or "type" not in a:
                 continue
-            actions.append(Action(
-                action_type=a["type"],
-                argument=a.get("argument", ""),
-            ))
+            actions.append(
+                Action(
+                    action_type=a["type"],
+                    argument=a.get("argument", ""),
+                )
+            )
         rule = Rule(
             id=r.get("id", ""),
             name=r.get("name", ""),
@@ -581,10 +581,12 @@ def json_to_script(data: dict) -> SieveScript:
     for rb in data.get("raw_blocks", []):
         if not isinstance(rb, dict):
             continue
-        script.raw_blocks.append(RawBlock(
-            text=rb.get("text", ""),
-            comment=rb.get("comment", ""),
-        ))
+        script.raw_blocks.append(
+            RawBlock(
+                text=rb.get("text", ""),
+                comment=rb.get("comment", ""),
+            )
+        )
 
     # Validate order entries reference valid indices
     order = []
@@ -606,6 +608,7 @@ def json_to_script(data: dict) -> SieveScript:
 
 
 # ── Convenience ──
+
 
 def parse_sieve(text: str) -> SieveScript:
     """Parse Sieve text into a SieveScript."""

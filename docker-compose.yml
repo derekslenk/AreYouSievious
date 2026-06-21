@@ -7,4 +7,8 @@ services:
     environment:
       - AYS_CORS_ORIGINS=https://areyousievious.com,http://localhost:5173
       - AYS_SECURE_COOKIES=true
+      # ⚠️  Testing only — uncomment to skip outbound IMAP TLS verification
+      # for a self-signed mail server. NEVER enable in production: leaves
+      # the IMAP login open to MITM credential theft (CWE-295).
+      # - AYS_IMAP_INSECURE=1
     restart: unless-stopped

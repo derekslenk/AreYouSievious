@@ -43,7 +43,7 @@ ManageSieve    IMAP
 ## Auth Flow
 
 1. User enters: mail server host, username, password
-2. Backend validates against IMAP (port 993)
+2. Backend validates against IMAP (port 993) using `ssl.create_default_context()` — the full system CA chain plus hostname are verified. The opt-out env var `AYS_IMAP_INSECURE=1` exists for self-signed test setups only; it disables verification and logs a warning on every `_build_tls_context()` call (do NOT set in production — CWE-295).
 3. On success, creates a session token (httponly cookie)
 4. Session holds credentials in process memory in plaintext (never persisted to disk). The host is assumed single-tenant; if you co-tenant, any process able to read the uvicorn process can recover passwords.
 5. Session expires after configurable idle timeout (default 30 min)

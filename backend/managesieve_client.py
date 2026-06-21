@@ -2,8 +2,8 @@
 ManageSieve client wrapper.
 """
 
-from sievelib.managesieve import Client
 from auth import Session
+from sievelib.managesieve import Client
 
 
 class SieveClient:

@@ -30,9 +30,8 @@ import pytest
 BACKEND = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(BACKEND))
 
-import imap_client  # noqa: E402
-from auth import Session  # noqa: E402
-
+import imap_client
+from auth import Session
 
 # ── _build_tls_context() ──
 
@@ -87,7 +86,9 @@ def test_imap_client_enter_passes_ssl_context_kwarg():
 
     mock_ssl.assert_called_once()
     kwargs = mock_ssl.call_args.kwargs
-    assert "ssl_context" in kwargs, "ssl_context kwarg missing — stdlib default would silently accept any cert"
+    assert "ssl_context" in kwargs, (
+        "ssl_context kwarg missing — stdlib default would silently accept any cert"
+    )
     ctx = kwargs["ssl_context"]
     assert isinstance(ctx, ssl.SSLContext)
     # The context that ships with the module must verify by default.
@@ -97,6 +98,7 @@ def test_imap_client_enter_passes_ssl_context_kwarg():
         # Module was loaded with INSECURE — re-import without it to confirm
         # the production default verifies.
         import os
+
         os.environ.pop("AYS_IMAP_INSECURE", None)
         importlib.reload(imap_client)
         ctx = imap_client.TLS_CONTEXT
