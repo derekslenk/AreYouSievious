@@ -65,6 +65,16 @@
 # - linear.api_key  → use LINEAR_API_KEY env var instead
 # - github.token    → use GITHUB_TOKEN env var instead
 
+# bd dolt push wraps Dolt state into git commits on refs/dolt/data.
+# The wrapper author identity comes from the standard git identity
+# (`git config user.name` / `user.email`), because gitblobstore
+# invokes `git commit-tree` in a separate cache dir at
+# .beads/embeddeddolt/<db>/.dolt/git-remote-cache/ that has no
+# local git config — so it falls through to your global config.
+# If commits ever come from a wrong identity, check
+# `git config --global user.name` first.
+# `dolt config --global user.name` is unrelated; that controls
+# Dolt SQL commit identity, not gitblobstore wrapper commits.
 sync.remote: "git+ssh://git@github.com/derekslenk/AreYouSievious.git"
 
 export.auto: true
