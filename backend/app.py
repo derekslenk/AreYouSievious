@@ -18,7 +18,7 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Optional
 
-from fastapi import FastAPI, HTTPException, Request, Response
+from fastapi import FastAPI, File, Form, HTTPException, Request, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, field_validator
@@ -244,14 +244,17 @@ def export_script(name: str, request: Request):
 
 
 @app.post("/api/scripts/import")
-async def import_script(request: Request):
-    """Import a .sieve file as a new script."""
-    form = await request.form()
-    file = form.get("file")
-    name = form.get("name")
-    if not file or not name:
-        raise HTTPException(400, "name and file required")
-    raw = await file.read()
+def import_script(
+    request: Request,
+    name: str = Form(...),
+    file: UploadFile = File(...),
+):
+    """Import a .sieve file as a new script.
+
+    ponytail: sync handler so FastAPI runs it in a threadpool — the slow
+    ManageSieve PUT no longer blocks the event loop (Perf C1 / Fwk C-1).
+    """
+    raw = file.file.read()
     if len(raw) > MAX_UPLOAD_BYTES:
         raise HTTPException(413, f"File too large (max {MAX_UPLOAD_BYTES // 1024}KB)")
     try:
