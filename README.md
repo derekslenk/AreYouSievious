@@ -46,6 +46,8 @@ Open `http://localhost:8091` and log in with your IMAP credentials.
 
 | Variable | Default | Description |
 |---|---|---|
+| `AYS_ENV` | `prod` | `dev` enables `/docs`, `/redoc`, `/openapi.json`. Anything else (including unset) returns 404 on those URLs — production deploys should leave it unset to avoid leaking the API surface (Sec M-5). |
+| `AYS_MAX_BODY_BYTES` | `1048576` (1 MiB) | Maximum accepted request body size. Larger requests get HTTP 413 from middleware before reaching any route (CWE-770). Both `Content-Length` and the actual streamed body are checked. |
 | `AYS_CORS_ORIGINS` | `https://areyousievious.com` | Comma-separated allowed origins |
 | `AYS_SECURE_COOKIES` | _(unset)_ | Set to `true` when behind HTTPS reverse proxy |
 | `AYS_IMAP_INSECURE` | _(unset)_ | ⚠️ **Testing only.** `1` / `true` / `yes` disables outbound IMAP TLS chain + hostname verification (for self-signed mail servers). Leaving this unset is mandatory in production — without it, an on-path attacker can MITM the IMAP login and steal credentials (CWE-295). |

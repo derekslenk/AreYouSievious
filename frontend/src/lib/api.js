@@ -3,12 +3,35 @@
  */
 
 const BASE = '/api';
+const CSRF_COOKIE = 'ays_csrf';
+const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
+const CSRF_EXEMPT_PATHS = new Set(['/auth/login']);
+
+function getCsrfToken() {
+  // Double-submit cookie: read the non-httponly ays_csrf cookie set
+  // by the backend on login and send it back as X-CSRF-Token. A
+  // cross-origin attacker cannot read this cookie (SOP), so they
+  // cannot forge a matching header even though the browser will
+  // attach the cookie on a forged request.
+  const match = document.cookie.match(/(?:^|;\s*)ays_csrf=([^;]+)/);
+  return match ? decodeURIComponent(match[1]) : '';
+}
+
+function withCsrf(method, path, headers) {
+  const m = (method || 'GET').toUpperCase();
+  if (SAFE_METHODS.has(m) || CSRF_EXEMPT_PATHS.has(path)) return headers;
+  return { ...headers, 'X-CSRF-Token': getCsrfToken() };
+}
 
 async function request(path, opts = {}) {
+  const headers = withCsrf(opts.method, path, {
+    'Content-Type': 'application/json',
+    ...opts.headers,
+  });
   const res = await fetch(BASE + path, {
     credentials: 'include',
-    headers: { 'Content-Type': 'application/json', ...opts.headers },
     ...opts,
+    headers,
   });
   if (res.status === 401) {
     // Session expired
@@ -48,7 +71,10 @@ export const api = {
     form.append('name', name);
     form.append('file', file);
     return fetch(BASE + '/scripts/import', {
-      method: 'POST', credentials: 'include', body: form,
+      method: 'POST',
+      credentials: 'include',
+      headers: { 'X-CSRF-Token': getCsrfToken() },
+      body: form,
     }).then(r => {
       if (r.status === 401) { window.dispatchEvent(new CustomEvent('ays:logout')); throw new Error('Session expired'); }
       if (!r.ok) return r.text().then(t => { throw new Error(`${r.status}: ${t}`); });

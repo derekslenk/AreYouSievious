@@ -67,7 +67,11 @@ async def test_import_script_does_not_block_event_loop():
         username="user@example.com",
         password="hunter2",
     )
-    cookies = {app_mod.SESSION_COOKIE: token}
+    csrf_token = "test-csrf-token-value"
+    cookies = {
+        app_mod.SESSION_COOKIE: token,
+        "ays_csrf": csrf_token,
+    }
 
     with patch.object(app_mod, "SieveClient", side_effect=_slow_sieve_client):
         transport = httpx.ASGITransport(app=app_mod.app)
@@ -82,6 +86,7 @@ async def test_import_script_does_not_block_event_loop():
                     "/api/scripts/import",
                     data={"name": f"rule_{idx}"},
                     files={"file": (f"rule_{idx}.sieve", b"# rule\n", "application/sieve")},
+                    headers={"X-CSRF-Token": csrf_token},
                 )
 
             async def do_status() -> tuple[httpx.Response, float]:
