@@ -63,6 +63,7 @@ async def test_import_script_does_not_block_event_loop():
     """
     token = sessions.create(
         host="imap.example.com",
+        host_ip="93.184.216.34",
         username="user@example.com",
         password="hunter2",
     )

@@ -49,6 +49,9 @@ Open `http://localhost:8091` and log in with your IMAP credentials.
 | `AYS_CORS_ORIGINS` | `https://areyousievious.com` | Comma-separated allowed origins |
 | `AYS_SECURE_COOKIES` | _(unset)_ | Set to `true` when behind HTTPS reverse proxy |
 | `AYS_IMAP_INSECURE` | _(unset)_ | ⚠️ **Testing only.** `1` / `true` / `yes` disables outbound IMAP TLS chain + hostname verification (for self-signed mail servers). Leaving this unset is mandatory in production — without it, an on-path attacker can MITM the IMAP login and steal credentials (CWE-295). |
+| `AYS_TRUSTED_PROXIES` | _(unset)_ | CSV of CIDRs that may set `X-Forwarded-For` / `X-Real-IP` (e.g. `127.0.0.1/32,10.0.0.0/8`). When unset, those headers are ignored and the rate limiter uses the direct peer — required when the app is exposed without a reverse proxy or any caller can spoof the headers to bypass throttling (CWE-348). |
+| `AYS_SIEVE_CONNECT_TIMEOUT` | `10` | Seconds before an outbound ManageSieve TCP connect aborts. A blackhole mail server would otherwise pin the threadpool worker for the OS default (~2 min). |
+| `AYS_SIEVE_IO_TIMEOUT` | `30` | Seconds before an outbound ManageSieve read or write aborts on a connected socket. |
 
 ## Quick Start (Manual)
 

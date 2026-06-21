@@ -71,6 +71,7 @@ def test_imap_client_enter_passes_ssl_context_kwarg():
     session = Session(
         token="t",
         host="imap.example.com",
+        host_ip="93.184.216.34",
         port_imap=993,
         port_sieve=4190,
         username="user@example.com",
@@ -78,7 +79,10 @@ def test_imap_client_enter_passes_ssl_context_kwarg():
         created_at=0.0,
         last_used=0.0,
     )
-    with patch.object(imap_client.imaplib, "IMAP4_SSL") as mock_ssl:
+    with (
+        patch.object(imap_client, "assert_host_resolves_to", lambda *a, **kw: None),
+        patch.object(imap_client.imaplib, "IMAP4_SSL") as mock_ssl,
+    ):
         mock_conn = MagicMock()
         mock_ssl.return_value = mock_conn
         with imap_client.IMAPClient(session):

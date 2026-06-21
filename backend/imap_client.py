@@ -9,6 +9,7 @@ import re
 import ssl
 
 from auth import Session
+from ssrf import assert_host_resolves_to
 
 _log = logging.getLogger("ays.imap")
 
@@ -60,6 +61,7 @@ class IMAPClient:
         self._conn = None
 
     def __enter__(self):
+        assert_host_resolves_to(self.session.host, self.session.host_ip)
         self._conn = imaplib.IMAP4_SSL(
             self.session.host,
             self.session.port_imap,

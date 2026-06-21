@@ -11,7 +11,6 @@ import imaplib
 import ipaddress
 import os
 import re
-import socket
 import ssl
 import time
 from collections import defaultdict
@@ -20,7 +19,7 @@ from pathlib import Path
 from auth import Session, sessions
 from fastapi import FastAPI, File, Form, HTTPException, Request, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from imap_client import IMAP_TIMEOUT, TLS_CONTEXT, IMAPClient
 from managesieve_client import SieveClient
 from pydantic import BaseModel, field_validator
@@ -30,6 +29,7 @@ from sieve_transform import (
     parse_sieve,
     script_to_json,
 )
+from ssrf import HostValidationError, assert_host_resolves_to, validate_host
 
 # ── Rate limiter ──
 
@@ -57,24 +57,72 @@ class RateLimiter:
 _login_limiter = RateLimiter(max_attempts=5, window_seconds=300)
 
 
-# ── SSRF protection ──
+# ── Rate-limit client-IP detection (areyousievious-jt2) ──
 
 
-def _validate_host(host: str) -> str:
-    """Validate that host is not a private/reserved IP (SSRF protection)."""
+def _parse_trusted_networks() -> list[ipaddress._BaseNetwork]:
+    """Parse AYS_TRUSTED_PROXIES (CSV of CIDRs) into a list of networks.
+
+    Invalid entries are silently skipped — operator typo shouldn't take the
+    app down. Empty env → empty list → proxy headers are NEVER trusted.
+    """
+    raw = os.environ.get("AYS_TRUSTED_PROXIES", "").strip()
+    networks: list[ipaddress._BaseNetwork] = []
+    for cidr in (c.strip() for c in raw.split(",") if c.strip()):
+        try:
+            networks.append(ipaddress.ip_network(cidr, strict=False))
+        except ValueError:
+            continue
+    return networks
+
+
+def _ip_in_networks(ip_str: str, networks: list[ipaddress._BaseNetwork]) -> bool:
     try:
-        # Resolve hostname to IP
-        resolved = socket.getaddrinfo(host, None, socket.AF_UNSPEC, socket.SOCK_STREAM)
-        for family, _, _, _, sockaddr in resolved:  # noqa: B007
-            ip = ipaddress.ip_address(sockaddr[0])
-            if ip.is_private or ip.is_loopback or ip.is_reserved or ip.is_link_local:
-                raise HTTPException(400, "Connection to private/internal addresses is not allowed")
-    except socket.gaierror:
-        raise HTTPException(400, f"Cannot resolve hostname: {host}")  # noqa: B904
-    return host
+        ip = ipaddress.ip_address(ip_str)
+    except ValueError:
+        return False
+    return any(ip in net for net in networks)
+
+
+def _get_client_ip(request: Request) -> str:
+    """Determine the rate-limit key (real client IP) honoring AYS_TRUSTED_PROXIES.
+
+    A direct client (no trusted proxy in front) controls its own request
+    headers, so X-Forwarded-For / X-Real-IP are spoofable and would let
+    any caller bypass the login throttle by rotating fake IPs (Sec H-7).
+    We honor those headers ONLY when the immediate peer
+    (`request.client.host`) is itself in an AYS_TRUSTED_PROXIES CIDR.
+
+    When trusted, we walk X-Forwarded-For right-to-left, skipping further
+    trusted-proxy hops — the first untrusted entry is the real client.
+    """
+    direct_ip = request.client.host if request.client else "unknown"
+    trusted = _parse_trusted_networks()
+    if not trusted or not _ip_in_networks(direct_ip, trusted):
+        return direct_ip
+
+    xff = request.headers.get("x-forwarded-for", "").strip()
+    if xff:
+        hops = [h.strip() for h in xff.split(",") if h.strip()]
+        for hop in reversed(hops):
+            if not _ip_in_networks(hop, trusted):
+                return hop
+        return hops[0] if hops else direct_ip
+
+    real_ip = request.headers.get("x-real-ip", "").strip()
+    if real_ip:
+        return real_ip
+    return direct_ip
 
 
 app = FastAPI(title="AreYouSievious", version="0.1.0")
+
+
+@app.exception_handler(HostValidationError)
+async def _host_validation_handler(_request: Request, exc: HostValidationError):
+    """Surface SSRF-guard rejections as 400s instead of generic 500s."""
+    return JSONResponse(status_code=400, content={"detail": str(exc)})
+
 
 _cors_origins = os.environ.get("AYS_CORS_ORIGINS", "https://areyousievious.com")
 app.add_middleware(
@@ -148,19 +196,13 @@ class LoginRequest(BaseModel):
 @app.post("/api/auth/login")
 def login(req: LoginRequest, request: Request, response: Response):
     """Authenticate with IMAP credentials."""
-    # Rate limit by IP
-    client_ip = request.headers.get(
-        "x-real-ip", request.client.host if request.client else "unknown"
-    )
+    client_ip = _get_client_ip(request)
     if not _login_limiter.check(client_ip):
         raise HTTPException(429, "Too many login attempts. Try again in 5 minutes.")
 
-    # SSRF protection — reject private/internal IPs
-    _validate_host(req.host)
+    host_ip = validate_host(req.host)
+    assert_host_resolves_to(req.host, host_ip)
 
-    # Validate credentials against IMAP. ssl_context + timeout are critical:
-    # without them the connection accepts any cert (MITM, Security C-1) and a
-    # slow upstream can pin this worker indefinitely (Security H-2).
     try:
         conn = imaplib.IMAP4_SSL(
             req.host,
@@ -179,6 +221,7 @@ def login(req: LoginRequest, request: Request, response: Response):
 
     token = sessions.create(
         host=req.host,
+        host_ip=host_ip,
         username=req.username,
         password=req.password,
         port_imap=req.port_imap,
@@ -208,7 +251,11 @@ def logout(request: Request, response: Response):
 async def auth_status(request: Request):
     try:
         session = get_session(request)
-        return {"authenticated": True, "username": session.username, "host": session.host}
+        return {
+            "authenticated": True,
+            "username": session.username,
+            "host": session.host,
+        }
     except HTTPException:
         return {"authenticated": False}
 
