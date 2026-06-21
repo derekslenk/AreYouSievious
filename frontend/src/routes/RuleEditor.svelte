@@ -5,7 +5,7 @@
     view, currentScript, currentScriptName, folders, showToast,
   } from '../lib/stores.js';
   import { sortable } from '../lib/sortable.js';
-  import { arrayMove } from '../lib/utils.js';
+  import { arrayMove, rebuildOrder } from '../lib/utils.js';
   import ConditionBuilder from '../components/ConditionBuilder.svelte';
   import ActionBuilder from '../components/ActionBuilder.svelte';
   import FolderPicker from '../components/FolderPicker.svelte';
@@ -75,20 +75,21 @@
       conditions: [{ id: Math.random().toString(36).slice(2, 10), header: 'from', match_type: 'contains', value: '', address_test: true, negate: false }],
       actions: [{ id: Math.random().toString(36).slice(2, 10), type: 'fileinto', argument: 'INBOX' }],
     };
-    script.rules = [...script.rules, rule];
-    script.order = [...script.order, ['rule', script.rules.length - 1]];
-    selectedIdx = script.rules.length - 1;
+    const oldRules = script.rules;
+    const newRules = [...oldRules, rule];
+    script.rules = newRules;
+    script.order = rebuildOrder(script.order, oldRules, newRules);
+    selectedIdx = newRules.length - 1;
     dirty = true;
   }
 
   function deleteRule(idx) {
     if (!confirm(`Delete rule "${script.rules[idx].name || 'Untitled'}"?`)) return;
-    script.rules = script.rules.filter((_, i) => i !== idx);
-    // Update order: remove the deleted rule entry and adjust remaining rule indices
-    script.order = script.order
-      .filter(([type, i]) => !(type === 'rule' && i === idx))
-      .map(([type, i]) => type === 'rule' && i > idx ? ['rule', i - 1] : [type, i]);
-    if (selectedIdx >= script.rules.length) selectedIdx = Math.max(0, script.rules.length - 1);
+    const oldRules = script.rules;
+    const newRules = oldRules.filter((_, i) => i !== idx);
+    script.rules = newRules;
+    script.order = rebuildOrder(script.order, oldRules, newRules);
+    if (selectedIdx >= newRules.length) selectedIdx = Math.max(0, newRules.length - 1);
     dirty = true;
   }
 
@@ -99,24 +100,10 @@
   }
 
   function reorderRule(oldIndex, newIndex) {
-    script.rules = arrayMove(script.rules, oldIndex, newIndex);
-    // Remap script.order: collect rule entries, apply same permutation, renumber
-    const ruleOrderIndices = [];
-    script.order.forEach((entry, i) => {
-      if (entry[0] === 'rule') ruleOrderIndices.push(i);
-    });
-    const ruleEntries = ruleOrderIndices.map(i => script.order[i]);
-    const reordered = arrayMove(ruleEntries, oldIndex, newIndex);
-    const newOrder = [...script.order];
-    ruleOrderIndices.forEach((orderIdx, i) => {
-      newOrder[orderIdx] = reordered[i];
-    });
-    // Renumber rule indices sequentially
-    let ruleIdx = 0;
-    script.order = newOrder.map(([type, idx]) => {
-      if (type === 'rule') return ['rule', ruleIdx++];
-      return [type, idx];
-    });
+    const oldRules = script.rules;
+    const newRules = arrayMove(oldRules, oldIndex, newIndex);
+    script.rules = newRules;
+    script.order = rebuildOrder(script.order, oldRules, newRules);
     selectedIdx = newIndex;
     dirty = true;
   }

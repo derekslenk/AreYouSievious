@@ -10,7 +10,7 @@ FastAPI application that serves the Svelte SPA as static files and provides a RE
 | File | Description |
 |------|-------------|
 | `app.py` | FastAPI app: auth endpoints, script CRUD, folder operations, static file serving |
-| `auth.py` | Session management with in-memory encrypted credentials (30 min timeout) |
+| `auth.py` | Session management with in-memory credentials (plaintext for session lifetime, 30 min timeout) |
 | `sieve_transform.py` | Core Sieve parser (`SieveParser`), generator (`SieveGenerator`), and data models (`Rule`, `Condition`, `Action`, `SieveScript`) |
 | `managesieve_client.py` | `SieveClient` context manager for ManageSieve protocol (port 4190) |
 | `imap_client.py` | `IMAPClient` context manager for IMAP operations (port 993) |
@@ -49,7 +49,6 @@ FastAPI application that serves the Svelte SPA as static files and provides a RE
 
 ### External
 - `fastapi` + `uvicorn` — Web framework and ASGI server
-- `cryptography` — Fernet encryption for session credentials
 - `python-multipart` — File upload handling
 
 <!-- MANUAL: -->

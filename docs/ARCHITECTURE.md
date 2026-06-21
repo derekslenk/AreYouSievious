@@ -45,7 +45,7 @@ ManageSieve    IMAP
 1. User enters: mail server host, username, password
 2. Backend validates against IMAP (port 993)
 3. On success, creates a session token (httponly cookie)
-4. Session holds encrypted creds in memory (never persisted to disk)
+4. Session holds credentials in process memory in plaintext (never persisted to disk). The host is assumed single-tenant; if you co-tenant, any process able to read the uvicorn process can recover passwords.
 5. Session expires after configurable idle timeout (default 30 min)
 6. All subsequent API calls use the session to connect to ManageSieve/IMAP on-demand
 
@@ -244,7 +244,7 @@ Optionally: launchd plist for auto-start on metastasis.
 ## Design Principles
 
 1. **No database** — all state lives on the mail server (ManageSieve scripts + IMAP folders)
-2. **No stored credentials** — session-only auth, encrypted in memory
+2. **No stored credentials** — session-only auth in process memory (plaintext for session lifetime; not persisted)
 3. **Lossless round-trip** — never destroy Sieve constructs we don't understand
 4. **Progressive disclosure** — visual builder for simple rules, raw editor for complex ones
 5. **Single account focus** — but architecture doesn't prevent multi-account later
