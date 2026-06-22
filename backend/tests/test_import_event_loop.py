@@ -29,6 +29,7 @@ sys.path.insert(0, str(BACKEND))
 
 import app as app_mod
 from auth import sessions
+from dependencies import SESSION_COOKIE  # moved out of app.py in u40 router split
 
 SLOW_SECONDS = 1.0
 N_CONCURRENT = 5
@@ -69,7 +70,7 @@ async def test_import_script_does_not_block_event_loop():
     )
     csrf_token = "test-csrf-token-value"
     cookies = {
-        app_mod.SESSION_COOKIE: token,
+        SESSION_COOKIE: token,
         "ays_csrf": csrf_token,
     }
 

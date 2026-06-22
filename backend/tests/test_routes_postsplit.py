@@ -60,10 +60,23 @@ EXPECTED_ROUTES: frozenset[tuple[str, str]] = frozenset(
 )
 
 
+def _flatten_routes(routes):
+    """Yield every APIRoute, descending through FastAPI's _IncludedRouter
+    wrappers. FastAPI wraps include_router() calls in a _IncludedRouter
+    whenever middleware was added before the include — the actual
+    APIRoute instances live on `wrapper.original_router.routes`."""
+    for route in routes:
+        original = getattr(route, "original_router", None)
+        if original is not None:
+            yield from _flatten_routes(original.routes)
+        else:
+            yield route
+
+
 def _registered_routes() -> set[tuple[str, str]]:
     """Return every (method, path) pair currently mounted on the app."""
     pairs: set[tuple[str, str]] = set()
-    for route in app.routes:
+    for route in _flatten_routes(app.routes):
         if not isinstance(route, APIRoute):
             continue
         for method in route.methods or set():
