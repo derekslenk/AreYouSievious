@@ -10,7 +10,7 @@ Once version tags exist, only the latest tagged release is supported. Older tags
 
 ## Reporting a Vulnerability
 
-Email **derek@slenk.com** with:
+Email **derek.slenk@gmail.com** with:
 
 - A description of the vulnerability and affected component
 - Steps to reproduce or a proof-of-concept
