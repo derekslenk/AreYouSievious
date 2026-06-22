@@ -10,21 +10,15 @@ import argparse
 import os
 from pathlib import Path
 
-from api_models import (
-    CreateFolderRequest,
-    FolderListItem,
-    OkResponse,
-)
-from dependencies import get_session
-from fastapi import FastAPI, HTTPException, Request, Response
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
-from imap_client import IMAPClient
 from middleware import (
     BodySizeLimitMiddleware,
     CSRFMiddleware,
 )
 from routers.auth import router as auth_router
+from routers.folders import router as folders_router
 from routers.scripts import router as scripts_router
 from ssrf import HostValidationError
 
@@ -60,26 +54,7 @@ app.add_middleware(
 
 app.include_router(auth_router)
 app.include_router(scripts_router)
-
-
-# ── Folder endpoints ──
-
-
-@app.get("/api/folders", response_model=list[FolderListItem])
-def list_folders(request: Request):
-    session = get_session(request)
-    with IMAPClient(session) as client:
-        return client.list_folders()
-
-
-@app.post("/api/folders", response_model=OkResponse, response_model_exclude_none=True)
-def create_folder(req: CreateFolderRequest, request: Request):
-    session = get_session(request)
-    with IMAPClient(session) as client:
-        ok = client.create_folder(req.name)
-    if not ok:
-        raise HTTPException(400, "Failed to create folder")
-    return {"ok": True, "name": req.name}
+app.include_router(folders_router)
 
 
 # ── Static file serving ──
