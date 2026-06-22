@@ -28,7 +28,7 @@ from api_models import (
     ScriptRawResponse,
     ScriptResponse,
 )
-from auth import Session, sessions
+from dependencies import SESSION_COOKIE, get_session
 from fastapi import FastAPI, File, Form, HTTPException, Request, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
@@ -40,6 +40,7 @@ from middleware import (
     CSRFMiddleware,
     generate_csrf_token,
 )
+from auth import sessions
 from sieve_transform import (
     generate_sieve,
     json_to_script,
@@ -162,7 +163,6 @@ app.add_middleware(
     allow_credentials=True,
 )
 
-SESSION_COOKIE = "ays_session"
 MAX_UPLOAD_BYTES = 1 * 1024 * 1024  # 1 MB
 
 
@@ -172,25 +172,6 @@ def _is_secure(request: Request) -> bool:
         return True
     proto = request.headers.get("x-forwarded-proto", "")
     return proto == "https"
-
-
-# ── Helpers ──
-
-
-def get_session(request: Request) -> Session:
-    """Extract and validate session from cookie or header."""
-    token = request.cookies.get(SESSION_COOKIE)
-    if not token:
-        # Also check Authorization header
-        auth = request.headers.get("Authorization", "")
-        if auth.startswith("Bearer "):
-            token = auth[7:]
-    if not token:
-        raise HTTPException(401, "Not authenticated")
-    session = sessions.get(token)
-    if not session:
-        raise HTTPException(401, "Session expired")
-    return session
 
 
 # ── Auth endpoints ──
