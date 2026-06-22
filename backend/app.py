@@ -10,16 +10,18 @@ import argparse
 import os
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import JSONResponse
 from middleware import (
     BodySizeLimitMiddleware,
     CSRFMiddleware,
 )
+from routers import static as static_router_mod
 from routers.auth import router as auth_router
 from routers.folders import router as folders_router
 from routers.scripts import router as scripts_router
+from routers.static import router as static_router
 from ssrf import HostValidationError
 
 _is_dev = os.environ.get("AYS_ENV", "prod").strip().lower() == "dev"
@@ -55,32 +57,7 @@ app.add_middleware(
 app.include_router(auth_router)
 app.include_router(scripts_router)
 app.include_router(folders_router)
-
-
-# ── Static file serving ──
-
-static_dir: Path | None = None
-
-
-@app.get("/{full_path:path}")
-def serve_frontend(full_path: str):
-    """Serve Svelte build files, fallback to index.html for SPA routing."""
-    if not static_dir:
-        raise HTTPException(404)
-
-    file_path = (static_dir / full_path).resolve()
-    try:
-        file_path.relative_to(static_dir.resolve())
-    except ValueError:
-        raise HTTPException(403, "Access denied")  # noqa: B904
-    if file_path.is_file():
-        return FileResponse(file_path)
-
-    index = static_dir / "index.html"
-    if index.is_file():
-        return FileResponse(index)
-
-    raise HTTPException(404)
+app.include_router(static_router)
 
 
 def main():
@@ -92,12 +69,13 @@ def main():
     parser.add_argument("--static", type=str, help="Path to frontend build dir")
     args = parser.parse_args()
 
-    global static_dir
     if args.static:
-        static_dir = Path(args.static).resolve()
-        if not static_dir.is_dir():
-            print(f"Warning: static dir {static_dir} not found")
-            static_dir = None
+        resolved = Path(args.static).resolve()
+        if not resolved.is_dir():
+            print(f"Warning: static dir {resolved} not found")
+            static_router_mod.configure(None)
+        else:
+            static_router_mod.configure(resolved)
 
     uvicorn.run(app, host=args.host, port=args.port)
 
