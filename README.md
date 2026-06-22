@@ -40,6 +40,15 @@ cd AreYouSievious
 docker compose up -d --build
 ```
 
+Or run the published image:
+
+```bash
+docker run -d -p 8091:8091 \
+  -e AYS_IMAP_HOST=mail.example.com \
+  -e AYS_IMAP_USER=you@example.com \
+  ghcr.io/derekslenk/areyousievious:latest
+```
+
 Open `http://localhost:8091` and log in with your IMAP credentials.
 
 ### Environment Variables
