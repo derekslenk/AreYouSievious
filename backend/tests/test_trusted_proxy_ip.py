@@ -23,7 +23,7 @@ import pytest
 BACKEND = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(BACKEND))
 
-import app as app_mod
+from routers import auth as app_mod  # _get_client_ip moved here in u40 router split
 
 
 def _fake_request(client_host: str | None, headers: dict[str, str] | None = None):

@@ -29,6 +29,8 @@ sys.path.insert(0, str(BACKEND))
 
 import app as app_mod
 from auth import sessions
+from dependencies import SESSION_COOKIE  # moved out of app.py in u40 router split
+from routers import scripts as scripts_mod  # SieveClient is imported here post-u40
 
 SLOW_SECONDS = 1.0
 N_CONCURRENT = 5
@@ -69,11 +71,11 @@ async def test_import_script_does_not_block_event_loop():
     )
     csrf_token = "test-csrf-token-value"
     cookies = {
-        app_mod.SESSION_COOKIE: token,
+        SESSION_COOKIE: token,
         "ays_csrf": csrf_token,
     }
 
-    with patch.object(app_mod, "SieveClient", side_effect=_slow_sieve_client):
+    with patch.object(scripts_mod, "SieveClient", side_effect=_slow_sieve_client):
         transport = httpx.ASGITransport(app=app_mod.app)
         async with httpx.AsyncClient(
             transport=transport,
