@@ -42,6 +42,17 @@ def serve_frontend(full_path: str):
     if not static_dir:
         raise HTTPException(404)
 
+    # Path-traversal containment. `full_path` is user-controlled (catch-all
+    # route param), but the `resolve() + relative_to()` pair is the canonical
+    # Python guard: any payload that escapes `static_dir` after resolution
+    # raises ValueError and we return 403. Phase 2 of the security audit
+    # empirically verified this against 6 payloads (raw `../`, URL-encoded
+    # `%2e%2e`, double-encoded `%252e%252e`, etc.) — all 404'd.
+    # See .full-review/05-final-report.md:220 and 02a-security-findings.md:17.
+    # CodeQL's py/path-injection flags the user input reaching Path() and does
+    # not recognize the post-construction containment check; dismissed as a
+    # false positive. Wave 2 (bd:areyousievious-4pr) replaces this handler
+    # with FastAPI's StaticFiles(html=True), which CodeQL recognizes natively.
     file_path = (static_dir / full_path).resolve()
     try:
         file_path.relative_to(static_dir.resolve())
