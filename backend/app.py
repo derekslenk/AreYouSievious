@@ -16,13 +16,30 @@ import time
 from collections import defaultdict
 from pathlib import Path
 
+from api_models import (
+    AuthStatusResponse,
+    CreateFolderRequest,
+    FolderListItem,
+    LoginRequest,
+    OkResponse,
+    SaveRawRequest,
+    SaveScriptRequest,
+    ScriptListItem,
+    ScriptRawResponse,
+    ScriptResponse,
+)
 from auth import Session, sessions
 from fastapi import FastAPI, File, Form, HTTPException, Request, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from imap_client import IMAP_TIMEOUT, TLS_CONTEXT, IMAPClient
 from managesieve_client import SieveClient
-from pydantic import BaseModel, field_validator
+from middleware import (
+    CSRF_COOKIE,
+    BodySizeLimitMiddleware,
+    CSRFMiddleware,
+    generate_csrf_token,
+)
 from sieve_transform import (
     generate_sieve,
     json_to_script,
@@ -115,7 +132,17 @@ def _get_client_ip(request: Request) -> str:
     return direct_ip
 
 
-app = FastAPI(title="AreYouSievious", version="0.1.0")
+_is_dev = os.environ.get("AYS_ENV", "prod").strip().lower() == "dev"
+_max_body_bytes = int(os.environ.get("AYS_MAX_BODY_BYTES", str(1 * 1024 * 1024)))
+
+
+app = FastAPI(
+    title="AreYouSievious",
+    version="0.1.0",
+    docs_url="/docs" if _is_dev else None,
+    redoc_url="/redoc" if _is_dev else None,
+    openapi_url="/openapi.json" if _is_dev else None,
+)
 
 
 @app.exception_handler(HostValidationError)
@@ -124,12 +151,14 @@ async def _host_validation_handler(_request: Request, exc: HostValidationError):
     return JSONResponse(status_code=400, content={"detail": str(exc)})
 
 
+app.add_middleware(CSRFMiddleware)
+app.add_middleware(BodySizeLimitMiddleware, max_bytes=_max_body_bytes)
 _cors_origins = os.environ.get("AYS_CORS_ORIGINS", "https://areyousievious.com")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[o.strip() for o in _cors_origins.split(",")],
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    allow_headers=["Content-Type", "Cookie", "X-CSRF-Token"],
     allow_credentials=True,
 )
 
@@ -167,33 +196,7 @@ def get_session(request: Request) -> Session:
 # ── Auth endpoints ──
 
 
-class LoginRequest(BaseModel):
-    host: str
-    username: str
-    password: str
-    port_imap: int = 993
-    port_sieve: int = 4190
-
-    @field_validator("host")
-    @classmethod
-    def host_must_be_valid(cls, v: str) -> str:
-        v = v.strip().lower()
-        if not v or len(v) > 253:
-            raise ValueError("Invalid hostname")
-        # Block obviously bad patterns
-        if v in ("localhost", "0.0.0.0", "[::]"):
-            raise ValueError("Connection to local addresses is not allowed")
-        return v
-
-    @field_validator("port_imap", "port_sieve")
-    @classmethod
-    def port_must_be_valid(cls, v: int) -> int:
-        if not (1 <= v <= 65535):
-            raise ValueError("Invalid port number")
-        return v
-
-
-@app.post("/api/auth/login")
+@app.post("/api/auth/login", response_model=OkResponse, response_model_exclude_none=True)
 def login(req: LoginRequest, request: Request, response: Response):
     """Authenticate with IMAP credentials."""
     client_ip = _get_client_ip(request)
@@ -227,27 +230,37 @@ def login(req: LoginRequest, request: Request, response: Response):
         port_imap=req.port_imap,
         port_sieve=req.port_sieve,
     )
+    secure = _is_secure(request)
     response.set_cookie(
         SESSION_COOKIE,
         token,
         httponly=True,
         samesite="strict",
         max_age=1800,
-        secure=_is_secure(request),
+        secure=secure,
+    )
+    response.set_cookie(
+        CSRF_COOKIE,
+        generate_csrf_token(),
+        httponly=False,
+        samesite="strict",
+        max_age=1800,
+        secure=secure,
     )
     return {"ok": True, "username": req.username}
 
 
-@app.post("/api/auth/logout")
+@app.post("/api/auth/logout", response_model=OkResponse, response_model_exclude_none=True)
 def logout(request: Request, response: Response):
     token = request.cookies.get(SESSION_COOKIE)
     if token:
         sessions.destroy(token)
     response.delete_cookie(SESSION_COOKIE)
+    response.delete_cookie(CSRF_COOKIE)
     return {"ok": True}
 
 
-@app.get("/api/auth/status")
+@app.get("/api/auth/status", response_model=AuthStatusResponse, response_model_exclude_none=True)
 async def auth_status(request: Request):
     try:
         session = get_session(request)
@@ -263,14 +276,14 @@ async def auth_status(request: Request):
 # ── Script endpoints ──
 
 
-@app.get("/api/scripts")
+@app.get("/api/scripts", response_model=list[ScriptListItem])
 def list_scripts(request: Request):
     session = get_session(request)
     with SieveClient(session) as client:
         return client.list_scripts()
 
 
-@app.get("/api/scripts/{name}")
+@app.get("/api/scripts/{name}", response_model=ScriptResponse)
 def get_script(name: str, request: Request):
     """Get script parsed as JSON rules."""
     session = get_session(request)
@@ -280,7 +293,7 @@ def get_script(name: str, request: Request):
     return script_to_json(script)
 
 
-@app.get("/api/scripts/{name}/raw")
+@app.get("/api/scripts/{name}/raw", response_model=ScriptRawResponse)
 def get_script_raw(name: str, request: Request):
     """Get raw Sieve text."""
     session = get_session(request)
@@ -303,7 +316,7 @@ def export_script(name: str, request: Request):
     )
 
 
-@app.post("/api/scripts/import")
+@app.post("/api/scripts/import", response_model=OkResponse, response_model_exclude_none=True)
 def import_script(
     request: Request,
     name: str = Form(...),
@@ -327,14 +340,7 @@ def import_script(
     return {"ok": True, "name": name}
 
 
-class SaveScriptRequest(BaseModel):
-    rules: list
-    raw_blocks: list = []
-    order: list = []
-    requires: list = []
-
-
-@app.put("/api/scripts/{name}")
+@app.put("/api/scripts/{name}", response_model=OkResponse, response_model_exclude_none=True)
 def save_script(name: str, req: SaveScriptRequest, request: Request):
     """Save script from JSON rules (generates Sieve)."""
     session = get_session(request)
@@ -345,11 +351,7 @@ def save_script(name: str, req: SaveScriptRequest, request: Request):
     return {"ok": True, "sieve": sieve_text}
 
 
-class SaveRawRequest(BaseModel):
-    content: str
-
-
-@app.put("/api/scripts/{name}/raw")
+@app.put("/api/scripts/{name}/raw", response_model=OkResponse, response_model_exclude_none=True)
 def save_script_raw(name: str, req: SaveRawRequest, request: Request):
     """Save raw Sieve text directly."""
     session = get_session(request)
@@ -358,7 +360,9 @@ def save_script_raw(name: str, req: SaveRawRequest, request: Request):
     return {"ok": True}
 
 
-@app.post("/api/scripts/{name}/activate")
+@app.post(
+    "/api/scripts/{name}/activate", response_model=OkResponse, response_model_exclude_none=True
+)
 def activate_script(name: str, request: Request):
     session = get_session(request)
     with SieveClient(session) as client:
@@ -366,7 +370,7 @@ def activate_script(name: str, request: Request):
     return {"ok": True}
 
 
-@app.delete("/api/scripts/{name}")
+@app.delete("/api/scripts/{name}", response_model=OkResponse, response_model_exclude_none=True)
 def delete_script(name: str, request: Request):
     session = get_session(request)
     with SieveClient(session) as client:
@@ -377,18 +381,14 @@ def delete_script(name: str, request: Request):
 # ── Folder endpoints ──
 
 
-@app.get("/api/folders")
+@app.get("/api/folders", response_model=list[FolderListItem])
 def list_folders(request: Request):
     session = get_session(request)
     with IMAPClient(session) as client:
         return client.list_folders()
 
 
-class CreateFolderRequest(BaseModel):
-    name: str
-
-
-@app.post("/api/folders")
+@app.post("/api/folders", response_model=OkResponse, response_model_exclude_none=True)
 def create_folder(req: CreateFolderRequest, request: Request):
     session = get_session(request)
     with IMAPClient(session) as client:
