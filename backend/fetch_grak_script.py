@@ -1,11 +1,24 @@
 #!/usr/bin/env python3
-"""Fetch the active grak sieve script for testing."""
+"""Fetch the active sieve scripts from a remote ManageSieve server for local testing.
+
+Required environment variables:
+    AYS_FETCH_HOST  — ManageSieve hostname (e.g. mail.example.com)
+    AYS_FETCH_USER  — account username/email
+
+Reads the password interactively via getpass. Outputs to test_scripts/<name>.sieve.
+
+Usage:
+    AYS_FETCH_HOST=mail.example.com AYS_FETCH_USER=you@example.com \\
+        python backend/fetch_grak_script.py
+"""
+
+import os
 
 from sievelib.managesieve import Client
 
-HOST = "mail.slenk.email"
+HOST = os.environ["AYS_FETCH_HOST"]
 PORT = 4190
-USER = "derek@slenk.com"
+USER = os.environ["AYS_FETCH_USER"]
 
 
 def fetch():
@@ -26,7 +39,5 @@ def fetch():
 
 
 if __name__ == "__main__":
-    import os
-
     os.makedirs("test_scripts", exist_ok=True)
     fetch()
