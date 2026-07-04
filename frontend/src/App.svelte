@@ -3,10 +3,11 @@
   import { api } from './lib/api.js';
   import { user, view, toast } from './lib/stores.js';
   import Login from './routes/Login.svelte';
-  import Dashboard from './routes/Dashboard.svelte';
-  import RuleEditor from './routes/RuleEditor.svelte';
-  import RawEditor from './routes/RawEditor.svelte';
-  import Privacy from './routes/Privacy.svelte';
+
+  const lazyDashboard = () => import('./routes/Dashboard.svelte').then(m => m.default);
+  const lazyRuleEditor = () => import('./routes/RuleEditor.svelte').then(m => m.default);
+  const lazyRawEditor = () => import('./routes/RawEditor.svelte').then(m => m.default);
+  const lazyPrivacy = () => import('./routes/Privacy.svelte').then(m => m.default);
 
   let skipPush = false;
 
@@ -48,13 +49,37 @@
   {#if $view === 'login'}
     <Login />
   {:else if $view === 'dashboard'}
-    <Dashboard />
+    {#await lazyDashboard()}
+      <div class="route-loading">Loading…</div>
+    {:then Component}
+      <svelte:component this={Component} />
+    {:catch err}
+      <div class="route-error">Failed to load Dashboard: {err.message}</div>
+    {/await}
   {:else if $view === 'editor'}
-    <RuleEditor />
+    {#await lazyRuleEditor()}
+      <div class="route-loading">Loading…</div>
+    {:then Component}
+      <svelte:component this={Component} />
+    {:catch err}
+      <div class="route-error">Failed to load Rule Editor: {err.message}</div>
+    {/await}
   {:else if $view === 'raw'}
-    <RawEditor />
+    {#await lazyRawEditor()}
+      <div class="route-loading">Loading…</div>
+    {:then Component}
+      <svelte:component this={Component} />
+    {:catch err}
+      <div class="route-error">Failed to load Raw Editor: {err.message}</div>
+    {/await}
   {:else if $view === 'privacy'}
-    <Privacy />
+    {#await lazyPrivacy()}
+      <div class="route-loading">Loading…</div>
+    {:then Component}
+      <svelte:component this={Component} />
+    {:catch err}
+      <div class="route-error">Failed to load Privacy: {err.message}</div>
+    {/await}
   {/if}
 </main>
 
@@ -106,6 +131,13 @@
   }
   .toast.error { background: var(--danger); }
   @keyframes slideIn { from { transform: translateY(10px); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
+
+  .route-loading {
+    padding: 2rem 1rem; text-align: center; color: var(--text2); font-size: 0.85rem;
+  }
+  .route-error {
+    padding: 2rem 1rem; text-align: center; color: var(--danger); font-size: 0.85rem;
+  }
 
   footer {
     text-align: center; padding: 1.5rem 0.6rem 0.6rem;
