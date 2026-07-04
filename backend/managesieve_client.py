@@ -6,6 +6,7 @@ import os
 import socket
 
 from auth import Session
+from sieve_names import validate_script_name
 from sievelib.managesieve import Client
 from ssrf import assert_host_resolves_to
 
@@ -77,6 +78,7 @@ class SieveClient:
 
     def get_script(self, name: str) -> str:
         """Get script content by name."""
+        validate_script_name(name)
         result = self._client.getscript(name)
         if isinstance(result, tuple):
             return result[-1]
@@ -84,12 +86,15 @@ class SieveClient:
 
     def put_script(self, name: str, content: str):
         """Upload/update a script."""
+        validate_script_name(name)
         self._client.putscript(name, content)
 
     def activate_script(self, name: str):
         """Set a script as active."""
+        validate_script_name(name)
         self._client.setactive(name)
 
     def delete_script(self, name: str):
         """Delete a script."""
+        validate_script_name(name)
         self._client.deletescript(name)

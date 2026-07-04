@@ -25,6 +25,7 @@ from routers.auth import router as auth_router
 from routers.folders import router as folders_router
 from routers.scripts import router as scripts_router
 from routers.static import router as static_router
+from sieve_names import ScriptNameError
 from ssrf import HostValidationError
 
 # ── Environment config ──
@@ -46,6 +47,16 @@ app = FastAPI(
 @app.exception_handler(HostValidationError)
 async def _host_validation_handler(_request: Request, exc: HostValidationError):
     """Surface SSRF-guard rejections as 400s instead of generic 500s."""
+    return JSONResponse(status_code=400, content={"detail": str(exc)})
+
+
+@app.exception_handler(ScriptNameError)
+async def _script_name_handler(_request: Request, exc: ScriptNameError):
+    """Surface ManageSieve script-name guard rejections as 400s (F-P0 fix,
+    areyousievious-2j9). The sink guard in managesieve_client._validate_name
+    raises before any sievelib call so the malformed frame never touches the
+    wire — this handler maps that rejection to a clean 400 response body so
+    the router functions don't each need a try/except."""
     return JSONResponse(status_code=400, content={"detail": str(exc)})
 
 
