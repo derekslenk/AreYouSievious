@@ -126,11 +126,29 @@ def _get_client_ip(request: Request) -> str:
 
 
 def _is_secure(request: Request) -> bool:
-    """Detect if the request arrived over HTTPS (directly or via reverse proxy)."""
+    """Detect if the request arrived over HTTPS (directly or via reverse proxy).
+
+    F-2 fix (areyousievious-av5 / CWE-290 + CWE-346): the previous
+    implementation trusted `X-Forwarded-Proto` from ANY client, so an
+    attacker over HTTP could send `X-Forwarded-Proto: https` to force
+    Secure cookies (self-DoS: browser refuses to send Secure cookies over
+    HTTP -> session breaks after login). Mirror `_get_client_ip`'s
+    trusted-proxy gate: honor the header only when the immediate peer is
+    in an AYS_TRUSTED_PROXIES CIDR.
+
+    `AYS_SECURE_COOKIES=1|true|yes` still forces True regardless of peer,
+    as the deploy escape hatch for HTTPS reverse-proxy setups that don't
+    forward `X-Forwarded-Proto`.
+    """
     if os.environ.get("AYS_SECURE_COOKIES", "").lower() in ("1", "true", "yes"):
         return True
-    proto = request.headers.get("x-forwarded-proto", "")
-    return proto == "https"
+    trusted = _parse_trusted_networks()
+    if not trusted:
+        return False
+    direct_ip = request.client.host if request.client else "unknown"
+    if not _ip_in_networks(direct_ip, trusted):
+        return False
+    return request.headers.get("x-forwarded-proto", "") == "https"
 
 
 # ── Routes ──

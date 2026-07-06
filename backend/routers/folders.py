@@ -26,8 +26,11 @@ def list_folders(request: Request):
 @router.post("", response_model=OkResponse, response_model_exclude_none=True)
 def create_folder(req: CreateFolderRequest, request: Request):
     session = get_session(request)
-    with IMAPClient(session) as client:
-        ok = client.create_folder(req.name)
+    try:
+        with IMAPClient(session) as client:
+            ok = client.create_folder(req.name)
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e
     if not ok:
         raise HTTPException(400, "Failed to create folder")
     return {"ok": True, "name": req.name}
