@@ -47,6 +47,4 @@ def validate_script_name(name: str) -> None:
     if _FORBIDDEN_SIEVE_NAME_CHARS.search(name):
         raise ScriptNameError("Script name contains forbidden characters")
     if len(name) > _MAX_SIEVE_NAME_LEN:
-        raise ScriptNameError(
-            f"Script name too long (max {_MAX_SIEVE_NAME_LEN} bytes)"
-        )
+        raise ScriptNameError(f"Script name too long (max {_MAX_SIEVE_NAME_LEN} bytes)")

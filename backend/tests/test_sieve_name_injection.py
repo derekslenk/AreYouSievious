@@ -227,8 +227,10 @@ def test_router_returns_400_on_malicious_import_name():
     token, csrf, cookies = _authed_client_cookies()
     try:
         malicious_name = 'x"\r\nDELETESCRIPT "primary'
-        with patch.object(scripts_mod.SieveClient, "__enter__", _bypass_sieve_setup), \
-             patch.object(scripts_mod.SieveClient, "__exit__", _bypass_sieve_teardown):
+        with (
+            patch.object(scripts_mod.SieveClient, "__enter__", _bypass_sieve_setup),
+            patch.object(scripts_mod.SieveClient, "__exit__", _bypass_sieve_teardown),
+        ):
             with TestClient(app_mod.app, cookies=cookies) as http_client:
                 r = http_client.post(
                     "/api/scripts/import",
@@ -256,13 +258,14 @@ def test_router_returns_400_on_malicious_activate_path():
     token, csrf, cookies = _authed_client_cookies()
     try:
         path = "/api/scripts/x%22%0D%0ASETACTIVE%20%22backdoor/activate"
-        with patch.object(scripts_mod.SieveClient, "__enter__", _bypass_sieve_setup), \
-             patch.object(scripts_mod.SieveClient, "__exit__", _bypass_sieve_teardown):
+        with (
+            patch.object(scripts_mod.SieveClient, "__enter__", _bypass_sieve_setup),
+            patch.object(scripts_mod.SieveClient, "__exit__", _bypass_sieve_teardown),
+        ):
             with TestClient(app_mod.app, cookies=cookies) as http_client:
                 r = http_client.post(path, headers={"X-CSRF-Token": csrf})
         assert r.status_code == 400, (
-            f"Expected 400 from ScriptNameError handler, got {r.status_code}: "
-            f"{r.text!r}"
+            f"Expected 400 from ScriptNameError handler, got {r.status_code}: {r.text!r}"
         )
     finally:
         sessions.destroy(token)
