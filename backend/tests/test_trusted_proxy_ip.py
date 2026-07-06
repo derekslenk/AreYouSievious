@@ -75,19 +75,49 @@ def test_trusted_peer_xff_uses_rightmost_untrusted_hop(monkeypatch):
     assert app_mod._get_client_ip(req) == "8.8.8.8"
 
 
-def test_trusted_peer_xff_falls_back_to_leftmost_when_all_hops_trusted(monkeypatch):
+def test_trusted_peer_falls_back_to_direct_ip_when_all_xff_hops_trusted(monkeypatch):
+    """All XFF hops are trusted proxies — no real client to extract. Falls
+    back to the direct peer (also trusted) rather than picking an arbitrary
+    trusted-proxy address (previously returned hops[0]). Both are safe for
+    rate-limiting; direct_ip is the honest signal (areyousievious-1vp)."""
     monkeypatch.setenv("AYS_TRUSTED_PROXIES", "127.0.0.0/8,10.0.0.0/8")
     req = _fake_request("127.0.0.1", {"x-forwarded-for": "10.1.1.1, 10.2.2.2"})
-    assert app_mod._get_client_ip(req) == "10.1.1.1"
+    assert app_mod._get_client_ip(req) == "127.0.0.1"
 
 
-def test_trusted_peer_xff_takes_precedence_over_x_real_ip(monkeypatch):
+def test_trusted_peer_x_real_ip_takes_precedence_over_xff(monkeypatch):
+    """F-10 fix: X-Real-IP is authoritative (trusted proxy sets from
+    $remote_addr; unspoofable by client), whereas XFF is only authoritative
+    when the proxy sanitises it via $proxy_add_x_forwarded_for. Sloppy proxy
+    configs (HAProxy transparent, custom nginx passing $http_x_forwarded_for
+    through) let attackers rotate leftmost XFF values to bypass rate limits.
+    Prefer X-Real-IP when both are set to close that deployment-conditional
+    bypass (areyousievious-1vp)."""
     monkeypatch.setenv("AYS_TRUSTED_PROXIES", "127.0.0.0/8")
     req = _fake_request(
         "127.0.0.1",
         {"x-forwarded-for": "8.8.8.8", "x-real-ip": "9.9.9.9"},
     )
-    assert app_mod._get_client_ip(req) == "8.8.8.8"
+    assert app_mod._get_client_ip(req) == "9.9.9.9"
+
+
+def test_rate_limit_not_bypassed_by_client_xff_when_real_ip_present(monkeypatch):
+    """F-10 regression lock: attacker rotates malicious XFF values through a
+    trusted proxy that sets X-Real-IP authoritatively. The rate-limit key
+    MUST be derived from X-Real-IP (attacker's real IP), not the attacker-
+    supplied XFF value. Prevents brute-force IMAP creds by exhausting the
+    5-attempts/5-min bucket per-XFF-value (areyousievious-1vp / CWE-300 +
+    CWE-307)."""
+    monkeypatch.setenv("AYS_TRUSTED_PROXIES", "127.0.0.0/8")
+    attacker_real_ip = "203.0.113.42"
+    for spoofed in ("1.1.1.1", "2.2.2.2", "3.3.3.3", "attacker.tld"):
+        req = _fake_request(
+            "127.0.0.1",
+            {"x-forwarded-for": spoofed, "x-real-ip": attacker_real_ip},
+        )
+        assert app_mod._get_client_ip(req) == attacker_real_ip, (
+            f"attacker rotated XFF={spoofed!r} but key must remain X-Real-IP"
+        )
 
 
 def test_trusted_peer_without_headers_uses_direct_ip(monkeypatch):
