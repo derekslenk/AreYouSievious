@@ -92,13 +92,27 @@ def _get_client_ip(request: Request) -> str:
     We honor those headers ONLY when the immediate peer
     (`request.client.host`) is itself in an AYS_TRUSTED_PROXIES CIDR.
 
-    When trusted, we walk X-Forwarded-For right-to-left, skipping further
-    trusted-proxy hops — the first untrusted entry is the real client.
+    Precedence when the peer is trusted (areyousievious-1vp / F-10):
+      1. `X-Real-IP` — trusted proxies set this from `$remote_addr`, so the
+         client cannot spoof it. Preferred whenever present.
+      2. `X-Forwarded-For` walk right-to-left, skipping further trusted-proxy
+         hops. Only safe when the proxy sanitises XFF via
+         `$proxy_add_x_forwarded_for`; sloppy configs (HAProxy transparent,
+         `X-Forwarded-For $http_x_forwarded_for`) pass attacker-supplied
+         values through unchanged, so the first untrusted hop can be
+         attacker-chosen. Kept as a fallback for deployments that only
+         forward XFF.
+      3. `direct_ip` — the trusted proxy itself. Safe default when no
+         forwarding header is present or the loop exhausts all trusted hops.
     """
     direct_ip = request.client.host if request.client else "unknown"
     trusted = _parse_trusted_networks()
     if not trusted or not _ip_in_networks(direct_ip, trusted):
         return direct_ip
+
+    real_ip = request.headers.get("x-real-ip", "").strip()
+    if real_ip:
+        return real_ip
 
     xff = request.headers.get("x-forwarded-for", "").strip()
     if xff:
@@ -106,11 +120,8 @@ def _get_client_ip(request: Request) -> str:
         for hop in reversed(hops):
             if not _ip_in_networks(hop, trusted):
                 return hop
-        return hops[0] if hops else direct_ip
+        return direct_ip
 
-    real_ip = request.headers.get("x-real-ip", "").strip()
-    if real_ip:
-        return real_ip
     return direct_ip
 
 
