@@ -1,11 +1,14 @@
 <script>
   import { createEventDispatcher } from 'svelte';
+  import { api } from '../lib/api.js';
+  import { showToast } from '../lib/stores.js';
   export let folders = [];
   const dispatch = createEventDispatcher();
 
   let search = '';
   let newFolder = '';
   let showCreate = false;
+  let creating = false;
 
   $: filtered = folders.filter(f =>
     f.name.toLowerCase().includes(search.toLowerCase())
@@ -20,15 +23,35 @@
   }
 
   async function createFolder() {
-    if (!newFolder.trim()) return;
-    // TODO: call API to create folder
-    select(newFolder.trim());
+    const name = newFolder.trim();
+    if (!name || creating) return;
+    creating = true;
+    try {
+      // This used to select the name WITHOUT creating anything, so the rule
+      // was saved pointing at a folder that did not exist on the mail server
+      // and delivery silently failed. api.createFolder has existed all along.
+      await api.createFolder(name);
+      dispatch('created', name);
+      showToast(`Folder "${name}" created`);
+      select(name);
+    } catch (e) {
+      showToast(e.message, 'error');
+    } finally {
+      creating = false;
+    }
   }
 </script>
 
 <!-- svelte-ignore a11y-click-events-have-key-events -->
 <div class="overlay" on:click={close} role="presentation">
-  <div class="picker" on:click|stopPropagation role="dialog">
+  <div
+    class="picker"
+    on:click|stopPropagation
+    role="dialog"
+    aria-modal="true"
+    aria-label="Select folder"
+    tabindex="-1"
+  >
     <div class="picker-header">
       <h3>Select Folder</h3>
       <button class="btn-xs" on:click={close}>&#10005;</button>
@@ -48,7 +71,9 @@
       {#if showCreate}
         <div class="create-row">
           <input type="text" bind:value={newFolder} placeholder="New folder name" />
-          <button class="btn-sm btn-accent" on:click={createFolder}>Create</button>
+          <button class="btn-sm btn-accent" on:click={createFolder} disabled={creating || !newFolder.trim()}>
+            {creating ? 'Creating…' : 'Create'}
+          </button>
         </div>
       {:else}
         <button class="btn-sm" on:click={() => showCreate = true}>+ New Folder</button>

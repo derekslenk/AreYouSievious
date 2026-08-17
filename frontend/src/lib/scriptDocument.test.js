@@ -18,6 +18,7 @@ import {
   moveRule,
   newCondition,
   newAction,
+  previewRule,
   __resetKeys,
 } from './scriptDocument.js';
 
@@ -173,6 +174,100 @@ describe('moveRule', () => {
     expect(moveRule(doc, 1, 1)).toBe(doc);
     expect(moveRule(doc, -1, 0)).toBe(doc);
     expect(moveRule(doc, 0, 5)).toBe(doc);
+  });
+});
+
+describe('previewRule', () => {
+  /** Build a rule entry directly, bypassing the wire. */
+  function rule(overrides = {}) {
+    const doc = addRule(fromWire({}));
+    return { ...ruleEntries(doc)[0], ...overrides };
+  }
+
+  function cond(overrides = {}) {
+    return { ...newCondition(), header: 'from', match_type: 'is', value: 'a@x.com', ...overrides };
+  }
+
+  it('renders a bare single-condition rule', () => {
+    const out = previewRule(
+      rule({ match: '', conditions: [cond()], actions: [{ ...newAction(), argument: 'A' }] })
+    );
+    expect(out).toBe('if address :is "from" "a@x.com" {\n    fileinto "A";\n}');
+  });
+
+  it('renders a multi-condition rule with its match type', () => {
+    const out = previewRule(
+      rule({
+        match: 'allof',
+        conditions: [cond(), cond({ value: 'b@x.com' })],
+        actions: [{ ...newAction(), argument: 'A' }],
+      })
+    );
+    expect(out).toContain('if allof (');
+    expect(out.split('\n')[1]).toBe('    address :is "from" "a@x.com",');
+  });
+
+  it('REGRESSION: renders a negated condition as NOT', () => {
+    // The component's version dropped `negate` entirely, so a NOT condition
+    // previewed as its exact opposite.
+    const out = previewRule(rule({ match: '', conditions: [cond({ negate: true })], actions: [] }));
+    expect(out).toContain('not address :is "from" "a@x.com"');
+  });
+
+  it('REGRESSION: escapes quotes and backslashes', () => {
+    // The component interpolated raw, so a folder containing a quote produced
+    // a preview that was not what got saved.
+    const out = previewRule(
+      rule({
+        match: '',
+        conditions: [cond({ value: 'a"b' })],
+        actions: [{ ...newAction(), argument: 'X\\Y"Z' }],
+      })
+    );
+    expect(out).toContain('"a\\"b"');
+    expect(out).toContain('fileinto "X\\\\Y\\"Z";');
+  });
+
+  it('REGRESSION: shows a disabled rule commented out', () => {
+    // A disabled rule is stored `##`-commented; the component showed it live.
+    const out = previewRule(
+      rule({ match: '', enabled: false, conditions: [cond()], actions: [] })
+    );
+    expect(out.split('\n').every((l) => l.startsWith('##'))).toBe(true);
+  });
+
+  it('renders tagged arguments', () => {
+    const out = previewRule(
+      rule({
+        match: '',
+        conditions: [cond({ address_part: 'domain', comparator: 'i;octet' })],
+        actions: [],
+      })
+    );
+    expect(out).toContain('address :domain :comparator "i;octet" :is "from" "a@x.com"');
+  });
+
+  it('renders every action type', () => {
+    const types = [
+      ['fileinto', 'fileinto "F";'],
+      ['fileinto_copy', 'fileinto :copy "F";'],
+      ['redirect', 'redirect "F";'],
+      ['addflag', 'addflag "F";'],
+      ['reject', 'reject "F";'],
+      ['keep', 'keep;'],
+      ['discard', 'discard;'],
+      ['stop', 'stop;'],
+    ];
+    for (const [type, expected] of types) {
+      const out = previewRule(
+        rule({ match: '', conditions: [cond()], actions: [{ ...newAction(), type, argument: 'F' }] })
+      );
+      expect(out).toContain(`    ${expected}`);
+    }
+  });
+
+  it('returns empty for a rule with no conditions', () => {
+    expect(previewRule(rule({ conditions: [] }))).toBe('');
   });
 });
 

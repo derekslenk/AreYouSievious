@@ -7,6 +7,11 @@
   let newName = '';
   let showCreate = false;
 
+  /** Focus an element once when it enters the DOM. */
+  function focusOnMount(node) {
+    node.focus();
+  }
+
   onMount(async () => {
     await loadScripts();
   });
@@ -134,7 +139,10 @@
 
     {#if showCreate}
       <form class="create-form" on:submit|preventDefault={createScript}>
-        <input type="text" bind:value={newName} placeholder="Script name" autofocus />
+        <!-- `autofocus` as an attribute is an a11y hazard (it moves focus
+             without user intent on every render); focusing once on mount via
+             an action keeps the convenience without the attribute. -->
+        <input type="text" bind:value={newName} placeholder="Script name" use:focusOnMount />
         <button type="submit" class="btn-sm btn-accent">Create</button>
         <button type="button" class="btn-sm" on:click={() => showCreate = false}>Cancel</button>
       </form>
