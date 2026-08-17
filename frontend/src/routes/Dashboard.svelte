@@ -126,7 +126,7 @@
     {#if showImport}
       <form class="create-form" on:submit|preventDefault={handleImport}>
         <input type="text" bind:value={importName} placeholder="Script name" />
-        <input type="file" accept=".sieve,.txt" on:change={(e) => importFile = e.target.files[0]} />
+        <input type="file" accept=".sieve,.txt" on:change={(e) => importFile = e.currentTarget.files?.[0] ?? null} />
         <button type="submit" class="btn-sm btn-accent" disabled={!importFile || !importName.trim()}>Upload</button>
         <button type="button" class="btn-sm" on:click={() => showImport = false}>Cancel</button>
       </form>

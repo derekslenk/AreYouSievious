@@ -58,20 +58,18 @@ describe('wire translation', () => {
 
   it('mints a render key for every rule, condition and action', () => {
     const doc = fromWire(WIRE);
-    for (const e of doc.entries) {
-      expect(e.key).toBeTruthy();
-      for (const c of e.conditions ?? []) expect(c.key).toBeTruthy();
-      for (const a of e.actions ?? []) expect(a.key).toBeTruthy();
+    for (const e of doc.entries) expect(e.key).toBeTruthy();
+    for (const r of ruleEntries(doc)) {
+      for (const c of r.conditions) expect(c.key).toBeTruthy();
+      for (const a of r.actions) expect(a.key).toBeTruthy();
     }
   });
 
   it('keys are unique across the document', () => {
     const doc = fromWire(WIRE);
-    const keys = [];
-    for (const e of doc.entries) {
-      keys.push(e.key);
-      for (const c of e.conditions ?? []) keys.push(c.key);
-      for (const a of e.actions ?? []) keys.push(a.key);
+    const keys = doc.entries.map((e) => e.key);
+    for (const r of ruleEntries(doc)) {
+      keys.push(...r.conditions.map((c) => c.key), ...r.actions.map((a) => a.key));
     }
     expect(new Set(keys).size).toBe(keys.length);
   });
@@ -114,9 +112,10 @@ describe('newCondition / newAction', () => {
   });
 
   it('produce entries whose keys are stripped at the wire', () => {
-    let doc = addRule(fromWire({}));
-    doc.entries[0].conditions.push(newCondition());
-    doc.entries[0].actions.push(newAction());
+    const doc = addRule(fromWire({}));
+    const rule = ruleEntries(doc)[0];
+    rule.conditions.push(newCondition());
+    rule.actions.push(newAction());
     expect(JSON.stringify(toWire(doc))).not.toContain('"key"');
   });
 });
@@ -149,7 +148,8 @@ describe('moveRule', () => {
     // unparsed Sieve around — the user can't see it to notice.
     const next = moveRule(fromWire(WIRE), 1, 0);
     expect(next.entries.map((e) => e.kind)).toEqual(['rule', 'raw', 'rule']);
-    expect(next.entries[1].text).toBe('# untouched');
+    const raw = next.entries[1];
+    expect(raw.kind === 'raw' && raw.text).toBe('# untouched');
   });
 
   it('is a no-op for equal or out-of-range indices', () => {

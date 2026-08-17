@@ -50,30 +50,35 @@ export function __resetKeys() {
  * @returns {ScriptDocument}
  */
 export function fromWire(payload) {
-  const entries = (payload?.entries ?? []).map((e) =>
-    e.kind === 'raw'
-      ? { key: key(), kind: 'raw', text: e.text ?? '', comment: e.comment ?? '' }
-      : {
-          key: key(),
-          kind: 'rule',
-          name: e.name ?? '',
-          enabled: e.enabled ?? true,
-          match: e.match ?? 'anyof',
-          conditions: (e.conditions ?? []).map((c) => ({
-            key: key(),
-            header: c.header,
-            match_type: c.match_type,
-            value: c.value ?? '',
-            address_test: c.address_test ?? false,
-            negate: c.negate ?? false,
-          })),
-          actions: (e.actions ?? []).map((a) => ({
-            key: key(),
-            type: a.type,
-            argument: a.argument ?? '',
-          })),
-        }
-  );
+  const entries = (payload?.entries ?? []).map((e) => {
+    if (e.kind === 'raw') {
+      /** @type {RawEntry} */
+      const raw = { key: key(), kind: 'raw', text: e.text ?? '', comment: e.comment ?? '' };
+      return raw;
+    }
+    /** @type {RuleEntry} */
+    const rule = {
+      key: key(),
+      kind: 'rule',
+      name: e.name ?? '',
+      enabled: e.enabled ?? true,
+      match: e.match ?? 'anyof',
+      conditions: (e.conditions ?? []).map((c) => ({
+        key: key(),
+        header: c.header,
+        match_type: c.match_type,
+        value: c.value ?? '',
+        address_test: c.address_test ?? false,
+        negate: c.negate ?? false,
+      })),
+      actions: (e.actions ?? []).map((a) => ({
+        key: key(),
+        type: a.type,
+        argument: a.argument ?? '',
+      })),
+    };
+    return rule;
+  });
   return { requires: payload?.requires ?? [], entries };
 }
 
