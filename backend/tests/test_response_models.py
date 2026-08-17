@@ -46,7 +46,7 @@ from api_models import (
     [
         (
             SaveScriptRequest,
-            {"rules": [], "raw_blocks": [], "order": [], "requires": []},
+            {"entries": [], "requires": []},
         ),
         (SaveRawRequest, {"content": ""}),
         (CreateFolderRequest, {"name": "Inbox"}),
@@ -68,40 +68,85 @@ def test_extra_field_rejected(model, base):
 
 def test_save_script_rejects_unknown_rule_field():
     """The original bug: `SaveScriptRequest.rules: list[Any]` accepted any
-    shape. Now: every rule is a RuleDTO, and an unknown field anywhere in
-    the tree is rejected."""
+    shape. Now: every entry is parsed against its DTO, and an unknown field
+    anywhere in the tree is rejected."""
     payload = {
-        "rules": [
+        "entries": [
             {
-                "id": "r1",
+                "kind": "rule",
                 "name": "test",
                 "match": "anyof",
                 "conditions": [{"header": "from", "match_type": "is", "secret_backdoor": "x"}],
                 "actions": [],
             }
         ],
-        "raw_blocks": [],
-        "order": [],
         "requires": [],
     }
     with pytest.raises(ValidationError):
         SaveScriptRequest(**payload)
 
 
+def test_save_script_accepts_a_well_formed_editor_payload():
+    """Companion to the rejection test above: the exact shape the SPA sends
+    MUST validate. Without this, the rejection tests can stay green while the
+    save path is broken for every real client — which is what shipped between
+    2026-06-21 and this change (HTTP 422 on every visual-editor save)."""
+    payload = {
+        "requires": ["fileinto"],
+        "entries": [
+            {
+                "kind": "rule",
+                "name": "GitHub",
+                "enabled": True,
+                "match": "anyof",
+                "conditions": [
+                    {
+                        "header": "from",
+                        "match_type": "contains",
+                        "value": "notifications@github.com",
+                        "address_test": True,
+                        "negate": False,
+                    }
+                ],
+                "actions": [{"type": "fileinto", "argument": "Notifications/GitHub"}],
+            },
+            {"kind": "raw", "text": "# untouched", "comment": ""},
+        ],
+    }
+    req = SaveScriptRequest(**payload)
+    assert [e.kind for e in req.entries] == ["rule", "raw"]
+
+
+def test_save_script_rejects_client_minted_identity():
+    """ADR-0001: identity is view state. A client that forgets to strip its
+    render keys is a hard 422 rather than a silent write of junk fields."""
+    payload = {
+        "requires": [],
+        "entries": [
+            {
+                "kind": "rule",
+                "name": "x",
+                "match": "anyof",
+                "conditions": [
+                    {"id": "c1", "header": "from", "match_type": "is", "value": "a@x.com"}
+                ],
+                "actions": [],
+            }
+        ],
+    }
+    with pytest.raises(ValidationError):
+        SaveScriptRequest(**payload)
+
+
 def test_save_script_max_lengths_enforced():
-    """Field(max_length=…) on the rules list caps the per-DTO blast radius
+    """Field(max_length=…) on the entries list caps the per-DTO blast radius
     (areyousievious-9a2 defense-in-depth)."""
-    too_many_rules = [
-        {"id": str(i), "name": "x", "match": "anyof", "conditions": [], "actions": []}
-        for i in range(501)
+    too_many_entries = [
+        {"kind": "rule", "name": "x", "match": "anyof", "conditions": [], "actions": []}
+        for _ in range(1001)
     ]
     with pytest.raises(ValidationError):
-        SaveScriptRequest(
-            rules=too_many_rules,
-            raw_blocks=[],
-            order=[],
-            requires=[],
-        )
+        SaveScriptRequest(entries=too_many_entries, requires=[])
 
 
 def test_login_rejects_oversized_password():

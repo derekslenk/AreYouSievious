@@ -11,7 +11,6 @@ Design principles:
 """
 
 import re
-import uuid
 from dataclasses import dataclass, field
 
 # ── Data Model ──
@@ -34,35 +33,55 @@ class Action:
 
 @dataclass
 class Rule:
-    id: str = ""
+    """An Entry the visual builder can edit.
+
+    Carries no identity: see docs/adr/0001-identity-is-view-state.md. Sieve text
+    cannot persist an id, so any the server minted would be a fresh value on every
+    parse. Clients mint their own render keys and strip them at the wire. Dropping
+    the id also makes Rule comparable by value, which is what lets tests assert
+    exact round-trip fidelity rather than mere stability.
+    """
+
     name: str = ""
     enabled: bool = True
     match: str = "anyof"  # "anyof", "allof"
     conditions: list[Condition] = field(default_factory=list)
     actions: list[Action] = field(default_factory=list)
 
-    def __post_init__(self):
-        if not self.id:
-            self.id = str(uuid.uuid4())[:8]
-
 
 @dataclass
 class RawBlock:
-    """Opaque Sieve text we don't parse into rules."""
+    """An Entry the parser doesn't recognise, preserved verbatim."""
 
     text: str
     comment: str = ""
 
 
+Entry = Rule | RawBlock
+
+
 @dataclass
 class SieveScript:
-    """Full parsed representation of a Sieve script."""
+    """Full parsed representation of a Sieve script.
+
+    `entries` is a single ordered sequence — position IS the evaluation order.
+    This replaced parallel `rules` / `raw_blocks` / `order` arrays that had to
+    agree by index; when they disagreed, a Rule missing from `order` was silently
+    dropped on save. That state is now unrepresentable.
+    """
 
     requires: list[str] = field(default_factory=list)
-    rules: list[Rule] = field(default_factory=list)
-    raw_blocks: list[RawBlock] = field(default_factory=list)
-    # Interleaved order: list of ("rule", index) or ("raw", index)
-    order: list[tuple[str, int]] = field(default_factory=list)
+    entries: list[Entry] = field(default_factory=list)
+
+    @property
+    def rules(self) -> list[Rule]:
+        """Read-only view of just the Rule entries, in order."""
+        return [e for e in self.entries if isinstance(e, Rule)]
+
+    @property
+    def raw_blocks(self) -> list[RawBlock]:
+        """Read-only view of just the RawBlock entries, in order."""
+        return [e for e in self.entries if isinstance(e, RawBlock)]
 
 
 # ── Parser (Sieve text -> SieveScript) ──
@@ -103,9 +122,7 @@ class SieveParser:
             if line.startswith("## "):
                 disabled_rule = self._try_parse_disabled_block(pending_comment)
                 if disabled_rule:
-                    idx = len(script.rules)
-                    script.rules.append(disabled_rule)
-                    script.order.append(("rule", idx))
+                    script.entries.append(disabled_rule)
                     pending_comment = ""
                     continue
                 # Not a disabled rule — fall through to comment handler
@@ -127,24 +144,18 @@ class SieveParser:
                 rule = self._try_parse_rule(pending_comment)
                 if rule:
                     self._auto_name_rule(rule)
-                    idx = len(script.rules)
-                    script.rules.append(rule)
-                    script.order.append(("rule", idx))
+                    script.entries.append(rule)
                 else:
                     # Couldn't parse - store as raw block
                     raw_text = self._consume_block()
-                    idx = len(script.raw_blocks)
-                    script.raw_blocks.append(RawBlock(text=raw_text, comment=pending_comment))
-                    script.order.append(("raw", idx))
+                    script.entries.append(RawBlock(text=raw_text, comment=pending_comment))
                 pending_comment = ""
                 continue
 
             # Anything else is a raw block
             raw_text = self.lines[self.line_idx]
             self.line_idx += 1
-            idx = len(script.raw_blocks)
-            script.raw_blocks.append(RawBlock(text=raw_text, comment=pending_comment))
-            script.order.append(("raw", idx))
+            script.entries.append(RawBlock(text=raw_text, comment=pending_comment))
             pending_comment = ""
 
         return script
@@ -407,22 +418,20 @@ class SieveGenerator:
             parts.append(f"require [{req_list}];")
             parts.append("")
 
-        # Generate in order
-        for kind, idx in script.order:
-            if kind == "rule":
-                rule = script.rules[idx]
-                rule_text = self._generate_rule(rule)
-                if not rule.enabled:
+        # Generate in order — position in `entries` IS the order
+        for entry in script.entries:
+            if isinstance(entry, Rule):
+                rule_text = self._generate_rule(entry)
+                if not entry.enabled:
                     rule_text = "\n".join(
                         "## " + line if line.strip() else "##" for line in rule_text.split("\n")
                     )
                 parts.append(rule_text)
                 parts.append("")
-            elif kind == "raw":
-                raw = script.raw_blocks[idx]
-                if raw.comment:
-                    parts.append(f"# {raw.comment}")
-                parts.append(raw.text)
+            else:
+                if entry.comment:
+                    parts.append(f"# {entry.comment}")
+                parts.append(entry.text)
                 parts.append("")
 
         return "\n".join(parts).rstrip() + "\n"
@@ -511,98 +520,89 @@ class SieveGenerator:
 # ── JSON serialization ──
 
 
-def script_to_json(script: SieveScript) -> dict:
-    """Convert SieveScript to JSON-serializable dict."""
+def _rule_to_json(r: Rule) -> dict:
     return {
-        "requires": script.requires,
-        "rules": [
+        "kind": "rule",
+        "name": r.name,
+        "enabled": r.enabled,
+        "match": r.match,
+        "conditions": [
             {
-                "id": r.id,
-                "name": r.name,
-                "enabled": r.enabled,
-                "match": r.match,
-                "conditions": [
-                    {
-                        "header": c.header,
-                        "match_type": c.match_type,
-                        "value": c.value,
-                        "address_test": c.address_test,
-                        "negate": c.negate,
-                    }
-                    for c in r.conditions
-                ],
-                "actions": [{"type": a.action_type, "argument": a.argument} for a in r.actions],
+                "header": c.header,
+                "match_type": c.match_type,
+                "value": c.value,
+                "address_test": c.address_test,
+                "negate": c.negate,
             }
-            for r in script.rules
+            for c in r.conditions
         ],
-        "raw_blocks": [{"text": rb.text, "comment": rb.comment} for rb in script.raw_blocks],
-        "order": script.order,
+        "actions": [{"type": a.action_type, "argument": a.argument} for a in r.actions],
     }
 
 
+def script_to_json(script: SieveScript) -> dict:
+    """Convert SieveScript to a JSON-serializable dict.
+
+    Pure: the same SieveScript always produces the same dict. Nothing is minted
+    here (see docs/adr/0001-identity-is-view-state.md), so tests can assert exact
+    payloads.
+    """
+    return {
+        "requires": script.requires,
+        "entries": [
+            _rule_to_json(e)
+            if isinstance(e, Rule)
+            else {"kind": "raw", "text": e.text, "comment": e.comment}
+            for e in script.entries
+        ],
+    }
+
+
+def _rule_from_json(r: dict) -> Rule:
+    conditions = []
+    for c in r.get("conditions", []):
+        if not isinstance(c, dict) or "header" not in c or "match_type" not in c:
+            continue
+        conditions.append(
+            Condition(
+                header=c["header"],
+                match_type=c["match_type"],
+                value=c.get("value", ""),
+                address_test=c.get("address_test", False),
+                negate=c.get("negate", False),
+            )
+        )
+    actions = []
+    for a in r.get("actions", []):
+        if not isinstance(a, dict) or "type" not in a:
+            continue
+        actions.append(Action(action_type=a["type"], argument=a.get("argument", "")))
+    return Rule(
+        name=r.get("name", ""),
+        enabled=r.get("enabled", True),
+        match=r.get("match", "anyof"),
+        conditions=conditions,
+        actions=actions,
+    )
+
+
 def json_to_script(data: dict) -> SieveScript:
-    """Convert JSON dict back to SieveScript."""
+    """Convert a JSON dict back to a SieveScript.
+
+    Ordering comes from position in `entries`, so there is no index to validate
+    and no way for a caller to submit an order that omits one of its own rules.
+    The previous representation could, and silently dropped the omitted rule on
+    save.
+    """
     script = SieveScript(requires=data.get("requires", []))
 
-    for r in data.get("rules", []):
-        conditions = []
-        for c in r.get("conditions", []):
-            if not isinstance(c, dict) or "header" not in c or "match_type" not in c:
-                continue
-            conditions.append(
-                Condition(
-                    header=c["header"],
-                    match_type=c["match_type"],
-                    value=c.get("value", ""),
-                    address_test=c.get("address_test", False),
-                    negate=c.get("negate", False),
-                )
-            )
-        actions = []
-        for a in r.get("actions", []):
-            if not isinstance(a, dict) or "type" not in a:
-                continue
-            actions.append(
-                Action(
-                    action_type=a["type"],
-                    argument=a.get("argument", ""),
-                )
-            )
-        rule = Rule(
-            id=r.get("id", ""),
-            name=r.get("name", ""),
-            enabled=r.get("enabled", True),
-            match=r.get("match", "anyof"),
-            conditions=conditions,
-            actions=actions,
-        )
-        script.rules.append(rule)
-
-    for rb in data.get("raw_blocks", []):
-        if not isinstance(rb, dict):
+    for e in data.get("entries", []):
+        if not isinstance(e, dict):
             continue
-        script.raw_blocks.append(
-            RawBlock(
-                text=rb.get("text", ""),
-                comment=rb.get("comment", ""),
-            )
-        )
-
-    # Validate order entries reference valid indices
-    order = []
-    for item in data.get("order", []):
-        entry = tuple(item) if not isinstance(item, tuple) else item
-        if len(entry) == 2:
-            kind, idx = entry
-            if kind == "rule" and 0 <= idx < len(script.rules):
-                order.append(entry)
-            elif kind == "raw" and 0 <= idx < len(script.raw_blocks):
-                order.append(entry)
-    # Fallback: if order is empty but we have rules/raw_blocks, generate default order
-    if not order and (script.rules or script.raw_blocks):
-        order = [("rule", i) for i in range(len(script.rules))]
-        order += [("raw", i) for i in range(len(script.raw_blocks))]
-    script.order = order
+        if e.get("kind") == "raw":
+            script.entries.append(RawBlock(text=e.get("text", ""), comment=e.get("comment", "")))
+        elif e.get("kind") == "rule":
+            script.entries.append(_rule_from_json(e))
 
     return script
 

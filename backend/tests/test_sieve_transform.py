@@ -189,14 +189,11 @@ def test_json_round_trip_stable(path: Path) -> None:
 
 
 def test_json_round_trip_empty_script() -> None:
-    """A script with zero rules and zero raw blocks must round-trip
-    cleanly (no key errors, no spurious entries)."""
+    """A script with zero entries must round-trip cleanly (no key errors,
+    no spurious entries)."""
     script = st.SieveScript(requires=["fileinto"])
     restored = st.json_to_script(st.script_to_json(script))
-    assert restored.requires == ["fileinto"]
-    assert restored.rules == []
-    assert restored.raw_blocks == []
-    assert restored.order == []
+    assert restored == script
 
 
 def test_json_round_trip_raw_blocks_only() -> None:
@@ -204,45 +201,84 @@ def test_json_round_trip_raw_blocks_only() -> None:
     must preserve every block verbatim, in order."""
     raw_a = st.RawBlock(text='if anyof (true) { fileinto "X"; }', comment="weird")
     raw_b = st.RawBlock(text="# trailing marker", comment="")
-    script = st.SieveScript(
-        requires=["fileinto"],
-        raw_blocks=[raw_a, raw_b],
-        order=[("raw", 0), ("raw", 1)],
-    )
+    script = st.SieveScript(requires=["fileinto"], entries=[raw_a, raw_b])
     restored = st.json_to_script(st.script_to_json(script))
+    assert restored == script
     assert restored.raw_blocks == [raw_a, raw_b]
-    assert restored.order == [("raw", 0), ("raw", 1)]
 
 
 def test_json_round_trip_preserves_mixed_rule_and_raw_order() -> None:
-    """`script.order` interleaves ('rule', i) / ('raw', i) — the JSON path
-    MUST preserve the exact sequence. This is the wire format the frontend
-    relies on (and rebuildOrder rebuilds in [areyousievious-59v])."""
-    rule = st.Rule(id="r1", name="rule one")
+    """`entries` interleaves Rules and RawBlocks — the JSON path MUST preserve
+    the exact sequence, because position IS the evaluation order."""
+    rule = st.Rule(name="rule one")
     raw = st.RawBlock(text="# inline marker", comment="")
-    script = st.SieveScript(
-        rules=[rule],
-        raw_blocks=[raw],
-        order=[("raw", 0), ("rule", 0)],
-    )
+    script = st.SieveScript(entries=[raw, rule])
     restored = st.json_to_script(st.script_to_json(script))
-    assert restored.order == [("raw", 0), ("rule", 0)]
-    assert restored.rules[0].id == "r1"
-    assert restored.raw_blocks[0].text == "# inline marker"
+    assert restored.entries == [raw, rule]
+    assert isinstance(restored.entries[0], st.RawBlock)
+    assert isinstance(restored.entries[1], st.Rule)
 
 
 def test_script_to_json_emits_all_top_level_keys() -> None:
-    """Deliberate-breakage invariant: dropping `requires`, `rules`,
-    `raw_blocks`, or `order` from script_to_json would still let the
-    round-trip tests above pass via .get(...) defaults in json_to_script.
-    This test catches that drop directly."""
+    """Deliberate-breakage invariant: dropping `requires` or `entries` from
+    script_to_json would still let the round-trip tests above pass via
+    .get(...) defaults in json_to_script. This test catches that drop."""
     script = st.SieveScript(
         requires=["fileinto", "envelope"],
-        rules=[st.Rule(id="r1", name="r")],
-        raw_blocks=[st.RawBlock(text="# c")],
-        order=[("rule", 0), ("raw", 0)],
+        entries=[st.Rule(name="r"), st.RawBlock(text="# c")],
     )
     payload = st.script_to_json(script)
-    assert {"requires", "rules", "raw_blocks", "order"}.issubset(payload.keys())
+    assert {"requires", "entries"}.issubset(payload.keys())
     assert payload["requires"] == ["fileinto", "envelope"]
-    assert payload["order"] == [("rule", 0), ("raw", 0)]
+    assert [e["kind"] for e in payload["entries"]] == ["rule", "raw"]
+
+
+def test_script_to_json_is_pure() -> None:
+    """No identity is minted on the wire (ADR-0001), so the same SieveScript
+    always serialises to the same payload. Reintroducing a server-minted id
+    would make this non-deterministic and break exact-payload assertions."""
+    src = (BACKEND / "test_scripts" / "sogo.sieve").read_text()
+    assert st.script_to_json(st.parse_sieve(src)) == st.script_to_json(st.parse_sieve(src))
+
+
+def test_wire_payload_carries_no_identity() -> None:
+    """ADR-0001 regression lock: no entry, condition or action may carry an
+    `id` on the wire. Clients mint their own render keys and strip them."""
+    src = (BACKEND / "test_scripts" / "grak.sieve").read_text()
+    payload = st.script_to_json(st.parse_sieve(src))
+    for entry in payload["entries"]:
+        assert "id" not in entry, entry
+        for c in entry.get("conditions", []):
+            assert "id" not in c
+        for a in entry.get("actions", []):
+            assert "id" not in a
+
+
+def test_entry_cannot_be_orphaned_from_its_ordering() -> None:
+    """The candidate-03 regression: the old representation let `order` omit a
+    rule that was present in `rules`, and the generator silently dropped it.
+    With one ordered sequence there is no index to disagree with."""
+    payload = {
+        "requires": ["fileinto"],
+        "entries": [
+            {
+                "kind": "rule",
+                "name": "first",
+                "enabled": True,
+                "match": "anyof",
+                "conditions": [{"header": "from", "match_type": "is", "value": "a@x.com"}],
+                "actions": [{"type": "fileinto", "argument": "A"}],
+            },
+            {
+                "kind": "rule",
+                "name": "second",
+                "enabled": True,
+                "match": "anyof",
+                "conditions": [{"header": "from", "match_type": "is", "value": "b@x.com"}],
+                "actions": [{"type": "fileinto", "argument": "B"}],
+            },
+        ],
+    }
+    out = st.generate_sieve(st.json_to_script(payload))
+    assert "a@x.com" in out
+    assert "b@x.com" in out, "second rule was dropped — ordering desync regression"
