@@ -26,9 +26,9 @@ Self-hosted Sieve email filter management UI. Single-process FastAPI backend ser
 ## For AI Agents
 
 ### Working In This Directory
-- No test suite, linter, or formatter is configured
+- Tests: `cd backend && python -m pytest tests/ -v` (15 files) and `cd frontend && npm test` (vitest)
+- Lint/format: `ruff check backend/` and `ruff format --check backend/`; `pre-commit install` wires both to commit
 - Build with `cd frontend && npm run build` to verify frontend changes
-- Backend has no automated tests; verify by running `python app.py --port 8091`
 - All Sieve state lives on the mail server; no local database to manage
 
 ### Request Flow
@@ -44,14 +44,105 @@ Browser -> FastAPI REST API -> ManageSieve (4190) / IMAP (993) -> Mail server
 
 <!-- MANUAL: -->
 
-<!-- lean-ctx -->
-## lean-ctx
+## Commands
 
-Prefer lean-ctx MCP tools over native equivalents for token savings:
-`ctx_read` > Read/cat, `ctx_search` > Grep/rg, `ctx_shell` > bash, `ctx_tree` > ls/find.
-Native Edit/Write/Glob stay as-is; use `ctx_edit` only when Edit needs an unavailable Read.
-Full rules: LEAN-CTX.md (open on demand — do not auto-load).
-<!-- /lean-ctx -->
+```bash
+# Frontend
+cd frontend && npm install            # install deps
+cd frontend && npm run dev             # dev server on :5173 (proxies /api to :8091)
+cd frontend && npm run build           # production build -> frontend/dist/
+
+# Backend
+cd backend && pip install -r requirements.txt
+cd backend && python app.py --port 8091 --static ../frontend/dist
+
+# Tests + lint
+cd backend && pip install -r requirements.txt -r requirements-dev.txt
+cd backend && python -m pytest tests/ -v
+cd frontend && npm test                # vitest
+ruff check backend/ && ruff format --check backend/
+
+# Docker
+docker compose up --build
+```
+
+CI (`.github/workflows/ci.yml`) runs all of the above on every push and PR to `main`.
+
+## Architecture
+
+Self-hosted Sieve email filter management UI. Single-process FastAPI backend serves the
+Svelte SPA as static files and proxies ManageSieve/IMAP to the user's mail server. No
+database — all state lives on the mail server. No stored credentials — session-only,
+plaintext in process memory for the session lifetime (30 min timeout). Expects a
+single-tenant host.
+
+### Request flow
+
+Browser → FastAPI REST API → ManageSieve (port 4190) / IMAP (port 993) → Mail server
+
+Every API call extracts a session token from the `ays_session` cookie (or
+`Authorization: Bearer` header), looks up in-memory credentials, and opens a fresh
+ManageSieve/IMAP connection via context managers (`SieveClient`, `IMAPClient`).
+Connections are not pooled.
+
+### Sieve transform pipeline
+
+The core complexity is bidirectional Sieve ↔ JSON conversion in
+`backend/sieve_transform.py`:
+
+1. **Parse**: Hand-rolled `SieveParser` (not sievelib's AST) walks Sieve text line-by-line,
+   recognizing `if/elsif` blocks as `Rule` objects
+2. **Preserve**: Anything not recognized becomes a `RawBlock` (opaque text preserved verbatim)
+3. **Generate**: `SieveGenerator` renders rules back to Sieve text, auto-computing `require`
+   extensions
+4. **Order**: `SieveScript.order` tracks interleaved sequence of `("rule", idx)` /
+   `("raw", idx)` tuples to maintain original script ordering
+
+The round-trip must be lossless for supported constructs — never destroy Sieve the parser
+doesn't understand.
+
+### Data model (backend/sieve_transform.py)
+
+`SieveScript` → contains `Rule[]`, `RawBlock[]`, `order[]`
+`Rule` → `Condition[]` + `Action[]` with match type (anyof/allof)
+`Condition` → header/address test with match_type (contains/is/matches/regex)
+`Action` → fileinto, fileinto_copy, redirect, keep, discard, stop, addflag, reject
+
+### Frontend routing
+
+`App.svelte` uses a `view` store (`login` | `dashboard` | `editor` | `raw`) for client-side
+routing — no router library. The `api.js` client auto-dispatches `ays:logout` custom events
+on 401 responses.
+
+### Backend endpoint conventions
+
+- Endpoints use sync `def` (not `async def`) — exception: `auth_status` and `import_script`
+  which need `await`
+- Auth: `get_session(request)` extracts/validates session, raises HTTP 401
+- ManageSieve/IMAP ops use context managers: `with SieveClient(session) as client:`
+- Request bodies use Pydantic `BaseModel` subclasses
+- All mutating endpoints return `{"ok": True, ...}`
+
+## Key conventions
+
+- Python: dataclasses for domain models, Pydantic for API request schemas
+- Svelte 5 with plain JavaScript (no TypeScript)
+- Frontend state via Svelte writable stores in `lib/stores.js`
+- Vite dev server proxies `/api` to backend at `:8091`
+
+## Agent skills
+
+### Issue tracker
+
+Issues live in beads (`bd`), a local Dolt DB synced via `refs/dolt/data`. GitHub Issues is for inbound external reports only. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Default five-role vocabulary (`needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`), applied as beads labels. See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context — `CONTEXT.md` + `docs/adr/` at the repo root. See `docs/agents/domain.md`.
 
 <!-- BEGIN BEADS INTEGRATION v:1 profile:minimal hash:970c3bf2 -->
 ## Beads Issue Tracker
