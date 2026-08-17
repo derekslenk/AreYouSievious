@@ -26,11 +26,12 @@ def list_folders(request: Request):
 @router.post("", response_model=OkResponse, response_model_exclude_none=True)
 def create_folder(req: CreateFolderRequest, request: Request):
     session = get_session(request)
-    try:
-        with IMAPClient(session) as client:
-            ok = client.create_folder(req.name)
-    except ValueError as e:
-        raise HTTPException(400, str(e)) from e
+    # No local try/except: create_folder raises ProtocolNameError, which the
+    # app-level handler maps to 400 for every sink alike. Catching ValueError
+    # here would also have turned unrelated ValueErrors into user-input
+    # errors, which is not what a 400 should mean.
+    with IMAPClient(session) as client:
+        ok = client.create_folder(req.name)
     if not ok:
         raise HTTPException(400, "Failed to create folder")
     return {"ok": True, "name": req.name}

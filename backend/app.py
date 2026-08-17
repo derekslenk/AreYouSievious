@@ -20,13 +20,13 @@ from middleware import (
     BodySizeLimitMiddleware,
     CSRFMiddleware,
 )
+from protocol_names import ProtocolNameError
 from routers import static as static_router_mod
 from routers.auth import router as auth_router
 from routers.folders import router as folders_router
 from routers.health import router as health_router
 from routers.scripts import router as scripts_router
 from routers.static import router as static_router
-from sieve_names import ScriptNameError
 from ssrf import HostValidationError
 
 # ── Environment config ──
@@ -51,13 +51,14 @@ async def _host_validation_handler(_request: Request, exc: HostValidationError):
     return JSONResponse(status_code=400, content={"detail": str(exc)})
 
 
-@app.exception_handler(ScriptNameError)
-async def _script_name_handler(_request: Request, exc: ScriptNameError):
-    """Surface ManageSieve script-name guard rejections as 400s (F-P0 fix,
-    areyousievious-2j9). The sink guard in managesieve_client._validate_name
-    raises before any sievelib call so the malformed frame never touches the
-    wire — this handler maps that rejection to a clean 400 response body so
-    the router functions don't each need a try/except."""
+@app.exception_handler(ProtocolNameError)
+async def _protocol_name_handler(_request: Request, exc: ProtocolNameError):
+    """Surface protocol-framing name rejections as 400s.
+
+    Covers BOTH sinks — Sieve script names and IMAP folder names. Each guard
+    raises before any protocol call, so the malformed frame never reaches the
+    wire; this maps that rejection to a clean 400 body in one place, so no
+    router needs its own try/except (folders.py used to carry one)."""
     return JSONResponse(status_code=400, content={"detail": str(exc)})
 
 
