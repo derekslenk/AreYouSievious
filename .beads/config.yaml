@@ -77,4 +77,4 @@
 # Dolt SQL commit identity, not gitblobstore wrapper commits.
 sync.remote: "git+ssh://git@github.com/derekslenk/AreYouSievious.git"
 
-export.auto: true
+export.auto: false
