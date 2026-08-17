@@ -42,5 +42,6 @@ or reject.
 _Avoid_: effect, command, operation
 
 **Match type**:
-Whether a Rule fires when any of its Conditions hold, or only when all of them do.
+Whether a Rule fires when any of its Conditions hold, or only when all of them do. A Rule
+with a single Condition may have none, in which case the script states the test directly.
 _Avoid_: combinator, operator, join

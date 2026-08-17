@@ -29,6 +29,10 @@ class ConditionDTO(BaseModel):
     value: str = Field(default="", max_length=4096)
     address_test: bool = False
     negate: bool = False
+    # RFC 5228 tagged arguments, preserved so a round-trip can't change what a
+    # rule matches. Not editable in the visual builder yet — they round-trip.
+    address_part: Literal["", "all", "localpart", "domain"] = ""
+    comparator: str = Field(default="", max_length=80)
 
 
 class ActionDTO(BaseModel):

@@ -255,10 +255,21 @@ export interface components {
         /** ConditionDTO */
         ConditionDTO: {
             /**
+             * Address Part
+             * @default
+             * @enum {string}
+             */
+            address_part: "" | "all" | "localpart" | "domain";
+            /**
              * Address Test
              * @default false
              */
             address_test: boolean;
+            /**
+             * Comparator
+             * @default
+             */
+            comparator: string;
             /** Header */
             header: string;
             /** Match Type */

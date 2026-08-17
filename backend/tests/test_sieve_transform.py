@@ -30,25 +30,149 @@ TEST_SCRIPTS = sorted(p for p in (BACKEND / "test_scripts").glob("*.sieve") if p
 
 
 @pytest.mark.parametrize("path", TEST_SCRIPTS, ids=lambda p: p.name)
-def test_round_trip_stable(path: Path) -> None:
-    """parse -> generate -> parse must be a fixed point (rule + raw counts).
+def test_round_trip_is_idempotent(path: Path) -> None:
+    """parse -> generate must reach a fixed point, in TEXT and in AST.
 
-    The project's hard invariant is "lossless round-trip for supported
-    constructs." This test catches Quality C-2 regressions: dropping `else`,
-    `elsif`, `:domain`, or `:comparator` would change rule/raw counts on the
-    second parse.
+    This replaced a pair of count assertions (`len(rules)`, `len(raw_blocks)`).
+    Counts are far too weak to express "lossless round-trip": they stayed green
+    while `stop; fileinto "X";` was silently reordered into
+    `fileinto "X"; stop;` — same count, different mail routing.
+
+    Generation normalises (it sorts `require` and picks one layout), so the
+    fixed point is asserted from the first generation onward rather than
+    against the original file.
+    """
+    original = path.read_text()
+
+    gen1 = st.generate_sieve(st.parse_sieve(original))
+    ast2 = st.parse_sieve(gen1)
+    gen2 = st.generate_sieve(ast2)
+    ast3 = st.parse_sieve(gen2)
+    gen3 = st.generate_sieve(ast3)
+
+    assert gen2 == gen1, f"{path.name}: generated Sieve is not a fixed point"
+    assert gen3 == gen2, f"{path.name}: generated Sieve destabilises on a third pass"
+    assert ast3 == ast2, f"{path.name}: parsed AST is not a fixed point"
+
+
+@pytest.mark.parametrize("path", TEST_SCRIPTS, ids=lambda p: p.name)
+def test_round_trip_preserves_every_entry_and_require(path: Path) -> None:
+    """Nothing may be dropped by the first normalising pass.
+
+    The entry sequence must match exactly, and `require` must be preserved as a
+    set — generation sorts it, which is a deliberate normalisation, but losing
+    an extension would change which constructs the server accepts.
     """
     original = path.read_text()
     first = st.parse_sieve(original)
-    regenerated = st.generate_sieve(first)
-    second = st.parse_sieve(regenerated)
+    second = st.parse_sieve(st.generate_sieve(first))
 
-    assert len(second.rules) == len(first.rules), (
-        f"{path.name}: rule count drifted ({len(first.rules)} -> {len(second.rules)}) on re-parse"
+    assert second.entries == first.entries, f"{path.name}: entries changed on round-trip"
+    assert set(second.requires) == set(first.requires), f"{path.name}: a require was lost"
+
+
+# ── Round-trip fidelity (architecture candidate 02) ──
+#
+# Five defects, one root cause: parse and generate did not represent what they
+# consumed. Each of these went undetected because the old round-trip test only
+# compared rule and raw-block COUNTS.
+
+
+def _rule(body: str, cond: str = 'header :is "s" "x"') -> str:
+    return f'require ["fileinto"];\nif {cond} {{\n{body}\n}}\n'
+
+
+def test_action_order_is_preserved() -> None:
+    """`stop;` before `fileinto` must stay before it. The old parser ran one
+    pass per action type and appended in a hardcoded order, so this rule came
+    back as `fileinto "A"; stop;` — the stop stopped preventing the filing and
+    the message got filed."""
+    parsed = st.parse_sieve(_rule('    stop;\n    fileinto "A";'))
+    assert [a.action_type for a in parsed.rules[0].actions] == ["stop", "fileinto"]
+    assert st.generate_sieve(parsed).index("stop;") < st.generate_sieve(parsed).index(
+        'fileinto "A"'
     )
-    assert len(second.raw_blocks) == len(first.raw_blocks), (
-        f"{path.name}: raw_block count drifted on re-parse"
-    )
+
+
+@pytest.mark.parametrize("folder", ["keep;", "discard;", "stop;", "a keep; b"])
+def test_folder_named_like_a_bare_action_does_not_invent_one(folder: str) -> None:
+    """A folder called `keep;` must not materialise a `keep` action.
+
+    The bare-word passes searched the whole block body, including inside
+    quoted arguments, so `fileinto "keep;"` grew a real `keep;` on save — an
+    action the user never wrote, changing delivery."""
+    parsed = st.parse_sieve(_rule(f'    fileinto "{folder}";'))
+    actions = parsed.rules[0].actions
+    assert [a.action_type for a in actions] == ["fileinto"]
+    assert actions[0].argument == folder
+
+
+def test_repeated_bare_actions_are_all_preserved() -> None:
+    """`keep; keep;` is two actions. The old code used `re.search`, which is a
+    boolean — every repeat after the first was dropped."""
+    parsed = st.parse_sieve(_rule("    keep;\n    keep;"))
+    assert [a.action_type for a in parsed.rules[0].actions] == ["keep", "keep"]
+
+
+@pytest.mark.parametrize(
+    "test_src,expected",
+    [
+        ('address :domain :is "from" "example.com"', ":domain"),
+        ('address :localpart :is "from" "alice"', ":localpart"),
+        ('address :all :is "from" "a@example.com"', ":all"),
+        ('header :comparator "i;octet" :is "subject" "x"', ':comparator "i;octet"'),
+        ('header :comparator "i;ascii-casemap" :contains "subject" "y"', ":comparator"),
+    ],
+)
+def test_tagged_arguments_survive_generation(test_src: str, expected: str) -> None:
+    """`:domain` etc. were consumed by the parser and dropped by the generator,
+    so `address :domain :is "from" "example.com"` came back as
+    `address :is "from" "example.com"` — which stops matching
+    alice@example.com entirely. Roundcube and SOGo both emit :domain."""
+    out = st.generate_sieve(st.parse_sieve(_rule('    fileinto "F";', cond=test_src)))
+    assert expected in out
+
+
+def test_tagged_arguments_parse_in_either_order() -> None:
+    """RFC 5228 lets the tagged arguments appear in any order."""
+    a = st.parse_sieve(
+        _rule('    fileinto "F";', cond='address :domain :comparator "i;octet" :is "from" "x.com"')
+    ).rules[0]
+    b = st.parse_sieve(
+        _rule('    fileinto "F";', cond='address :comparator "i;octet" :domain :is "from" "x.com"')
+    ).rules[0]
+    assert a.conditions[0].address_part == b.conditions[0].address_part == "domain"
+    assert a.conditions[0].comparator == b.conditions[0].comparator == "i;octet"
+
+
+def test_rule_name_case_is_not_mangled() -> None:
+    """The name is stored only in the `# --- ... ---` comment, and the
+    generator used to upper-case it — so one save turned a user's
+    "GitHub notifications" into "GITHUB NOTIFICATIONS", permanently."""
+    src = 'require ["fileinto"];\n# --- GitHub notifications ---\nif header :is "s" "x" {\n    fileinto "F";\n}\n'
+    parsed = st.parse_sieve(src)
+    assert parsed.rules[0].name == "GitHub notifications"
+    assert "GitHub notifications" in st.generate_sieve(parsed)
+
+
+@pytest.mark.parametrize(
+    "cond_src,expected_match",
+    [
+        ('anyof (header :is "s" "x")', "anyof"),
+        ('allof (header :is "s" "x")', "allof"),
+        ('header :is "s" "x"', ""),
+    ],
+)
+def test_match_shape_survives_round_trip(cond_src: str, expected_match: str) -> None:
+    """A single-condition `allof (...)` used to come back as `anyof`, because
+    the generator dropped the wrapper and the parser then defaulted. Harmless
+    while there is one condition — but the moment a user adds a second, their
+    AND has silently become an OR."""
+    src = f'require ["fileinto"];\nif {cond_src} {{\n    fileinto "F";\n}}\n'
+    once = st.parse_sieve(src)
+    assert once.rules[0].match == expected_match
+    twice = st.parse_sieve(st.generate_sieve(once))
+    assert twice.rules[0].match == expected_match
 
 
 # ── Quality C-2: else / elsif rejection ──

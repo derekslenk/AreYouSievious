@@ -23,6 +23,13 @@ class Condition:
     value: str
     address_test: bool = False  # True = address test, False = header test
     negate: bool = False
+    # RFC 5228 tagged arguments. Previously consumed by the parser and dropped
+    # by the generator, which silently changed what a rule matched: an
+    # `address :domain :is "from" "example.com"` rule became
+    # `address :is "from" "example.com"` and stopped matching alice@example.com
+    # entirely. Roundcube and SOGo both emit :domain, so this hit real scripts.
+    address_part: str = ""  # "", "all", "localpart", "domain"
+    comparator: str = ""  # e.g. "i;ascii-casemap"
 
 
 @dataclass
@@ -82,6 +89,61 @@ class SieveScript:
     def raw_blocks(self) -> list[RawBlock]:
         """Read-only view of just the RawBlock entries, in order."""
         return [e for e in self.entries if isinstance(e, RawBlock)]
+
+
+# ── Regexes ──
+#
+# `_Q(name)` is the linear-time quoted-string fragment: each character is
+# consumed by exactly one branch (a non-escape char OR a complete `\X` escape),
+# so there is no nested `*` to backtrack catastrophically on an unterminated
+# string (CWE-1333).
+
+
+def _Q(name: str) -> str:
+    return rf'"(?P<{name}>(?:[^"\\]|\\.)*)"'
+
+
+# One alternation, scanned left to right, so actions come back in source order
+# and bare-word actions can never match inside a quoted argument. `fileinto
+# :copy` must precede plain `fileinto` — at a shared start position the earlier
+# alternative wins.
+_ACTION_RE = re.compile(
+    rf"fileinto\s+:copy\s+{_Q('copy')}"
+    rf"|fileinto\s+{_Q('fileinto')}"
+    rf"|redirect\s+{_Q('redirect')}"
+    rf"|addflag\s+{_Q('addflag')}"
+    rf"|reject\s+{_Q('reject')}"
+    r"|\b(?P<keep>keep)\s*;"
+    r"|\b(?P<discard>discard)\s*;"
+    r"|\b(?P<stop>stop)\s*;"
+)
+
+_QUOTED_ACTIONS = (
+    ("copy", "fileinto_copy"),
+    ("fileinto", "fileinto"),
+    ("redirect", "redirect"),
+    ("addflag", "addflag"),
+    ("reject", "reject"),
+)
+
+_BARE_ACTIONS = ("keep", "discard", "stop")
+
+# Tagged arguments on a test. RFC 5228 lets ADDRESS-PART, COMPARATOR and
+# MATCH-TYPE appear in any order, so the run of modifiers is captured as one
+# blob and picked apart afterwards rather than pinned to a fixed sequence.
+_MODIFIER_RUN = r'(?P<mods>(?:\s+:(?:all|localpart|domain)|\s+:comparator\s+"(?:[^"\\]|\\.)*")*)'
+
+_TEST_RE = re.compile(
+    r"(?P<negate>not\s+)?"
+    r"(?P<test_type>address|header)"
+    + _MODIFIER_RUN
+    + r"\s+:(?P<match_type>contains|is|matches|regex)"
+    + rf"\s+{_Q('header')}"
+    + rf"\s+{_Q('value')}"
+)
+
+_ADDRESS_PART_RE = re.compile(r":(all|localpart|domain)\b")
+_COMPARATOR_RE = re.compile(r':comparator\s+"((?:[^"\\]|\\.)*)"')
 
 
 # ── Parser (Sieve text -> SieveScript) ──
@@ -259,7 +321,12 @@ class SieveParser:
             # Single condition: if <test> {
             single_match = re.match(r"if\s+(.*?)\s*\{", block_text, re.DOTALL)
             if single_match:
-                rule.match = "allof"
+                # A bare `if <test> {` has no anyof/allof wrapper. Recording it
+                # as "" rather than inventing one keeps the round-trip honest:
+                # forcing "allof" here made `if anyof (x)` come back as allof,
+                # so a user who later added a second condition silently got AND
+                # where the script said OR.
+                rule.match = ""
                 rule.conditions = self._parse_tests(single_match.group(1))
             else:
                 raise ParseError("Can't parse condition")
@@ -305,91 +372,68 @@ class SieveParser:
     def _parse_tests(self, text: str) -> list[Condition]:
         """Parse condition tests from text.
 
-        The quoted-string fragment `"((?:[^"\\]|\\.)*)"` is the linear-time
-        replacement for the previous `"([^"]*(?:\\.[^"]*)*)"`, which is
-        catastrophic-backtracking ReDoS-prone on unterminated strings
-        (CWE-1333). Each character is consumed by exactly one branch
-        (a non-escape char OR a complete `\\X` escape) — no nested `*`.
+        Recognises, in any tagged-argument order (RFC 5228 §2.7.1):
+            address :contains "from" "something"
+            not header :is "subject" "something"
+            address :domain :is "from" "example.com"          (Roundcube style)
+            header :comparator "i;ascii-casemap" :is "x" "y"
 
-        Optional `:all|:localpart|:domain` address-part modifier and
-        `:comparator "..."` option are now consumed (and ignored on output;
-        the round-trip falls back to the RawBlock path for now). This
-        prevents Roundcube/SOGo-generated `address :domain :is "from" "..."`
-        rules from being silently dropped from the parsed result.
+        The address-part and comparator are now PRESERVED on the Condition
+        rather than consumed and discarded. Dropping them silently changed
+        what a rule matched — `address :domain :is "from" "example.com"`
+        regenerated as `address :is "from" "example.com"`, which stops
+        matching alice@example.com. Roundcube and SOGo both emit :domain.
         """
         conditions = []
-
-        # Match patterns like:
-        # address :contains "from" "something"
-        # header :contains "subject" "something"
-        # not header :is "subject" "something"
-        # not address :matches "to" "something"
-        # address :domain :is "from" "example.com"          (Roundcube style)
-        # header :comparator "i;ascii-casemap" :is "x" "y"  (RFC 5228)
-        pattern = (
-            r"(not\s+)?"
-            r"(address|header)"
-            r"(?:\s+:(?:all|localpart|domain))?"  # address-part (consumed, not preserved)
-            r'(?:\s+:comparator\s+"(?:[^"\\]|\\.)*")?'  # comparator (consumed, not preserved)
-            r"\s+:(contains|is|matches|regex)"
-            r'\s+"((?:[^"\\]|\\.)*)"'
-            r'\s+"((?:[^"\\]|\\.)*)"'
-        )
-
-        for m in re.finditer(pattern, text):
-            negate, test_type, match_type, header_name, value = m.groups()
+        for m in _TEST_RE.finditer(text):
+            mods = m.group("mods") or ""
+            part = _ADDRESS_PART_RE.search(mods)
+            comp = _COMPARATOR_RE.search(mods)
             conditions.append(
                 Condition(
-                    header=self._unquote(header_name).lower(),
-                    match_type=match_type,
-                    value=self._unquote(value),
-                    address_test=(test_type == "address"),
-                    negate=bool(negate),
+                    header=self._unquote(m.group("header")).lower(),
+                    match_type=m.group("match_type"),
+                    value=self._unquote(m.group("value")),
+                    address_test=(m.group("test_type") == "address"),
+                    negate=bool(m.group("negate")),
+                    address_part=part.group(1) if part else "",
+                    comparator=self._unquote(comp.group(1)) if comp else "",
                 )
             )
-
         return conditions
 
     def _parse_actions(self, text: str) -> list[Action]:
-        """Parse actions from the body of an if block."""
+        """Parse actions from the body of an if block, in source order.
+
+        ONE left-to-right scan, not one pass per action type. The previous
+        implementation ran eight independent `finditer`/`search` passes and
+        appended in a hardcoded type order, which broke three ways:
+
+        1. **Source order was unrepresentable.** `stop; fileinto "X";` came
+           back as `fileinto "X"; stop;` — the stop no longer prevented the
+           filing, so a round-trip silently changed where mail went.
+        2. **Bare-word passes could see inside quoted strings.** A folder named
+           `keep;` matched `\\bkeep\\s*;` and materialised a `keep` action the
+           user never wrote. Same for `discard;` and `stop;`.
+        3. **Repeats collapsed.** `keep; keep;` came back as one `keep`.
+
+        A single ordered alternation fixes all three: at each position the
+        quoted-argument alternatives are tried first, so `fileinto "keep;"`
+        consumes the whole string before any bare-word alternative can look
+        inside it, and every match is appended where it was found.
+        """
         actions = []
-        # Linear-time quoted-string fragment (no nested `*`, no catastrophic
-        # backtracking on unterminated strings). See `_parse_tests` for the
-        # security rationale (CWE-1333).
-        Q = r'"((?:[^"\\]|\\.)*)"'
-
-        # fileinto :copy "Folder";  (must check before plain fileinto)
-        for m in re.finditer(rf"fileinto\s+:copy\s+{Q}", text):
-            actions.append(Action(action_type="fileinto_copy", argument=self._unquote(m.group(1))))
-
-        # fileinto "Folder/Name";  (exclude :copy matches)
-        for m in re.finditer(rf"fileinto\s+(?!:copy){Q}", text):
-            actions.append(Action(action_type="fileinto", argument=self._unquote(m.group(1))))
-
-        # redirect "address";
-        for m in re.finditer(rf"redirect\s+{Q}", text):
-            actions.append(Action(action_type="redirect", argument=self._unquote(m.group(1))))
-
-        # keep;
-        if re.search(r"\bkeep\s*;", text):
-            actions.append(Action(action_type="keep"))
-
-        # discard;
-        if re.search(r"\bdiscard\s*;", text):
-            actions.append(Action(action_type="discard"))
-
-        # stop;
-        if re.search(r"\bstop\s*;", text):
-            actions.append(Action(action_type="stop"))
-
-        # addflag "\\Seen";
-        for m in re.finditer(rf"addflag\s+{Q}", text):
-            actions.append(Action(action_type="addflag", argument=self._unquote(m.group(1))))
-
-        # reject "message";
-        for m in re.finditer(rf"reject\s+{Q}", text):
-            actions.append(Action(action_type="reject", argument=self._unquote(m.group(1))))
-
+        for m in _ACTION_RE.finditer(text):
+            for group, action_type in _QUOTED_ACTIONS:
+                value = m.group(group)
+                if value is not None:
+                    actions.append(Action(action_type=action_type, argument=self._unquote(value)))
+                    break
+            else:
+                for bare in _BARE_ACTIONS:
+                    if m.group(bare) is not None:
+                        actions.append(Action(action_type=bare))
+                        break
         return actions
 
     def _consume_block(self) -> str:
@@ -462,20 +506,22 @@ class SieveGenerator:
     def _generate_rule(self, rule: Rule) -> str:
         lines = []
 
-        # Comment with rule name
+        # Comment with rule name. Emitted verbatim — `.upper()` here meant a
+        # user's "GitHub notifications" came back as "GITHUB NOTIFICATIONS"
+        # after a single save, permanently, because the comment is the only
+        # place the name is stored.
         if rule.name:
-            lines.append(f"# --- {rule.name.upper()} ---")
+            lines.append(f"# --- {rule.name} ---")
 
-        # Conditions
-        if len(rule.conditions) == 1:
-            cond = rule.conditions[0]
-            test_str = self._generate_test(cond)
-            lines.append(f"if {test_str} {{")
+        # Conditions. A wrapper is emitted when the source had one, or whenever
+        # there is more than one condition (where it is required). A single
+        # condition parsed from a bare `if <test> {` keeps match="" and is
+        # re-emitted bare, so the shape survives the round trip.
+        if len(rule.conditions) == 1 and not rule.match:
+            lines.append(f"if {self._generate_test(rule.conditions[0])} {{")
         else:
-            tests = []
-            for cond in rule.conditions:
-                tests.append(f"    {self._generate_test(cond)}")
-            lines.append(f"if {rule.match} (")
+            tests = [f"    {self._generate_test(cond)}" for cond in rule.conditions]
+            lines.append(f"if {rule.match or 'anyof'} (")
             lines.append(",\n".join(tests))
             lines.append(") {")
 
@@ -492,9 +538,19 @@ class SieveGenerator:
         return s.replace("\\", "\\\\").replace('"', '\\"')
 
     def _generate_test(self, cond: Condition) -> str:
-        test_type = "address" if cond.address_test else "header"
-        neg = "not " if cond.negate else ""
-        return f'{neg}{test_type} :{cond.match_type} "{self._quote(cond.header)}" "{self._quote(cond.value)}"'
+        """Render a test, re-emitting any tagged arguments the parser saw.
+
+        Order follows RFC 5228: ADDRESS-PART, then COMPARATOR, then MATCH-TYPE.
+        """
+        parts = ["not " if cond.negate else "", "address" if cond.address_test else "header"]
+        if cond.address_part:
+            parts.append(f" :{cond.address_part}")
+        if cond.comparator:
+            parts.append(f' :comparator "{self._quote(cond.comparator)}"')
+        parts.append(f" :{cond.match_type}")
+        parts.append(f' "{self._quote(cond.header)}"')
+        parts.append(f' "{self._quote(cond.value)}"')
+        return "".join(parts)
 
     def _generate_action(self, action: Action) -> str:
         arg = self._quote(action.argument)
@@ -533,6 +589,8 @@ def _rule_to_json(r: Rule) -> dict:
                 "value": c.value,
                 "address_test": c.address_test,
                 "negate": c.negate,
+                "address_part": c.address_part,
+                "comparator": c.comparator,
             }
             for c in r.conditions
         ],
@@ -570,6 +628,8 @@ def _rule_from_json(r: dict) -> Rule:
                 value=c.get("value", ""),
                 address_test=c.get("address_test", False),
                 negate=c.get("negate", False),
+                address_part=c.get("address_part", ""),
+                comparator=c.get("comparator", ""),
             )
         )
     actions = []

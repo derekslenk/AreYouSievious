@@ -24,7 +24,8 @@
  * @typedef {{key: string, kind: 'raw', text: string, comment: string}} RawEntry
  * @typedef {RuleEntry | RawEntry} Entry
  * @typedef {{key: string, header: string, match_type: string, value: string,
- *            address_test: boolean, negate: boolean}} Condition
+ *            address_test: boolean, negate: boolean, address_part: string,
+ *            comparator: string}} Condition
  * @typedef {{key: string, type: string, argument: string}} Action
  * @typedef {{requires: string[], entries: Entry[]}} ScriptDocument
  */
@@ -70,6 +71,12 @@ export function fromWire(payload) {
         value: c.value ?? '',
         address_test: c.address_test ?? false,
         negate: c.negate ?? false,
+        // RFC 5228 tagged arguments. Not editable in the builder — they are
+        // carried through untouched so a save can't change what a rule
+        // matches. Dropping :domain turned "the domain is example.com" into
+        // "the whole address is example.com".
+        address_part: c.address_part ?? '',
+        comparator: c.comparator ?? '',
       })),
       actions: (e.actions ?? []).map((a) => ({
         key: key(),
@@ -107,6 +114,8 @@ export function toWire(doc) {
               value: c.value,
               address_test: c.address_test,
               negate: c.negate,
+              address_part: c.address_part,
+              comparator: c.comparator,
             })),
             actions: e.actions.map((a) => ({ type: a.type, argument: a.argument })),
           }
@@ -141,6 +150,8 @@ export function newCondition() {
     value: '',
     address_test: true,
     negate: false,
+    address_part: '',
+    comparator: '',
   };
 }
 
