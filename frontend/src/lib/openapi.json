@@ -80,10 +80,27 @@
       "ConditionDTO": {
         "additionalProperties": false,
         "properties": {
+          "address_part": {
+            "default": "",
+            "enum": [
+              "",
+              "all",
+              "localpart",
+              "domain"
+            ],
+            "title": "Address Part",
+            "type": "string"
+          },
           "address_test": {
             "default": false,
             "title": "Address Test",
             "type": "boolean"
+          },
+          "comparator": {
+            "default": "",
+            "maxLength": 80,
+            "title": "Comparator",
+            "type": "string"
           },
           "header": {
             "maxLength": 120,

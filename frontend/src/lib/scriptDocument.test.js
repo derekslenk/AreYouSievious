@@ -33,7 +33,15 @@ const WIRE = {
       enabled: true,
       match: 'anyof',
       conditions: [
-        { header: 'from', match_type: 'is', value: 'a@x.com', address_test: true, negate: false },
+        {
+          header: 'from',
+          match_type: 'is',
+          value: 'a@x.com',
+          address_test: true,
+          negate: false,
+          address_part: 'domain',
+          comparator: '',
+        },
       ],
       actions: [{ type: 'fileinto', argument: 'A' }],
     },
@@ -44,7 +52,15 @@ const WIRE = {
       enabled: true,
       match: 'anyof',
       conditions: [
-        { header: 'from', match_type: 'is', value: 'b@x.com', address_test: true, negate: false },
+        {
+          header: 'from',
+          match_type: 'is',
+          value: 'b@x.com',
+          address_test: true,
+          negate: false,
+          address_part: '',
+          comparator: 'i;octet',
+        },
       ],
       actions: [{ type: 'fileinto', argument: 'B' }],
     },

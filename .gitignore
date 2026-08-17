@@ -16,3 +16,6 @@ frontend/dist/
 *.db
 .beads-credential-key
 .beads/proxieddb/
+
+# OMC operational state (agent runtime artifacts, not project files)
+.omc/

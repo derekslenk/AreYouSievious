@@ -185,13 +185,19 @@
               <input type="checkbox" bind:checked={script.entries[selectedEntryIdx].enabled} on:change={markDirty} />
               Enabled
             </label>
-            <div class="field">
-              <label>Match</label>
-              <select bind:value={script.entries[selectedEntryIdx].match} on:change={markDirty}>
-                <option value="anyof">Any condition (OR)</option>
-                <option value="allof">All conditions (AND)</option>
-              </select>
-            </div>
+            <!-- Only meaningful with 2+ conditions. A rule parsed from a bare
+                 `if <test> {` has no anyof/allof wrapper and carries match=""
+                 so the shape round-trips; showing an empty dropdown for it
+                 would be noise. -->
+            {#if script.entries[selectedEntryIdx].conditions.length > 1}
+              <div class="field">
+                <label>Match</label>
+                <select bind:value={script.entries[selectedEntryIdx].match} on:change={markDirty}>
+                  <option value="anyof">Any condition (OR)</option>
+                  <option value="allof">All conditions (AND)</option>
+                </select>
+              </div>
+            {/if}
           </div>
 
           <h3>Conditions</h3>
