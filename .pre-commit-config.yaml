@@ -7,3 +7,16 @@ repos:
       - id: ruff
         args: [--fix]
         files: ^backend/
+
+  - repo: local
+    hooks:
+      # The SPA's wire types are generated from the backend's OpenAPI schema.
+      # Regenerating here means a stale artifact is caught before the commit
+      # exists, rather than by the CI `contract` job after a push.
+      # Triggers only on backend files that can move the schema.
+      - id: regen-wire-types
+        name: regenerate wire types from OpenAPI
+        entry: tools/regen-wire-types.sh
+        language: script
+        files: ^backend/(api_models\.py|app\.py|routers/.*\.py)$
+        pass_filenames: false
