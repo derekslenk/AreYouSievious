@@ -2,6 +2,7 @@
   import { createEventDispatcher } from 'svelte';
   import { sortable } from '../lib/sortable.js';
   import { arrayMove } from '../lib/utils.js';
+  import { newCondition } from '../lib/scriptDocument.js';
   export let conditions = [];
   const dispatch = createEventDispatcher();
 
@@ -22,11 +23,7 @@
   ];
 
   function addCondition() {
-    conditions = [...conditions, {
-      id: Math.random().toString(36).slice(2, 10),
-      header: 'from', match_type: 'contains', value: '',
-      address_test: true, negate: false,
-    }];
+    conditions = [...conditions, newCondition()];
     dispatch('change');
   }
 
@@ -57,7 +54,7 @@
 </script>
 
 <div class="conditions" use:sortable={{ handle: '.drag-handle', onReorder: reorderCondition }}>
-  {#each conditions as cond, i (cond.id)}
+  {#each conditions as cond, i (cond.key)}
     <div class="condition-row">
       <span class="drag-handle" aria-hidden="true" title="Drag to reorder">&#9776;</span>
 

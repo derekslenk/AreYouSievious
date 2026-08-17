@@ -5,11 +5,13 @@
     view, currentScript, currentScriptName, folders, showToast,
   } from '../lib/stores.js';
   import { sortable } from '../lib/sortable.js';
-  import { arrayMove, rebuildOrder } from '../lib/utils.js';
+  import * as doc from '../lib/scriptDocument.js';
   import ConditionBuilder from '../components/ConditionBuilder.svelte';
   import ActionBuilder from '../components/ActionBuilder.svelte';
   import FolderPicker from '../components/FolderPicker.svelte';
 
+  // The editable document. ScriptDocument owns its shape, its render keys and
+  // its mutations; this component only renders and tracks selection.
   let script = null;
   let selectedIdx = 0;
   let saving = false;
@@ -21,27 +23,26 @@
   // Sieve preview of selected rule
   let preview = '';
 
+  // Rule entries, in order. Raw Blocks stay in `script.entries` and are never
+  // rendered, but keep their position through every mutation.
+  $: rules = script ? doc.ruleEntries(script) : [];
+
+  // Index of the selected rule within `script.entries`. Detail-panel binds go
+  // through this rather than through `rules`, so a two-way bind invalidates
+  // the document itself — binding into a `$:`-derived array would be
+  // overwritten on the next recompute and the preview would go stale.
+  $: selectedEntryIdx = script ? script.entries.indexOf(rules[selectedIdx]) : -1;
+
   onMount(async () => {
-    script = $currentScript;
-    // Ensure all conditions and actions have IDs for keyed {#each} blocks
-    if (script) {
-      for (const rule of script.rules) {
-        for (const c of rule.conditions) {
-          if (!c.id) c.id = Math.random().toString(36).slice(2, 10);
-        }
-        for (const a of rule.actions) {
-          if (!a.id) a.id = Math.random().toString(36).slice(2, 10);
-        }
-      }
-    }
+    script = doc.fromWire($currentScript);
     try {
       folderList = await api.listFolders();
       folders.set(folderList);
     } catch (e) { /* ok */ }
   });
 
-  $: if (script && script.rules[selectedIdx]) {
-    preview = generateRulePreview(script.rules[selectedIdx]);
+  $: if (rules[selectedIdx]) {
+    preview = generateRulePreview(rules[selectedIdx]);
   }
 
   function generateRulePreview(rule) {
@@ -67,43 +68,28 @@
   }
 
   function addRule() {
-    const rule = {
-      id: Math.random().toString(36).slice(2, 10),
-      name: 'New Rule',
-      enabled: true,
-      match: 'anyof',
-      conditions: [{ id: Math.random().toString(36).slice(2, 10), header: 'from', match_type: 'contains', value: '', address_test: true, negate: false }],
-      actions: [{ id: Math.random().toString(36).slice(2, 10), type: 'fileinto', argument: 'INBOX' }],
-    };
-    const oldRules = script.rules;
-    const newRules = [...oldRules, rule];
-    script.rules = newRules;
-    script.order = rebuildOrder(script.order, oldRules, newRules);
-    selectedIdx = newRules.length - 1;
+    script = doc.addRule(script);
+    selectedIdx = doc.ruleEntries(script).length - 1;
     dirty = true;
   }
 
   function deleteRule(idx) {
-    if (!confirm(`Delete rule "${script.rules[idx].name || 'Untitled'}"?`)) return;
-    const oldRules = script.rules;
-    const newRules = oldRules.filter((_, i) => i !== idx);
-    script.rules = newRules;
-    script.order = rebuildOrder(script.order, oldRules, newRules);
-    if (selectedIdx >= newRules.length) selectedIdx = Math.max(0, newRules.length - 1);
+    const target = doc.ruleEntries(script)[idx];
+    if (!confirm(`Delete rule "${target?.name || 'Untitled'}"?`)) return;
+    script = doc.deleteRule(script, idx);
+    const remaining = doc.ruleEntries(script).length;
+    if (selectedIdx >= remaining) selectedIdx = Math.max(0, remaining - 1);
     dirty = true;
   }
 
   function moveRule(idx, dir) {
-    const newIdx = idx + dir;
-    if (newIdx < 0 || newIdx >= script.rules.length) return;
-    reorderRule(idx, newIdx);
+    reorderRule(idx, idx + dir);
   }
 
   function reorderRule(oldIndex, newIndex) {
-    const oldRules = script.rules;
-    const newRules = arrayMove(oldRules, oldIndex, newIndex);
-    script.rules = newRules;
-    script.order = rebuildOrder(script.order, oldRules, newRules);
+    const next = doc.moveRule(script, oldIndex, newIndex);
+    if (next === script) return;
+    script = next;
     selectedIdx = newIndex;
     dirty = true;
   }
@@ -111,7 +97,7 @@
   async function save() {
     saving = true;
     try {
-      await api.saveScript($currentScriptName, script);
+      await api.saveScript($currentScriptName, doc.toWire(script));
       showToast('Script saved');
       dirty = false;
     } catch (e) {
@@ -158,7 +144,7 @@
   {#if script}
     <div class="editor-layout">
       <div class="rule-list" use:sortable={{ onReorder: reorderRule }}>
-        {#each script.rules as rule, i (rule.id)}
+        {#each rules as rule, i (rule.key)}
           <div
             class="rule-item"
             class:selected={i === selectedIdx}
@@ -177,32 +163,31 @@
             </div>
             <div class="rule-item-controls">
               <button class="btn-xs" on:click|stopPropagation={() => moveRule(i, -1)} disabled={i === 0} title="Move up">&#9650;</button>
-              <button class="btn-xs" on:click|stopPropagation={() => moveRule(i, 1)} disabled={i === script.rules.length - 1} title="Move down">&#9660;</button>
+              <button class="btn-xs" on:click|stopPropagation={() => moveRule(i, 1)} disabled={i === rules.length - 1} title="Move down">&#9660;</button>
               <button class="btn-xs btn-danger" on:click|stopPropagation={() => deleteRule(i)}>&#10005;</button>
             </div>
           </div>
         {/each}
-        {#if !script.rules.length}
+        {#if !rules.length}
           <p class="muted">No rules yet. Click "+ Add Rule" to start.</p>
         {/if}
       </div>
 
       <div class="rule-detail">
-        {#if script.rules[selectedIdx]}
-          {@const rule = script.rules[selectedIdx]}
+        {#if selectedEntryIdx >= 0}
           <div class="field">
             <label>Rule Name</label>
-            <input type="text" bind:value={rule.name} on:input={markDirty} />
+            <input type="text" bind:value={script.entries[selectedEntryIdx].name} on:input={markDirty} />
           </div>
 
           <div class="field-row">
             <label class="toggle">
-              <input type="checkbox" bind:checked={rule.enabled} on:change={markDirty} />
+              <input type="checkbox" bind:checked={script.entries[selectedEntryIdx].enabled} on:change={markDirty} />
               Enabled
             </label>
             <div class="field">
               <label>Match</label>
-              <select bind:value={rule.match} on:change={markDirty}>
+              <select bind:value={script.entries[selectedEntryIdx].match} on:change={markDirty}>
                 <option value="anyof">Any condition (OR)</option>
                 <option value="allof">All conditions (AND)</option>
               </select>
@@ -211,13 +196,13 @@
 
           <h3>Conditions</h3>
           <ConditionBuilder
-            bind:conditions={script.rules[selectedIdx].conditions}
+            bind:conditions={script.entries[selectedEntryIdx].conditions}
             on:change={markDirty}
           />
 
           <h3>Actions</h3>
           <ActionBuilder
-            bind:actions={script.rules[selectedIdx].actions}
+            bind:actions={script.entries[selectedEntryIdx].actions}
             on:change={markDirty}
             on:pickfolder={(e) => openFolderPicker(e.detail)}
           />
