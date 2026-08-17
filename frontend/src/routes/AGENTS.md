@@ -18,10 +18,10 @@ Page-level view components, each representing a top-level screen in the app. Rou
 ## For AI Agents
 
 ### Working In This Directory
-- `RuleEditor` is the most complex view — manages `script.order` metadata for interleaved rule/raw block positioning
+- `RuleEditor` renders and tracks selection only — the document and every mutation live in `lib/scriptDocument.js`. Do not reintroduce document logic here; it is untestable in a `.svelte` file (no jsdom, no `@testing-library/svelte`)
 - `Dashboard` buttons are always rendered but disabled for active scripts
-- `RuleEditor` patches ephemeral IDs onto conditions/actions in `onMount` for keyed rendering
-- Bind conditions/actions directly to `script.rules[selectedIdx].conditions` (not via `@const` alias) to ensure two-way binding propagates correctly
+- Render keys are minted by `scriptDocument` and stripped at the wire. Never send them: the DTOs are `extra="forbid"` and will 422 (see `docs/adr/0001-identity-is-view-state.md`)
+- Bind detail-panel fields through `script.entries[selectedEntryIdx].…`, not through the `$:`-derived `rules` array — binding into a derived value gets overwritten on recompute and the preview goes stale
 - `RawEditor` works with raw Sieve text, bypassing the JSON transform pipeline
 
 ### Common Patterns

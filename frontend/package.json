@@ -7,11 +7,16 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "test": "vitest run"
+    "test": "vitest run",
+    "check": "svelte-check --tsconfig ./jsconfig.json",
+    "gen:types": "python3 ../tools/dump-openapi.py > src/lib/openapi.json && openapi-typescript src/lib/openapi.json -o src/lib/api-types.d.ts"
   },
   "devDependencies": {
     "@sveltejs/vite-plugin-svelte": "^7.1.2",
+    "openapi-typescript": "^7.5.0",
     "svelte": "^5.56.3",
+    "svelte-check": "^4.1.0",
+    "typescript": "^5.7.0",
     "vite": "^8.0.16",
     "vitest": "^4.1.9"
   },

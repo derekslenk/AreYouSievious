@@ -12,6 +12,7 @@ Shared utilities, state management, and API client used across all frontend comp
 | `api.js` | HTTP client wrapping `fetch` for all backend endpoints; auto-dispatches `ays:logout` on 401 |
 | `stores.js` | Svelte writable stores: `user`, `scripts`, `currentScript`, `currentScriptName`, `folders`, `view`, `toast` |
 | `sortable.js` | Svelte action wrapping SortableJS; handles DOM revert so Svelte `{#each}` reconciles from data |
+| `scriptDocument.js` | Owns the editable Script: `fromWire`/`toWire`, `ruleEntries`, `addRule`/`deleteRule`/`moveRule`, `newCondition`/`newAction`. Mints render keys and strips them at the wire |
 | `utils.js` | `arrayMove(arr, oldIndex, newIndex)` utility for reordering arrays |
 
 ## For AI Agents

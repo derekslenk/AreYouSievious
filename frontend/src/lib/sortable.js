@@ -8,7 +8,8 @@ import Sortable from 'sortablejs';
  * @param {HTMLElement} node - The container element
  * @param {Object} params
  * @param {string} [params.handle] - CSS selector for drag handle
- * @param {function(number, number)} params.onReorder - Called with (oldIndex, newIndex)
+ * @param {(oldIndex: number, newIndex: number) => void} [params.onReorder] - Called with (oldIndex, newIndex)
+ * @param {string} [params.filter] - CSS selector for elements that must not start a drag
  */
 export function sortable(node, params) {
   let instance;

@@ -2,6 +2,7 @@
   import { createEventDispatcher } from 'svelte';
   import { sortable } from '../lib/sortable.js';
   import { arrayMove } from '../lib/utils.js';
+  import { newAction } from '../lib/scriptDocument.js';
   export let actions = [];
   const dispatch = createEventDispatcher();
 
@@ -17,7 +18,7 @@
   ];
 
   function addAction() {
-    actions = [...actions, { id: Math.random().toString(36).slice(2, 10), type: 'fileinto', argument: '' }];
+    actions = [...actions, newAction()];
     dispatch('change');
   }
 
@@ -39,9 +40,9 @@
 
   function onChange() { dispatch('change'); }
 
-  function pickFolder(actionId) {
+  function pickFolder(actionKey) {
     dispatch('pickfolder', (folder) => {
-      const target = actions.find(a => a.id === actionId);
+      const target = actions.find(a => a.key === actionKey);
       if (target) {
         target.argument = folder;
         actions = [...actions];
@@ -56,7 +57,7 @@
 </script>
 
 <div class="actions" use:sortable={{ handle: '.drag-handle', onReorder: reorderAction }}>
-  {#each actions as action, i (action.id)}
+  {#each actions as action, i (action.key)}
     <div class="action-row">
       <span class="drag-handle" aria-hidden="true" title="Drag to reorder">&#9776;</span>
 
@@ -73,7 +74,7 @@
           action.type === 'addflag' ? '\\Seen' : 'value'
         } />
         {#if action.type.startsWith('fileinto')}
-          <button class="btn-xs" on:click={() => pickFolder(action.id)} title="Browse folders">&#128193;</button>
+          <button class="btn-xs" on:click={() => pickFolder(action.key)} title="Browse folders">&#128193;</button>
         {/if}
       {/if}
 
