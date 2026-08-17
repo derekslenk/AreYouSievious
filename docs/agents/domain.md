@@ -1,7 +1,8 @@
 # Domain Docs
 
-**This repo: single-context.** `CONTEXT.md` and `docs/adr/` live at the repo root. Neither
-exists yet — that's expected; `/domain-modeling` creates them lazily.
+**This repo: single-context.** `CONTEXT.md` lives at the repo root and holds the Sieve
+filtering glossary. `docs/adr/` does not exist yet — that's expected; `/domain-modeling`
+creates it lazily when the first decision is worth recording.
 
 How the engineering skills should consume this repo's domain documentation when exploring
 the codebase.
