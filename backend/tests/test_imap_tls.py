@@ -31,6 +31,7 @@ BACKEND = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(BACKEND))
 
 import imap_client
+import mail_dial
 from auth import Session
 
 # ── _build_tls_context() ──
@@ -39,7 +40,7 @@ from auth import Session
 def test_default_context_verifies_chain_and_hostname(monkeypatch):
     """Default: verify_mode == CERT_REQUIRED AND check_hostname is True."""
     monkeypatch.delenv("AYS_IMAP_INSECURE", raising=False)
-    ctx = imap_client._build_tls_context()
+    ctx = mail_dial._build_tls_context()
     assert ctx.verify_mode == ssl.CERT_REQUIRED
     assert ctx.check_hostname is True
 
@@ -48,7 +49,7 @@ def test_insecure_env_var_disables_verification_and_warns(monkeypatch, caplog):
     """AYS_IMAP_INSECURE=1: unverified context + warning."""
     monkeypatch.setenv("AYS_IMAP_INSECURE", "1")
     with caplog.at_level("WARNING", logger="ays.imap"):
-        ctx = imap_client._build_tls_context()
+        ctx = mail_dial._build_tls_context()
     assert ctx.verify_mode == ssl.CERT_NONE
     assert ctx.check_hostname is False
     assert any("AYS_IMAP_INSECURE" in r.message for r in caplog.records), (
@@ -59,7 +60,7 @@ def test_insecure_env_var_disables_verification_and_warns(monkeypatch, caplog):
 @pytest.mark.parametrize("val", ["1", "true", "yes", "TRUE", "Yes"])
 def test_insecure_env_var_accepts_truthy_values(monkeypatch, val):
     monkeypatch.setenv("AYS_IMAP_INSECURE", val)
-    ctx = imap_client._build_tls_context()
+    ctx = mail_dial._build_tls_context()
     assert ctx.verify_mode == ssl.CERT_NONE
 
 
@@ -87,8 +88,8 @@ def test_imap_client_enter_passes_ssl_context_kwarg():
         last_used=0.0,
     )
     with (
-        patch.object(imap_client, "assert_host_resolves_to", lambda *a, **kw: None),
-        patch.object(imap_client, "_PinnedIMAP4_SSL") as mock_pinned,
+        patch.object(mail_dial, "assert_host_resolves_to", lambda *a, **kw: None),
+        patch.object(mail_dial, "_PinnedIMAP4_SSL") as mock_pinned,
     ):
         mock_conn = MagicMock()
         mock_pinned.return_value = mock_conn
@@ -106,7 +107,7 @@ def test_imap_client_enter_passes_ssl_context_kwarg():
         import os
 
         os.environ.pop("AYS_IMAP_INSECURE", None)
-        importlib.reload(imap_client)
-        ctx = imap_client.TLS_CONTEXT
+        importlib.reload(mail_dial)
+        ctx = mail_dial.TLS_CONTEXT
     assert ctx.verify_mode == ssl.CERT_REQUIRED
     assert ctx.check_hostname is True

@@ -23,9 +23,9 @@ from api_models import AuthStatusResponse, LoginRequest, OkResponse
 from auth import sessions
 from dependencies import SESSION_COOKIE, get_session
 from fastapi import APIRouter, HTTPException, Request, Response
-from imap_client import IMAP_TIMEOUT, TLS_CONTEXT
+from mail_dial import open_imap
 from middleware import CSRF_COOKIE, generate_csrf_token
-from ssrf import assert_host_resolves_to, validate_host
+from ssrf import HostValidationError, validate_host
 
 router = APIRouter(prefix="/api/auth")
 
@@ -162,17 +162,23 @@ def login(req: LoginRequest, request: Request, response: Response):
         raise HTTPException(429, "Too many login attempts. Try again in 5 minutes.")
 
     host_ip = validate_host(req.host)
-    assert_host_resolves_to(req.host, host_ip)
 
     try:
-        conn = imaplib.IMAP4_SSL(
-            req.host,
-            req.port_imap,
-            ssl_context=TLS_CONTEXT,
-            timeout=IMAP_TIMEOUT,
-        )
+        # Goes through mail_dial like every other connection. Building an
+        # imaplib.IMAP4_SSL here directly is what left the login path
+        # re-resolving the hostname after the rebinding guard had run, while
+        # IMAPClient and SieveClient were both pinned — the fix had been
+        # applied twice and missed the one caller that did not use them.
+        # open_imap re-validates, so the separate assert here is redundant.
+        conn = open_imap(req.host, host_ip, req.port_imap)
         conn.login(req.username, req.password)
         conn.logout()
+    except HostValidationError:
+        # MUST precede the catch-all. A rebinding attempt is a 400 with an
+        # explicit message via app.py's handler; letting it fall through to
+        # `except Exception` would report it as "Cannot connect to mail
+        # server" (502), indistinguishable from an ordinary network failure.
+        raise
     except imaplib.IMAP4.error:
         raise HTTPException(401, "Authentication failed")  # noqa: B904
     except ssl.SSLCertVerificationError:

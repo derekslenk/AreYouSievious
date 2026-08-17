@@ -1,73 +1,30 @@
 """
 ManageSieve client wrapper.
+
+Dialling policy — rebinding re-check, pinned connect, SNI split, timeouts —
+lives in `mail_dial`. This module owns the script operations.
 """
 
-import os
-import socket
-
 from auth import Session
+from mail_dial import open_sieve
 from sieve_names import validate_script_name
-from sievelib.managesieve import Client
-from ssrf import assert_host_resolves_to
-
-
-def _env_float(name: str, default: float) -> float:
-    raw = os.environ.get(name, "").strip()
-    if not raw:
-        return default
-    try:
-        return max(0.1, float(raw))
-    except ValueError:
-        return default
-
-
-CONNECT_TIMEOUT = _env_float("AYS_SIEVE_CONNECT_TIMEOUT", 10.0)
-IO_TIMEOUT = _env_float("AYS_SIEVE_IO_TIMEOUT", 30.0)
 
 
 class SieveClient:
-    """Wraps sievelib ManageSieve client with session credentials.
-
-    sievelib's `Client.connect` calls `socket.create_connection` without a
-    timeout, so a blackhole mail server pins the threadpool worker for
-    the OS TCP timeout (~2 minutes). We set the connect timeout via the
-    process-default trick for the duration of the connect, then set the
-    long-lived I/O timeout on the live socket. Env overrides:
-    AYS_SIEVE_CONNECT_TIMEOUT / AYS_SIEVE_IO_TIMEOUT (seconds).
-    """
+    """Wraps a sievelib ManageSieve client with session credentials."""
 
     def __init__(self, session: Session):
         self.session = session
         self._client = None
 
     def __enter__(self):
-        assert_host_resolves_to(self.session.host, self.session.host_ip)
-
-        previous_default = socket.getdefaulttimeout()
-        socket.setdefaulttimeout(CONNECT_TIMEOUT)
-        try:
-            # F-1/F-9 Phase B (areyousievious-vzs): dial the pinned IP but
-            # keep TLS SNI + cert verification tied to the original hostname.
-            # sievelib supports this split natively via the srvhostname param
-            # (Client.__enable_ssl uses srvhostname for wrap_socket while the
-            # socket connects to srvaddr). Closes the third-resolution TOCTOU
-            # window that would otherwise exist inside
-            # sievelib.Client.connect -> socket.create_connection((host, ...)).
-            self._client = Client(
-                self.session.host_ip,
-                self.session.port_sieve,
-                srvhostname=self.session.host,
-            )
-            self._client.connect(
-                self.session.username,
-                self.session.password,
-                starttls=True,
-            )
-        finally:
-            socket.setdefaulttimeout(previous_default)
-
-        if self._client.sock is not None:
-            self._client.sock.settimeout(IO_TIMEOUT)
+        self._client = open_sieve(
+            self.session.host,
+            self.session.host_ip,
+            self.session.port_sieve,
+            self.session.username,
+            self.session.password,
+        )
         return self
 
     def __exit__(self, *args):
