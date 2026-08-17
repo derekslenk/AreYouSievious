@@ -33,38 +33,22 @@
   // overwritten on the next recompute and the preview would go stale.
   $: selectedEntryIdx = script ? script.entries.indexOf(rules[selectedIdx]) : -1;
 
-  onMount(async () => {
-    script = doc.fromWire($currentScript);
+  async function refreshFolders() {
     try {
       folderList = await api.listFolders();
       folders.set(folderList);
-    } catch (e) { /* ok */ }
-  });
-
-  $: if (rules[selectedIdx]) {
-    preview = generateRulePreview(rules[selectedIdx]);
+    } catch (e) { /* the picker still works with a stale list */ }
   }
 
-  function generateRulePreview(rule) {
-    if (!rule || !rule.conditions.length) return '';
-    const tests = rule.conditions.map(c => {
-      const t = c.address_test ? 'address' : 'header';
-      return `    ${t} :${c.match_type} "${c.header}" "${c.value}"`;
-    });
-    const acts = rule.actions.map(a => {
-      if (a.type === 'fileinto') return `    fileinto "${a.argument}";`;
-      if (a.type === 'fileinto_copy') return `    fileinto :copy "${a.argument}";`;
-      if (a.type === 'redirect') return `    redirect "${a.argument}";`;
-      if (a.type === 'keep') return '    keep;';
-      if (a.type === 'discard') return '    discard;';
-      if (a.type === 'stop') return '    stop;';
-      return `    ${a.type} "${a.argument}";`;
-    });
+  onMount(async () => {
+    script = doc.fromWire($currentScript);
+    await refreshFolders();
+  });
 
-    if (tests.length === 1) {
-      return `if ${tests[0].trim()} {\n${acts.join('\n')}\n}`;
-    }
-    return `if ${rule.match} (\n${tests.join(',\n')}\n) {\n${acts.join('\n')}\n}`;
+  // Preview generation lives in ScriptDocument — it must agree with the
+  // backend generator, and it can only be tested outside a .svelte file.
+  $: if (rules[selectedIdx]) {
+    preview = doc.previewRule(rules[selectedIdx]);
   }
 
   function addRule() {
@@ -150,7 +134,9 @@
             class:selected={i === selectedIdx}
             class:disabled={!rule.enabled}
             on:click={() => selectedIdx = i}
-            on:keydown={(e) => e.key === 'Enter' && (selectedIdx = i)}
+            on:keydown={(e) => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), selectedIdx = i)}
+            role="button"
+            aria-pressed={i === selectedIdx}
             tabindex="0"
           >
             <span class="drag-icon" aria-hidden="true">&#9776;</span>
@@ -176,8 +162,8 @@
       <div class="rule-detail">
         {#if selectedEntryIdx >= 0}
           <div class="field">
-            <label>Rule Name</label>
-            <input type="text" bind:value={script.entries[selectedEntryIdx].name} on:input={markDirty} />
+            <label for="rule-name">Rule Name</label>
+            <input id="rule-name" type="text" bind:value={script.entries[selectedEntryIdx].name} on:input={markDirty} />
           </div>
 
           <div class="field-row">
@@ -191,8 +177,8 @@
                  would be noise. -->
             {#if script.entries[selectedEntryIdx].conditions.length > 1}
               <div class="field">
-                <label>Match</label>
-                <select bind:value={script.entries[selectedEntryIdx].match} on:change={markDirty}>
+                <label for="rule-match">Match</label>
+                <select id="rule-match" bind:value={script.entries[selectedEntryIdx].match} on:change={markDirty}>
                   <option value="anyof">Any condition (OR)</option>
                   <option value="allof">All conditions (AND)</option>
                 </select>
@@ -224,7 +210,12 @@
 </div>
 
 {#if showFolderPicker}
-  <FolderPicker folders={folderList} on:select={onFolderSelected} on:close={() => showFolderPicker = false} />
+  <FolderPicker
+    folders={folderList}
+    on:select={onFolderSelected}
+    on:created={refreshFolders}
+    on:close={() => showFolderPicker = false}
+  />
 {/if}
 
 <style>

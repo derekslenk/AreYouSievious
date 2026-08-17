@@ -135,6 +135,82 @@ export function ruleEntries(doc) {
   return doc.entries.filter((e) => e.kind === 'rule');
 }
 
+// ── Preview ──
+
+/** Escape a string for use inside Sieve double quotes (mirrors the backend). */
+function quote(s) {
+  return String(s ?? '').replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+}
+
+/** Render one test exactly as the backend generator would. */
+function renderTest(c) {
+  let out = c.negate ? 'not ' : '';
+  out += c.address_test ? 'address' : 'header';
+  if (c.address_part) out += ` :${c.address_part}`;
+  if (c.comparator) out += ` :comparator "${quote(c.comparator)}"`;
+  out += ` :${c.match_type} "${quote(c.header)}" "${quote(c.value)}"`;
+  return out;
+}
+
+/** Render one action exactly as the backend generator would. */
+function renderAction(a) {
+  switch (a.type) {
+    case 'fileinto':
+      return `fileinto "${quote(a.argument)}";`;
+    case 'fileinto_copy':
+      return `fileinto :copy "${quote(a.argument)}";`;
+    case 'redirect':
+      return `redirect "${quote(a.argument)}";`;
+    case 'keep':
+      return 'keep;';
+    case 'discard':
+      return 'discard;';
+    case 'stop':
+      return 'stop;';
+    case 'addflag':
+      return `addflag "${quote(a.argument)}";`;
+    case 'reject':
+      return `reject "${quote(a.argument)}";`;
+    default:
+      return `# unknown action: ${a.type}`;
+  }
+}
+
+/**
+ * Render a Rule as the Sieve it will actually be saved as.
+ *
+ * This lives here, not in the component, because it is a second implementation
+ * of the backend generator and the two must agree. The component's version
+ * silently diverged on three counts — it dropped `negate` (so a NOT condition
+ * previewed as its positive), did no quote escaping, and showed a disabled
+ * rule as live. The preview is the feature that tells users what will be
+ * saved, so a divergence here is a lie with consequences.
+ *
+ * @param {RuleEntry} rule
+ * @returns {string}
+ */
+export function previewRule(rule) {
+  if (!rule || !rule.conditions.length) return '';
+
+  const tests = rule.conditions.map(renderTest);
+  const actions = rule.actions.map((a) => `    ${renderAction(a)}`);
+
+  const head =
+    tests.length === 1 && !rule.match
+      ? `if ${tests[0]} {`
+      : `if ${rule.match || 'anyof'} (\n${tests.map((t) => `    ${t}`).join(',\n')}\n) {`;
+
+  const body = [head, ...actions, '}'].join('\n');
+
+  // A disabled rule is stored commented out; preview it that way.
+  return rule.enabled
+    ? body
+    : body
+        .split('\n')
+        .map((line) => (line.trim() ? `## ${line}` : '##'))
+        .join('\n');
+}
+
 // ── Mutations (each returns a new document) ──
 
 /**

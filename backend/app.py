@@ -23,6 +23,7 @@ from middleware import (
 from routers import static as static_router_mod
 from routers.auth import router as auth_router
 from routers.folders import router as folders_router
+from routers.health import router as health_router
 from routers.scripts import router as scripts_router
 from routers.static import router as static_router
 from sieve_names import ScriptNameError
@@ -72,9 +73,13 @@ app.add_middleware(
 )
 
 # ── Routers ──
+# Order matters: the static router ends with a catch-all GET /{full_path:path},
+# so every real route must be registered before it or the SPA fallback swallows
+# it.
 app.include_router(auth_router)
 app.include_router(scripts_router)
 app.include_router(folders_router)
+app.include_router(health_router)
 app.include_router(static_router)
 
 

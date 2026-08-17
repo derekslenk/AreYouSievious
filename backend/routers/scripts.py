@@ -10,6 +10,7 @@ handlers in app.py.
 
 from __future__ import annotations
 
+import os
 import re
 
 from api_models import (
@@ -32,7 +33,21 @@ from sieve_transform import (
 
 router = APIRouter(prefix="/api/scripts")
 
-MAX_UPLOAD_BYTES = 1 * 1024 * 1024  # 1 MB
+DEFAULT_MAX_BODY_BYTES = 1 * 1024 * 1024  # 1 MiB
+
+
+def _max_upload_bytes() -> int:
+    """Upload cap for POST /api/scripts/import.
+
+    Read at call time from the SAME env var as the body-size middleware. This
+    was a hardcoded 1 MiB, so raising AYS_MAX_BODY_BYTES silently left imports
+    capped at the old value — the two limits disagreed and only one of them
+    was configurable.
+    """
+    try:
+        return int(os.environ.get("AYS_MAX_BODY_BYTES", str(DEFAULT_MAX_BODY_BYTES)))
+    except ValueError:
+        return DEFAULT_MAX_BODY_BYTES
 
 
 @router.get("", response_model=list[ScriptListItem])
@@ -86,9 +101,10 @@ def import_script(
     ponytail: sync handler so FastAPI runs it in a threadpool — the slow
     ManageSieve PUT no longer blocks the event loop (Perf C1 / Fwk C-1).
     """
+    cap = _max_upload_bytes()
     raw = file.file.read()
-    if len(raw) > MAX_UPLOAD_BYTES:
-        raise HTTPException(413, f"File too large (max {MAX_UPLOAD_BYTES // 1024}KB)")
+    if len(raw) > cap:
+        raise HTTPException(413, f"File too large (max {cap // 1024}KB)")
     try:
         content = raw.decode("utf-8")
     except UnicodeDecodeError:

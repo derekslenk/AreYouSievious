@@ -54,6 +54,8 @@ EXPECTED_ROUTES: frozenset[tuple[str, str]] = frozenset(
         # Folders
         ("GET", "/api/folders"),
         ("POST", "/api/folders"),
+        # Health
+        ("GET", "/healthz"),
         # SPA fallback (catch-all)
         ("GET", "/{full_path:path}"),
     }
@@ -125,6 +127,9 @@ async def _client() -> httpx.AsyncClient:
         ("/api/scripts/whatever/raw", 401),
         ("/api/scripts/whatever/export", 401),
         ("/api/folders", 401),
+        # Liveness: unauthenticated by design, and registered before the SPA
+        # catch-all — if it were registered after, this would be a 404.
+        ("/healthz", 200),
         ("/", 404),
         ("/some-spa-deeplink", 404),
     ],
