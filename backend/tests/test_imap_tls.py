@@ -67,7 +67,14 @@ def test_insecure_env_var_accepts_truthy_values(monkeypatch, val):
 
 
 def test_imap_client_enter_passes_ssl_context_kwarg():
-    """The connection MUST be opened with our ssl_context, not the stdlib default."""
+    """The connection MUST be opened with our ssl_context, not the stdlib default.
+
+    Post-vzs the client is `_PinnedIMAP4_SSL` (subclass of imaplib.IMAP4_SSL);
+    we patch the subclass to observe the ssl_context kwarg. Patching
+    imaplib.IMAP4_SSL directly would not affect the subclass's super()
+    chain (MRO is frozen at class-def time), so the mock would never see
+    the call.
+    """
     session = Session(
         token="t",
         host="imap.example.com",
@@ -81,26 +88,21 @@ def test_imap_client_enter_passes_ssl_context_kwarg():
     )
     with (
         patch.object(imap_client, "assert_host_resolves_to", lambda *a, **kw: None),
-        patch.object(imap_client.imaplib, "IMAP4_SSL") as mock_ssl,
+        patch.object(imap_client, "_PinnedIMAP4_SSL") as mock_pinned,
     ):
         mock_conn = MagicMock()
-        mock_ssl.return_value = mock_conn
+        mock_pinned.return_value = mock_conn
         with imap_client.IMAPClient(session):
             pass
 
-    mock_ssl.assert_called_once()
-    kwargs = mock_ssl.call_args.kwargs
+    mock_pinned.assert_called_once()
+    kwargs = mock_pinned.call_args.kwargs
     assert "ssl_context" in kwargs, (
-        "ssl_context kwarg missing — stdlib default would silently accept any cert"
+        "ssl_context kwarg missing -- stdlib default would silently accept any cert"
     )
     ctx = kwargs["ssl_context"]
     assert isinstance(ctx, ssl.SSLContext)
-    # The context that ships with the module must verify by default.
-    # (We re-build it here to catch a test pollution where TLS_CONTEXT was
-    # constructed under AYS_IMAP_INSECURE=1 from an earlier test.)
     if not ctx.check_hostname:
-        # Module was loaded with INSECURE — re-import without it to confirm
-        # the production default verifies.
         import os
 
         os.environ.pop("AYS_IMAP_INSECURE", None)
