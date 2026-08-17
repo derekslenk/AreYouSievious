@@ -70,18 +70,34 @@ def validate_host(host: str) -> str:
 
 
 def assert_host_resolves_to(host: str, expected_ip: str) -> None:
-    """Re-resolve `host`; raise if the answer set no longer includes the IP
-    we validated at login time.
+    """Re-resolve `host`; raise if the answer set has drifted in a way that
+    would let a rebinding attack reach a private destination.
 
-    This is the rebinding guard: an attacker who flips the authoritative
-    DNS answer between login-validation and a later connect MUST end up
-    with an answer set that excludes `expected_ip` (the IP we
-    originally vetted). When that happens we abort instead of dialing
-    the now-private destination.
+    This is the rebinding guard called at every outbound connect
+    (areyousievious-8ca established the base defence; areyousievious-vzs
+    closes the two remaining gaps below).
+
+    Two rejection conditions -- both required:
+
+    1. `expected_ip` MUST still be in the answer set. An attacker who flips
+       the DNS answer between login-validation and a later connect ends up
+       with an answer set that excludes the IP we originally vetted.
+
+    2. NO current answer may be a blocked address (private/loopback/link-
+       local/multicast/etc). The "mixed answer set" variant: an attacker
+       adds `10.0.0.5` alongside the pinned public IP so that
+       `socket.create_connection((host, port))` may pick the private
+       address on the OS-level resolution that happens inside the client.
+       Reject the whole answer set in that case.
     """
     current = _resolve(host)
-    if expected_ip in current:
-        return
-    raise HostValidationError(
-        f"DNS for {host} no longer resolves to the validated IP — rebinding attempt blocked"
-    )
+    if expected_ip not in current:
+        raise HostValidationError(
+            f"DNS for {host} no longer resolves to the validated IP -- rebinding attempt blocked"
+        )
+    for ip in current:
+        if _is_blocked(ip):
+            raise HostValidationError(
+                f"DNS for {host} now includes a blocked address -- "
+                "mixed-answer-set rebinding attempt blocked"
+            )

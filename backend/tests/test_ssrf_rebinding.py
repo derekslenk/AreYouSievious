@@ -115,10 +115,14 @@ def test_assert_passes_when_expected_ip_in_answer():
 
 
 def test_assert_passes_when_expected_ip_in_multi_answer():
+    """Two truly-public IPs alongside each other -- guard must pass. Uses
+    8.8.8.8 (Google Public DNS) as the alternate rather than an RFC 5737
+    documentation range (198.51.100/24 etc.) which Python's ipaddress
+    module correctly classifies as private."""
     with patch.object(
         ssrf.socket,
         "getaddrinfo",
-        return_value=_addrinfo("198.51.100.1", "93.184.216.34"),
+        return_value=_addrinfo("8.8.8.8", "93.184.216.34"),
     ):
         ssrf.assert_host_resolves_to("example.com", "93.184.216.34")
 
@@ -128,6 +132,61 @@ def test_assert_raises_when_expected_ip_absent():
     hostname now answers with a different (private) IP only."""
     with patch.object(ssrf.socket, "getaddrinfo", return_value=_addrinfo("10.0.0.5")):
         with pytest.raises(ssrf.HostValidationError, match="rebinding"):
+            ssrf.assert_host_resolves_to("example.com", "93.184.216.34")
+
+
+# ── Phase A: mixed-answer-set defense (F-1 variant A, areyousievious-vzs) ──
+
+
+def test_assert_rejects_mixed_answer_with_private_ip():
+    """F-1 variant A: attacker DNS returns the pinned public IP alongside
+    a private IP. Stock guard passes because expected_ip is present, but
+    downstream socket.create_connection may pick the private one. Fix:
+    reject the whole answer set if any current IP is blocked."""
+    with patch.object(
+        ssrf.socket,
+        "getaddrinfo",
+        return_value=_addrinfo("93.184.216.34", "10.0.0.5"),
+    ):
+        with pytest.raises(ssrf.HostValidationError, match="mixed-answer-set"):
+            ssrf.assert_host_resolves_to("example.com", "93.184.216.34")
+
+
+def test_assert_rejects_mixed_answer_with_loopback():
+    """Loopback (127.0.0.1) variant of the mixed-answer attack -- e.g.,
+    localhost services reachable at their well-known ports."""
+    with patch.object(
+        ssrf.socket,
+        "getaddrinfo",
+        return_value=_addrinfo("93.184.216.34", "127.0.0.1"),
+    ):
+        with pytest.raises(ssrf.HostValidationError, match="mixed-answer-set"):
+            ssrf.assert_host_resolves_to("example.com", "93.184.216.34")
+
+
+def test_assert_rejects_mixed_answer_with_link_local_metadata():
+    """Cloud metadata endpoint (169.254.169.254 for AWS/GCP/Azure) via
+    the mixed-answer bypass -- the classic SSRF-via-DNS-rebinding
+    exfil-IAM-credentials attack."""
+    with patch.object(
+        ssrf.socket,
+        "getaddrinfo",
+        return_value=_addrinfo("93.184.216.34", "169.254.169.254"),
+    ):
+        with pytest.raises(ssrf.HostValidationError, match="mixed-answer-set"):
+            ssrf.assert_host_resolves_to("example.com", "93.184.216.34")
+
+
+def test_assert_rejects_mixed_answer_with_ipv4_mapped_v6_loopback():
+    """The IPv4-mapped-v6 sneak-past also blocks in the mixed-answer case:
+    attacker adds `::ffff:127.0.0.1` alongside the pinned public IP so the
+    v6-native check doesn't catch loopback."""
+    with patch.object(
+        ssrf.socket,
+        "getaddrinfo",
+        return_value=_addrinfo("93.184.216.34", "::ffff:127.0.0.1"),
+    ):
+        with pytest.raises(ssrf.HostValidationError, match="mixed-answer-set"):
             ssrf.assert_host_resolves_to("example.com", "93.184.216.34")
 
 
@@ -151,16 +210,102 @@ def test_full_rebinding_attack_blocked(monkeypatch):
 
 
 def test_imap_client_aborts_on_rebinding_before_touching_network():
-    """IMAPClient.__enter__ MUST re-validate BEFORE constructing IMAP4_SSL
-    so a rebinding never reaches the socket layer.
+    """IMAPClient.__enter__ MUST re-validate BEFORE constructing the SSL
+    client so a rebinding never reaches the socket layer.
 
-    If a future refactor moves assert_host_resolves_to after the
-    IMAP4_SSL call, the mock would be called and this assertion goes red.
+    Post-vzs the client is `_PinnedIMAP4_SSL` (not stock `imaplib.IMAP4_SSL`).
+    If a future refactor moves assert_host_resolves_to after the client
+    construction, the mock would be called and this assertion goes red.
     """
+    from unittest.mock import MagicMock
+
     session = _session()
     with patch.object(ssrf.socket, "getaddrinfo", return_value=_addrinfo("10.0.0.5")):
-        with patch.object(imap_client.imaplib, "IMAP4_SSL") as mock_ssl:
+        with patch.object(imap_client, "_PinnedIMAP4_SSL") as mock_pinned:
+            mock_pinned.return_value = MagicMock()
             with pytest.raises(ssrf.HostValidationError, match="rebinding"):
                 with imap_client.IMAPClient(session):
                     pass
-            mock_ssl.assert_not_called()
+            mock_pinned.assert_not_called()
+
+
+# ── Phase B: connect-by-IP + SNI split (F-1/F-9 variant B, areyousievious-vzs) ──
+
+
+def test_pinned_imap4_ssl_create_socket_uses_pinned_ip_and_sni_hostname():
+    """Unit test the _create_socket override: socket.create_connection must
+    target the pinned IP, and TLS wrap_socket must set server_hostname to
+    the original hostname (so cert CN/SAN verification still works)."""
+    from unittest.mock import MagicMock
+
+    instance = imap_client._PinnedIMAP4_SSL.__new__(imap_client._PinnedIMAP4_SSL)
+    instance._pinned_ip = "93.184.216.34"
+    instance.host = "mail.example.com"
+    instance.port = 993
+    mock_ctx = MagicMock()
+    mock_ctx.wrap_socket.return_value = MagicMock()
+    instance.ssl_context = mock_ctx
+
+    with patch.object(imap_client.socket, "create_connection") as mock_conn:
+        mock_conn.return_value = MagicMock()
+        instance._create_socket(timeout=10)
+
+    mock_conn.assert_called_once_with(("93.184.216.34", 993), 10)
+    mock_ctx.wrap_socket.assert_called_once()
+    _, wrap_kwargs = mock_ctx.wrap_socket.call_args
+    assert wrap_kwargs.get("server_hostname") == "mail.example.com"
+
+
+def test_imap_client_constructs_pinned_subclass_with_correct_args():
+    """IMAPClient.__enter__ instantiates _PinnedIMAP4_SSL with (host,
+    host_ip, port, ssl_context=, timeout=) so the subclass's overridden
+    _create_socket has both values available to split the connect target
+    from the SNI hostname."""
+    from unittest.mock import MagicMock
+
+    session = _session(host="mail.example.com", host_ip="93.184.216.34")
+    with (
+        patch.object(ssrf.socket, "getaddrinfo", return_value=_addrinfo("93.184.216.34")),
+        patch.object(imap_client, "_PinnedIMAP4_SSL") as mock_pinned,
+    ):
+        mock_pinned.return_value = MagicMock()
+        with imap_client.IMAPClient(session):
+            pass
+
+    mock_pinned.assert_called_once()
+    args, kwargs = mock_pinned.call_args
+    assert args[0] == "mail.example.com", "host (SNI hostname) MUST be first positional arg"
+    assert args[1] == "93.184.216.34", "host_ip (dial target) MUST be second positional arg"
+    assert args[2] == 993, "port MUST be third positional arg"
+    assert "ssl_context" in kwargs
+    assert "timeout" in kwargs
+
+
+def test_sieve_client_uses_srvhostname_param_to_split_dial_from_sni():
+    """SieveClient.__enter__ must construct sievelib.Client with the pinned
+    IP as srvaddr AND session.host as srvhostname. sievelib's __enable_ssl
+    uses srvhostname for wrap_socket while the socket connects to srvaddr
+    -- native support for the same SNI-split pattern as _PinnedIMAP4_SSL."""
+    from unittest.mock import MagicMock
+
+    import managesieve_client
+
+    session = _session(host="sieve.example.com", host_ip="93.184.216.34")
+    with (
+        patch.object(managesieve_client, "assert_host_resolves_to", lambda *a, **kw: None),
+        patch.object(managesieve_client, "Client") as mock_client,
+    ):
+        stub = MagicMock()
+        stub.sock = MagicMock()
+        mock_client.return_value = stub
+        with managesieve_client.SieveClient(session):
+            pass
+
+    mock_client.assert_called_once()
+    args, kwargs = mock_client.call_args
+    assert args == ("93.184.216.34", 4190), (
+        f"sievelib.Client should dial pinned IP not hostname, got {args!r}"
+    )
+    assert kwargs.get("srvhostname") == "sieve.example.com", (
+        f"srvhostname must be original hostname for TLS SNI, got {kwargs!r}"
+    )
