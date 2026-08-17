@@ -46,7 +46,18 @@ class SieveClient:
         previous_default = socket.getdefaulttimeout()
         socket.setdefaulttimeout(CONNECT_TIMEOUT)
         try:
-            self._client = Client(self.session.host, self.session.port_sieve)
+            # F-1/F-9 Phase B (areyousievious-vzs): dial the pinned IP but
+            # keep TLS SNI + cert verification tied to the original hostname.
+            # sievelib supports this split natively via the srvhostname param
+            # (Client.__enable_ssl uses srvhostname for wrap_socket while the
+            # socket connects to srvaddr). Closes the third-resolution TOCTOU
+            # window that would otherwise exist inside
+            # sievelib.Client.connect -> socket.create_connection((host, ...)).
+            self._client = Client(
+                self.session.host_ip,
+                self.session.port_sieve,
+                srvhostname=self.session.host,
+            )
             self._client.connect(
                 self.session.username,
                 self.session.password,
