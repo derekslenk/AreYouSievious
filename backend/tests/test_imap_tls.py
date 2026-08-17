@@ -1,17 +1,15 @@
 """
-Regression tests locking in the outbound IMAP TLS verification fix
-(Phase-CP1, Sec C-1 / CWE-295 / CVSS 9.1).
+Outbound TLS verification (Phase-CP1, Sec C-1 / CWE-295 / CVSS 9.1).
 
-Without `ssl.create_default_context()` the stdlib `imaplib.IMAP4_SSL`
-falls back to `ssl._create_stdlib_context()` which accepts ANY certificate,
-including a self-signed cert from an on-path MITM. The next line of the
-client sends the user's plaintext password — credential theft is silent.
+Without an explicit context, `imaplib.IMAP4_SSL` falls back to
+`ssl._create_stdlib_context()`, which accepts ANY certificate — including a
+self-signed one from an on-path MITM — and the client then sends the user's
+plaintext password. Credential theft, silently.
 
-These tests assert:
-  1. Default context has cert + hostname verification on.
-  2. `AYS_IMAP_INSECURE=1` produces an unverified context AND logs a warning.
-  3. `IMAPClient.__enter__` passes the module-level `TLS_CONTEXT` to
-     `imaplib.IMAP4_SSL` (catches a future refactor that drops `ssl_context=`).
+These tests used to set AYS_IMAP_INSECURE and reload the module, because the
+context was a module constant computed from the environment; one of them even
+documented having to recover from pollution left by an earlier test. The
+builder now takes a Settings.
 
 Run from the backend/ directory:
     cd backend && python -m pytest tests/test_imap_tls.py -v
@@ -19,63 +17,58 @@ Run from the backend/ directory:
 
 from __future__ import annotations
 
-import importlib
 import ssl
 import sys
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-import pytest
-
 BACKEND = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(BACKEND))
 
-import imap_client
 import mail_dial
 from auth import Session
+from config import Settings
 
-# ── _build_tls_context() ──
 
-
-def test_default_context_verifies_chain_and_hostname(monkeypatch):
-    """Default: verify_mode == CERT_REQUIRED AND check_hostname is True."""
-    monkeypatch.delenv("AYS_IMAP_INSECURE", raising=False)
-    ctx = mail_dial._build_tls_context()
+def test_default_context_verifies_chain_and_hostname():
+    ctx = mail_dial._build_tls_context(Settings())
     assert ctx.verify_mode == ssl.CERT_REQUIRED
     assert ctx.check_hostname is True
 
 
-def test_insecure_env_var_disables_verification_and_warns(monkeypatch, caplog):
-    """AYS_IMAP_INSECURE=1: unverified context + warning."""
-    monkeypatch.setenv("AYS_IMAP_INSECURE", "1")
-    with caplog.at_level("WARNING", logger="ays.imap"):
-        ctx = mail_dial._build_tls_context()
+def test_default_context_requires_tls_1_2_or_better():
+    assert mail_dial._build_tls_context(Settings()).minimum_version >= ssl.TLSVersion.TLSv1_2
+
+
+def test_insecure_setting_disables_verification_and_warns(caplog):
+    with caplog.at_level("WARNING", logger="ays.dial"):
+        ctx = mail_dial._build_tls_context(Settings(imap_insecure=True))
     assert ctx.verify_mode == ssl.CERT_NONE
     assert ctx.check_hostname is False
     assert any("AYS_IMAP_INSECURE" in r.message for r in caplog.records), (
-        "Operator must see a warning when verification is off"
+        "an operator turning off verification must see a warning"
     )
 
 
-@pytest.mark.parametrize("val", ["1", "true", "yes", "TRUE", "Yes"])
-def test_insecure_env_var_accepts_truthy_values(monkeypatch, val):
-    monkeypatch.setenv("AYS_IMAP_INSECURE", val)
-    ctx = mail_dial._build_tls_context()
-    assert ctx.verify_mode == ssl.CERT_NONE
+def test_insecure_env_var_reaches_settings(monkeypatch):
+    """The env var is still the operator-facing switch; Settings is where it
+    gets read, exactly once."""
+    for value in ("1", "true", "yes", "TRUE", "Yes"):
+        monkeypatch.setenv("AYS_IMAP_INSECURE", value)
+        assert Settings.from_env().imap_insecure is True
+    monkeypatch.setenv("AYS_IMAP_INSECURE", "0")
+    assert Settings.from_env().imap_insecure is False
+    monkeypatch.delenv("AYS_IMAP_INSECURE")
+    assert Settings.from_env().imap_insecure is False
 
 
-# ── IMAPClient.__enter__ passes the verified context to IMAP4_SSL ──
+def test_tls_context_is_cached():
+    """One context is shared across connections rather than rebuilt per dial."""
+    assert mail_dial.tls_context() is mail_dial.tls_context()
 
 
-def test_imap_client_enter_passes_ssl_context_kwarg():
-    """The connection MUST be opened with our ssl_context, not the stdlib default.
-
-    Post-vzs the client is `_PinnedIMAP4_SSL` (subclass of imaplib.IMAP4_SSL);
-    we patch the subclass to observe the ssl_context kwarg. Patching
-    imaplib.IMAP4_SSL directly would not affect the subclass's super()
-    chain (MRO is frozen at class-def time), so the mock would never see
-    the call.
-    """
+def test_open_imap_passes_the_verified_context():
+    """The connection MUST be opened with our context, not the stdlib default."""
     session = Session(
         token="t",
         host="imap.example.com",
@@ -91,23 +84,10 @@ def test_imap_client_enter_passes_ssl_context_kwarg():
         patch.object(mail_dial, "assert_host_resolves_to", lambda *a, **kw: None),
         patch.object(mail_dial, "_PinnedIMAP4_SSL") as mock_pinned,
     ):
-        mock_conn = MagicMock()
-        mock_pinned.return_value = mock_conn
-        with imap_client.IMAPClient(session):
-            pass
+        mock_pinned.return_value = MagicMock()
+        mail_dial.open_imap(session.host, session.host_ip, session.port_imap)
 
-    mock_pinned.assert_called_once()
-    kwargs = mock_pinned.call_args.kwargs
-    assert "ssl_context" in kwargs, (
-        "ssl_context kwarg missing -- stdlib default would silently accept any cert"
-    )
-    ctx = kwargs["ssl_context"]
+    ctx = mock_pinned.call_args.kwargs["ssl_context"]
     assert isinstance(ctx, ssl.SSLContext)
-    if not ctx.check_hostname:
-        import os
-
-        os.environ.pop("AYS_IMAP_INSECURE", None)
-        importlib.reload(mail_dial)
-        ctx = mail_dial.TLS_CONTEXT
     assert ctx.verify_mode == ssl.CERT_REQUIRED
     assert ctx.check_hostname is True
