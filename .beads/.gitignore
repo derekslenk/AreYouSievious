@@ -70,6 +70,14 @@ backup/
 *.db-shm
 db.sqlite
 bd.db
+
+# JSONL export/import artifacts (auto-export disabled; export.auto: false).
+# Issue state syncs via Dolt over refs/dolt/data (`bd dolt push` / `bd dolt pull`),
+# not through these files — a committed copy would only go stale and add diff noise.
+issues.jsonl
+interactions.jsonl
+.auto-import-issues.jsonl
+
 # NOTE: Do NOT add negation patterns here.
 # They would override fork protection in .git/info/exclude.
 # Config files (metadata.json, config.yaml) are tracked by git by default
