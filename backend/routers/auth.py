@@ -14,13 +14,13 @@ from __future__ import annotations
 
 import imaplib
 import ipaddress
-import os
 import ssl
 import time
 from collections import defaultdict
 
 from api_models import AuthStatusResponse, LoginRequest, OkResponse
 from auth import sessions
+from config import Settings
 from dependencies import SESSION_COOKIE, get_session
 from fastapi import APIRouter, HTTPException, Request, Response
 from mail_dial import open_imap
@@ -59,23 +59,7 @@ _login_limiter = RateLimiter(max_attempts=5, window_seconds=300)
 # ── Rate-limit client-IP detection (areyousievious-jt2) ──
 
 
-def _parse_trusted_networks() -> list[ipaddress._BaseNetwork]:
-    """Parse AYS_TRUSTED_PROXIES (CSV of CIDRs) into a list of networks.
-
-    Invalid entries are silently skipped — operator typo shouldn't take the
-    app down. Empty env → empty list → proxy headers are NEVER trusted.
-    """
-    raw = os.environ.get("AYS_TRUSTED_PROXIES", "").strip()
-    networks: list[ipaddress._BaseNetwork] = []
-    for cidr in (c.strip() for c in raw.split(",") if c.strip()):
-        try:
-            networks.append(ipaddress.ip_network(cidr, strict=False))
-        except ValueError:
-            continue
-    return networks
-
-
-def _ip_in_networks(ip_str: str, networks: list[ipaddress._BaseNetwork]) -> bool:
+def _ip_in_networks(ip_str: str, networks) -> bool:
     try:
         ip = ipaddress.ip_address(ip_str)
     except ValueError:
@@ -83,7 +67,7 @@ def _ip_in_networks(ip_str: str, networks: list[ipaddress._BaseNetwork]) -> bool
     return any(ip in net for net in networks)
 
 
-def _get_client_ip(request: Request) -> str:
+def _get_client_ip(request: Request, cfg: Settings) -> str:
     """Determine the rate-limit key (real client IP) honoring AYS_TRUSTED_PROXIES.
 
     A direct client (no trusted proxy in front) controls its own request
@@ -106,7 +90,7 @@ def _get_client_ip(request: Request) -> str:
          forwarding header is present or the loop exhausts all trusted hops.
     """
     direct_ip = request.client.host if request.client else "unknown"
-    trusted = _parse_trusted_networks()
+    trusted = cfg.trusted_proxies
     if not trusted or not _ip_in_networks(direct_ip, trusted):
         return direct_ip
 
@@ -125,7 +109,7 @@ def _get_client_ip(request: Request) -> str:
     return direct_ip
 
 
-def _is_secure(request: Request) -> bool:
+def _is_secure(request: Request, cfg: Settings) -> bool:
     """Detect if the request arrived over HTTPS (directly or via reverse proxy).
 
     F-2 fix (areyousievious-av5 / CWE-290 + CWE-346): the previous
@@ -140,9 +124,9 @@ def _is_secure(request: Request) -> bool:
     as the deploy escape hatch for HTTPS reverse-proxy setups that don't
     forward `X-Forwarded-Proto`.
     """
-    if os.environ.get("AYS_SECURE_COOKIES", "").lower() in ("1", "true", "yes"):
+    if cfg.secure_cookies:
         return True
-    trusted = _parse_trusted_networks()
+    trusted = cfg.trusted_proxies
     if not trusted:
         return False
     direct_ip = request.client.host if request.client else "unknown"
@@ -157,7 +141,8 @@ def _is_secure(request: Request) -> bool:
 @router.post("/login", response_model=OkResponse, response_model_exclude_none=True)
 def login(req: LoginRequest, request: Request, response: Response):
     """Authenticate with IMAP credentials."""
-    client_ip = _get_client_ip(request)
+    cfg: Settings = request.app.state.settings
+    client_ip = _get_client_ip(request, cfg)
     if not _login_limiter.check(client_ip):
         raise HTTPException(429, "Too many login attempts. Try again in 5 minutes.")
 
@@ -194,7 +179,7 @@ def login(req: LoginRequest, request: Request, response: Response):
         port_imap=req.port_imap,
         port_sieve=req.port_sieve,
     )
-    secure = _is_secure(request)
+    secure = _is_secure(request, cfg)
     response.set_cookie(
         SESSION_COOKIE,
         token,

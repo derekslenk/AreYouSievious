@@ -15,8 +15,6 @@ Run from the backend/ directory:
 
 from __future__ import annotations
 
-import importlib
-import os
 import sys
 from pathlib import Path
 
@@ -163,29 +161,22 @@ def test_login_rejects_oversized_password():
 # ── OpenAPI schema coverage ──
 
 
-def _reload_app_dev():
-    os.environ["AYS_ENV"] = "dev"
-    import app as app_mod
+def _dev_app():
+    """OpenAPI is only served in dev. Building the app with that Settings beats
+    setting AYS_ENV and reloading, which used to leave the variable set for
+    every later test file."""
+    from app import create_app
+    from config import Settings
 
-    importlib.reload(app_mod)
-    return app_mod
-
-
-def _reload_app_prod():
-    os.environ.pop("AYS_ENV", None)
-    import app as app_mod
-
-    importlib.reload(app_mod)
-    return app_mod
+    return create_app(Settings(env="dev"))
 
 
 @pytest.mark.asyncio
 async def test_openapi_declares_response_models_for_every_route():
     """Each `@app.X` decorator now carries response_model=… so the OpenAPI
     schema exposes a concrete return shape, not the empty default."""
-    mod = _reload_app_dev()
-    try:
-        transport = httpx.ASGITransport(app=mod.app)
+    transport = httpx.ASGITransport(app=_dev_app())
+    if True:
         async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
             r = await client.get("/openapi.json")
         assert r.status_code == 200
@@ -210,5 +201,3 @@ async def test_openapi_declares_response_models_for_every_route():
             assert schema_block, (
                 f"{method.upper()} {path} has no response schema (missing response_model=?)"
             )
-    finally:
-        _reload_app_prod()

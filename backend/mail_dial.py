@@ -22,39 +22,22 @@ from __future__ import annotations
 
 import imaplib
 import logging
-import os
 import socket
 import ssl
 import threading
+from functools import lru_cache
 
+from config import Settings, settings
 from sievelib.managesieve import Client
 from ssrf import assert_host_resolves_to
 
 _log = logging.getLogger("ays.dial")
 
 
-# ── Timeouts ──
-
-
-def _env_float(name: str, default: float) -> float:
-    raw = os.environ.get(name, "").strip()
-    if not raw:
-        return default
-    try:
-        return max(0.1, float(raw))
-    except ValueError:
-        return default
-
-
-IMAP_TIMEOUT = _env_float("AYS_IMAP_TIMEOUT", 10.0)
-SIEVE_CONNECT_TIMEOUT = _env_float("AYS_SIEVE_CONNECT_TIMEOUT", 10.0)
-SIEVE_IO_TIMEOUT = _env_float("AYS_SIEVE_IO_TIMEOUT", 30.0)
-
-
 # ── TLS ──
 
 
-def _build_tls_context() -> ssl.SSLContext:
+def _build_tls_context(cfg: Settings) -> ssl.SSLContext:
     """Build the TLS context used for every outbound connection.
 
     Defaults: verify the server certificate chain against the system root store
@@ -65,7 +48,7 @@ def _build_tls_context() -> ssl.SSLContext:
     Opt-out: `AYS_IMAP_INSECURE=1` falls back to an unverified context for
     self-signed test setups. Emits a warning so the operator cannot miss it.
     """
-    if os.environ.get("AYS_IMAP_INSECURE", "").lower() in ("1", "true", "yes"):
+    if cfg.imap_insecure:
         _log.warning(
             "AYS_IMAP_INSECURE is set — outbound TLS is NOT verified. "
             "Use only for self-signed test setups."
@@ -76,9 +59,21 @@ def _build_tls_context() -> ssl.SSLContext:
     return ctx
 
 
-# Built once at import so a missing system CA store fails fast at startup
-# rather than on a user's first login.
-TLS_CONTEXT = _build_tls_context()
+@lru_cache(maxsize=1)
+def tls_context() -> ssl.SSLContext:
+    """The shared outbound TLS context.
+
+    Cached rather than rebuilt per connection, and built eagerly at import
+    (below) so a missing system CA store fails at startup rather than on a
+    user's first login. Tests that need a different context call
+    `tls_context.cache_clear()` — previously this required `importlib.reload`,
+    because the value was a module constant computed from the environment.
+    """
+    return _build_tls_context(settings())
+
+
+# Eager build preserves fail-fast on a broken CA store.
+tls_context()
 
 
 # ── IMAP ──
@@ -126,8 +121,8 @@ def open_imap(host: str, host_ip: str, port: int, *, timeout: float | None = Non
         host,
         host_ip,
         port,
-        ssl_context=TLS_CONTEXT,
-        timeout=IMAP_TIMEOUT if timeout is None else timeout,
+        ssl_context=tls_context(),
+        timeout=settings().imap_timeout if timeout is None else timeout,
     )
 
 
@@ -161,7 +156,7 @@ def open_sieve(host: str, host_ip: str, port: int, username: str, password: str)
 
     with _CONNECT_TIMEOUT_LOCK:
         previous_default = socket.getdefaulttimeout()
-        socket.setdefaulttimeout(SIEVE_CONNECT_TIMEOUT)
+        socket.setdefaulttimeout(settings().sieve_connect_timeout)
         try:
             # srvaddr is the pinned IP; srvhostname keeps TLS SNI and cert
             # verification on the name the user typed. sievelib supports the
@@ -172,5 +167,5 @@ def open_sieve(host: str, host_ip: str, port: int, username: str, password: str)
             socket.setdefaulttimeout(previous_default)
 
     if client.sock is not None:
-        client.sock.settimeout(SIEVE_IO_TIMEOUT)
+        client.sock.settimeout(settings().sieve_io_timeout)
     return client

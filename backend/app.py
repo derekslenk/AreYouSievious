@@ -10,9 +10,9 @@ ASGI middleware lives in backend/middleware.py.
 """
 
 import argparse
-import os
 from pathlib import Path
 
+from config import Settings, settings
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -29,30 +29,15 @@ from routers.scripts import router as scripts_router
 from routers.static import router as static_router
 from ssrf import HostValidationError
 
-# ── Environment config ──
-_is_dev = os.environ.get("AYS_ENV", "prod").strip().lower() == "dev"
-_max_body_bytes = int(os.environ.get("AYS_MAX_BODY_BYTES", str(1 * 1024 * 1024)))
-_cors_origins = os.environ.get("AYS_CORS_ORIGINS", "https://areyousievious.com")
-
-# ── App construction ──
-app = FastAPI(
-    title="AreYouSievious",
-    version="0.1.0",
-    docs_url="/docs" if _is_dev else None,
-    redoc_url="/redoc" if _is_dev else None,
-    openapi_url="/openapi.json" if _is_dev else None,
-)
-
-
 # ── Exception handlers ──
-@app.exception_handler(HostValidationError)
-async def _host_validation_handler(_request: Request, exc: HostValidationError):
+
+
+async def _host_validation_handler(_request: Request, exc: Exception):
     """Surface SSRF-guard rejections as 400s instead of generic 500s."""
     return JSONResponse(status_code=400, content={"detail": str(exc)})
 
 
-@app.exception_handler(ProtocolNameError)
-async def _protocol_name_handler(_request: Request, exc: ProtocolNameError):
+async def _protocol_name_handler(_request: Request, exc: Exception):
     """Surface protocol-framing name rejections as 400s.
 
     Covers BOTH sinks — Sieve script names and IMAP folder names. Each guard
@@ -62,26 +47,60 @@ async def _protocol_name_handler(_request: Request, exc: ProtocolNameError):
     return JSONResponse(status_code=400, content={"detail": str(exc)})
 
 
-# ── Middleware (last-added runs first — CORS outermost, CSRF innermost) ──
-app.add_middleware(CSRFMiddleware)
-app.add_middleware(BodySizeLimitMiddleware, max_bytes=_max_body_bytes)
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=[o.strip() for o in _cors_origins.split(",")],
-    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-    allow_headers=["Content-Type", "Cookie", "X-CSRF-Token"],
-    allow_credentials=True,
-)
+# ── App construction ──
 
-# ── Routers ──
-# Order matters: the static router ends with a catch-all GET /{full_path:path},
-# so every real route must be registered before it or the SPA fallback swallows
-# it.
-app.include_router(auth_router)
-app.include_router(scripts_router)
-app.include_router(folders_router)
-app.include_router(health_router)
-app.include_router(static_router)
+
+def create_app(config: Settings | None = None) -> FastAPI:
+    """Build an app from an explicit configuration.
+
+    Configuration arrives as an argument rather than being read out of the
+    ambient environment at import. That is the whole point: a test wanting
+    dev-mode docs or a different CORS list constructs a Settings and calls
+    this, instead of mutating os.environ and reloading the module.
+    """
+    cfg = config or settings()
+
+    app = FastAPI(
+        title="AreYouSievious",
+        version="0.1.0",
+        docs_url="/docs" if cfg.is_dev else None,
+        redoc_url="/redoc" if cfg.is_dev else None,
+        openapi_url="/openapi.json" if cfg.is_dev else None,
+    )
+
+    # Reachable from any handler as `request.app.state.settings`, so a request
+    # reads the configuration its app was built with — not whatever the
+    # environment happens to say at that moment.
+    app.state.settings = cfg
+
+    app.add_exception_handler(HostValidationError, _host_validation_handler)
+    app.add_exception_handler(ProtocolNameError, _protocol_name_handler)
+
+    # Middleware: last-added runs first — CORS outermost, CSRF innermost.
+    app.add_middleware(CSRFMiddleware)
+    app.add_middleware(BodySizeLimitMiddleware, max_bytes=cfg.max_body_bytes)
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=list(cfg.cors_origins),
+        allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+        allow_headers=["Content-Type", "Cookie", "X-CSRF-Token"],
+        allow_credentials=True,
+    )
+
+    # Order matters: the static router ends with a catch-all
+    # GET /{full_path:path}, so every real route must be registered before it
+    # or the SPA fallback swallows it.
+    app.include_router(auth_router)
+    app.include_router(scripts_router)
+    app.include_router(folders_router)
+    app.include_router(health_router)
+    app.include_router(static_router)
+
+    return app
+
+
+# The default instance, for `python app.py` and `uvicorn app:app`.
+app = create_app()
 
 
 # ── Entry point ──
