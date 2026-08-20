@@ -42,12 +42,24 @@ npm test
 
 ### Pre-commit hooks
 
-`ruff format` and `ruff check --fix` run on every commit once you opt in:
+`ruff format`, `ruff check --fix`, and wire-type regeneration run on every
+commit once you opt in:
 
 ```bash
 pip install -r backend/requirements-dev.txt
 pre-commit install
 ```
+
+The `regen-wire-types` hook runs only when you touch a backend file that can
+change the OpenAPI schema (`api_models.py`, `app.py`, `routers/*.py`). It
+regenerates `frontend/src/lib/openapi.json` and `api-types.d.ts`; if they were
+stale, pre-commit reports *"files were modified by this hook"* and you re-stage
+— the same flow as `ruff-format`.
+
+It needs `frontend/node_modules`, and skips with a warning if that's missing
+(front-end-only contributors never trigger it). Hooks are opt-in per clone, so
+CI's `contract` job remains the authority: it regenerates and fails on any
+diff.
 
 The hook config lives in `.pre-commit-config.yaml`. Lint rules are in
 `pyproject.toml` (`[tool.ruff]`, `[tool.basedpyright]`). The current baseline
