@@ -9,11 +9,7 @@ import re
 
 from auth import Session
 from mail_dial import open_imap
-
-# IMAP command framing is line-based: CR, LF, NUL, double-quote, and backslash
-# in an unquoted folder name would let a caller inject additional IMAP commands
-# (CWE-77 / CWE-93). Reject them in create_folder.
-_FORBIDDEN_FOLDER_CHARS = re.compile(r'[\r\n\x00"\\]')
+from protocol_names import validate_folder_name
 
 
 class IMAPClient:
@@ -68,11 +64,10 @@ class IMAPClient:
     def create_folder(self, name: str) -> bool:
         """Create a new IMAP folder.
 
-        Rejects names containing CR, LF, NUL, double-quote, or backslash to
-        block IMAP command injection via folder name (CWE-77 / CWE-93).
+        The framing guard lives in `protocol_names`, shared with the
+        ManageSieve script-name sink — same hazard, same rule, one place.
         """
-        if not name or _FORBIDDEN_FOLDER_CHARS.search(name):
-            raise ValueError("Folder name contains forbidden characters")
+        validate_folder_name(name)
         status, _ = self._conn.create(f'"{name}"')
         if status == "OK":
             self._conn.subscribe(f'"{name}"')

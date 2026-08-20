@@ -7,7 +7,7 @@ lives in `mail_dial`. This module owns the script operations.
 
 from auth import Session
 from mail_dial import open_sieve
-from sieve_names import validate_script_name
+from protocol_names import validate_script_name
 
 
 class SieveClient:
