@@ -16,17 +16,21 @@ Run from the backend/ directory:
 
 from __future__ import annotations
 
-import importlib
 import sys
 from pathlib import Path
+from unittest.mock import patch
 
 import httpx
 import pytest
+from fastapi.testclient import TestClient
 
 BACKEND = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(BACKEND))
 
 from app import app
+from auth import sessions
+from config import Settings
+from dependencies import SESSION_COOKIE
 
 
 async def _client() -> httpx.AsyncClient:
@@ -68,44 +72,93 @@ async def test_healthz_leaks_no_configuration():
     assert set(r.json().keys()) == {"status"}
 
 
-# ── import cap follows AYS_MAX_BODY_BYTES ──
+# ── import cap follows the configured body limit ──
+#
+# This used to reach for `_max_upload_bytes()` and reload the module, because
+# the cap was a module-level constant. It is now a Settings field read from
+# `request.app.state.settings`, so these tests exercise the ACTUAL wiring —
+# a real request against a real cap — which the previous shape could not do at
+# all. AYS_MAX_BODY_BYTES had no test of its wiring for that reason.
 
 
-def _reload_scripts_router():
-    import routers.scripts as scripts_mod
+def _authed_app(cfg: Settings):
+    from app import create_app
 
-    importlib.reload(scripts_mod)
-    return scripts_mod
+    token = sessions.create(
+        host="mail.example.com",
+        host_ip="93.184.216.34",
+        username="u",
+        password="p",
+    )
+    csrf = "csrf-test-token-value"
+    cookies = {SESSION_COOKIE: token, "ays_csrf": csrf}
+    return create_app(cfg), token, csrf, cookies
 
 
-def test_import_cap_defaults_to_1mib(monkeypatch):
-    monkeypatch.delenv("AYS_MAX_BODY_BYTES", raising=False)
-    mod = _reload_scripts_router()
-    assert mod._max_upload_bytes() == 1 * 1024 * 1024
+def _import_of_size(app, csrf, cookies, size: int):
+    from routers import scripts as scripts_mod
+
+    def _enter(self):
+        return self
+
+    def _exit(*_a):
+        return None
+
+    with (
+        patch.object(scripts_mod.SieveClient, "__enter__", _enter),
+        patch.object(scripts_mod.SieveClient, "__exit__", _exit),
+        patch.object(scripts_mod.SieveClient, "put_script", lambda self, n, c: None),
+    ):
+        with TestClient(app, cookies=cookies) as http:
+            return http.post(
+                "/api/scripts/import",
+                data={"name": "s"},
+                files={"file": ("s.sieve", b"a" * size, "application/sieve")},
+                headers={"X-CSRF-Token": csrf},
+            )
 
 
-def test_import_cap_follows_env_var(monkeypatch):
-    """REGRESSION: this was a hardcoded constant, so an operator who raised
-    AYS_MAX_BODY_BYTES got a larger middleware limit and an unchanged import
-    limit — the smaller of the two silently won."""
+def test_import_under_the_configured_cap_succeeds():
+    app, token, csrf, cookies = _authed_app(Settings(max_body_bytes=4096))
+    try:
+        assert _import_of_size(app, csrf, cookies, 1000).status_code == 200
+    finally:
+        sessions.destroy(token)
+
+
+def test_import_over_the_configured_cap_is_413():
+    """A raised cap must actually raise the import limit — the whole point.
+    Previously the route hardcoded 1 MiB while the middleware read the env var,
+    so the smaller of the two silently won."""
+    app, token, csrf, cookies = _authed_app(Settings(max_body_bytes=4096))
+    try:
+        r = _import_of_size(app, csrf, cookies, 5000)
+        assert r.status_code == 413, r.text
+    finally:
+        sessions.destroy(token)
+
+
+def test_a_raised_cap_admits_a_body_the_default_would_reject():
+    """Regression for the two-limits-disagree bug, stated as behaviour: a body
+    larger than the 1 MiB default is accepted when the cap is raised."""
+    big = Settings(max_body_bytes=4 * 1024 * 1024)
+    app, token, csrf, cookies = _authed_app(big)
+    try:
+        r = _import_of_size(app, csrf, cookies, 2 * 1024 * 1024)
+        assert r.status_code == 200, r.text
+    finally:
+        sessions.destroy(token)
+
+
+def test_body_limit_defaults_to_1mib():
+    assert Settings().max_body_bytes == 1 * 1024 * 1024
+
+
+def test_body_limit_reads_the_env_var(monkeypatch):
     monkeypatch.setenv("AYS_MAX_BODY_BYTES", str(5 * 1024 * 1024))
-    mod = _reload_scripts_router()
-    assert mod._max_upload_bytes() == 5 * 1024 * 1024
+    assert Settings.from_env().max_body_bytes == 5 * 1024 * 1024
 
 
-def test_import_cap_falls_back_on_garbage(monkeypatch):
-    """An unparseable value must not take the process down at request time."""
+def test_body_limit_falls_back_on_garbage(monkeypatch):
     monkeypatch.setenv("AYS_MAX_BODY_BYTES", "not-a-number")
-    mod = _reload_scripts_router()
-    assert mod._max_upload_bytes() == 1 * 1024 * 1024
-
-
-def test_import_cap_matches_middleware_default(monkeypatch):
-    """The two limits must agree by construction, not by coincidence: both
-    read the same env var with the same default."""
-    monkeypatch.delenv("AYS_MAX_BODY_BYTES", raising=False)
-    import app as app_mod
-
-    importlib.reload(app_mod)
-    mod = _reload_scripts_router()
-    assert mod._max_upload_bytes() == app_mod._max_body_bytes
+    assert Settings.from_env().max_body_bytes == 1 * 1024 * 1024

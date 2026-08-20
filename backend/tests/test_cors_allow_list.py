@@ -12,8 +12,6 @@ Run from the backend/ directory:
 
 from __future__ import annotations
 
-import importlib
-import os
 import sys
 from pathlib import Path
 
@@ -24,21 +22,21 @@ BACKEND = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(BACKEND))
 
 
-def _reload_app():
-    os.environ.setdefault("AYS_CORS_ORIGINS", "https://areyousievious.com")
-    import app as app_mod
-
-    importlib.reload(app_mod)
-    return app_mod
-
+from app import create_app
+from config import Settings
 
 ALLOWED_ORIGIN = "https://areyousievious.com"
 
 
+def _app():
+    """An app whose CORS list is stated outright, rather than reached by
+    setting an environment variable and reloading the module."""
+    return create_app(Settings(cors_origins=(ALLOWED_ORIGIN,)))
+
+
 @pytest.mark.asyncio
 async def test_preflight_for_allowed_method_succeeds():
-    mod = _reload_app()
-    transport = httpx.ASGITransport(app=mod.app)
+    transport = httpx.ASGITransport(app=_app())
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         r = await client.request(
             "OPTIONS",
@@ -57,8 +55,7 @@ async def test_preflight_for_allowed_method_succeeds():
 async def test_preflight_for_disallowed_method_rejected():
     """PATCH is not in the explicit allow-list; preflight must not return
     PATCH in Access-Control-Allow-Methods."""
-    mod = _reload_app()
-    transport = httpx.ASGITransport(app=mod.app)
+    transport = httpx.ASGITransport(app=_app())
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         r = await client.request(
             "OPTIONS",
@@ -79,8 +76,7 @@ async def test_preflight_for_disallowed_method_rejected():
 @pytest.mark.asyncio
 async def test_preflight_for_disallowed_header_rejected():
     """X-Tracker is not in allow_headers; preflight must not list it."""
-    mod = _reload_app()
-    transport = httpx.ASGITransport(app=mod.app)
+    transport = httpx.ASGITransport(app=_app())
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         r = await client.request(
             "OPTIONS",
@@ -101,8 +97,7 @@ async def test_preflight_for_disallowed_header_rejected():
 async def test_csrf_header_in_allow_list():
     """X-CSRF-Token MUST be allowed — the SPA needs to send it to clear
     the CSRF middleware on every mutating call."""
-    mod = _reload_app()
-    transport = httpx.ASGITransport(app=mod.app)
+    transport = httpx.ASGITransport(app=_app())
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         r = await client.request(
             "OPTIONS",
@@ -122,8 +117,7 @@ async def test_csrf_header_in_allow_list():
 @pytest.mark.asyncio
 async def test_credentialed_cors_still_allowed():
     """allow_credentials=True survives the tightening so cookie auth works."""
-    mod = _reload_app()
-    transport = httpx.ASGITransport(app=mod.app)
+    transport = httpx.ASGITransport(app=_app())
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         r = await client.request(
             "OPTIONS",

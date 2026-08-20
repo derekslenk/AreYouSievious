@@ -25,6 +25,7 @@ BACKEND = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(BACKEND))
 
 import imap_client
+import mail_dial
 import ssrf
 from auth import Session
 
@@ -221,7 +222,7 @@ def test_imap_client_aborts_on_rebinding_before_touching_network():
 
     session = _session()
     with patch.object(ssrf.socket, "getaddrinfo", return_value=_addrinfo("10.0.0.5")):
-        with patch.object(imap_client, "_PinnedIMAP4_SSL") as mock_pinned:
+        with patch.object(mail_dial, "_PinnedIMAP4_SSL") as mock_pinned:
             mock_pinned.return_value = MagicMock()
             with pytest.raises(ssrf.HostValidationError, match="rebinding"):
                 with imap_client.IMAPClient(session):
@@ -238,7 +239,7 @@ def test_pinned_imap4_ssl_create_socket_uses_pinned_ip_and_sni_hostname():
     the original hostname (so cert CN/SAN verification still works)."""
     from unittest.mock import MagicMock
 
-    instance = imap_client._PinnedIMAP4_SSL.__new__(imap_client._PinnedIMAP4_SSL)
+    instance = mail_dial._PinnedIMAP4_SSL.__new__(mail_dial._PinnedIMAP4_SSL)
     instance._pinned_ip = "93.184.216.34"
     instance.host = "mail.example.com"
     instance.port = 993
@@ -246,7 +247,7 @@ def test_pinned_imap4_ssl_create_socket_uses_pinned_ip_and_sni_hostname():
     mock_ctx.wrap_socket.return_value = MagicMock()
     instance.ssl_context = mock_ctx
 
-    with patch.object(imap_client.socket, "create_connection") as mock_conn:
+    with patch.object(mail_dial.socket, "create_connection") as mock_conn:
         mock_conn.return_value = MagicMock()
         instance._create_socket(timeout=10)
 
@@ -266,7 +267,7 @@ def test_imap_client_constructs_pinned_subclass_with_correct_args():
     session = _session(host="mail.example.com", host_ip="93.184.216.34")
     with (
         patch.object(ssrf.socket, "getaddrinfo", return_value=_addrinfo("93.184.216.34")),
-        patch.object(imap_client, "_PinnedIMAP4_SSL") as mock_pinned,
+        patch.object(mail_dial, "_PinnedIMAP4_SSL") as mock_pinned,
     ):
         mock_pinned.return_value = MagicMock()
         with imap_client.IMAPClient(session):
@@ -292,8 +293,8 @@ def test_sieve_client_uses_srvhostname_param_to_split_dial_from_sni():
 
     session = _session(host="sieve.example.com", host_ip="93.184.216.34")
     with (
-        patch.object(managesieve_client, "assert_host_resolves_to", lambda *a, **kw: None),
-        patch.object(managesieve_client, "Client") as mock_client,
+        patch.object(mail_dial, "assert_host_resolves_to", lambda *a, **kw: None),
+        patch.object(mail_dial, "Client") as mock_client,
     ):
         stub = MagicMock()
         stub.sock = MagicMock()

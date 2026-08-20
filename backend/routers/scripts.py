@@ -2,15 +2,15 @@
 Sieve script router (areyousievious-u40 split from app.py).
 
 Owns the nine /api/scripts/* endpoints that read, write, import,
-export, activate, and delete Sieve scripts via ManageSieve. The
-1MiB MAX_UPLOAD_BYTES cap lives here because only import_script
-consults it. Behavior is byte-identical to the pre-u40 inline
-handlers in app.py.
+export, activate, and delete Sieve scripts via ManageSieve.
+
+The import size cap comes from `request.app.state.settings.max_body_bytes`,
+the same value the body-size middleware uses. It was a local constant here,
+which meant raising AYS_MAX_BODY_BYTES moved one limit and not the other.
 """
 
 from __future__ import annotations
 
-import os
 import re
 
 from api_models import (
@@ -21,6 +21,7 @@ from api_models import (
     ScriptRawResponse,
     ScriptResponse,
 )
+from config import Settings
 from dependencies import get_session
 from fastapi import APIRouter, File, Form, HTTPException, Request, Response, UploadFile
 from managesieve_client import SieveClient
@@ -32,22 +33,6 @@ from sieve_transform import (
 )
 
 router = APIRouter(prefix="/api/scripts")
-
-DEFAULT_MAX_BODY_BYTES = 1 * 1024 * 1024  # 1 MiB
-
-
-def _max_upload_bytes() -> int:
-    """Upload cap for POST /api/scripts/import.
-
-    Read at call time from the SAME env var as the body-size middleware. This
-    was a hardcoded 1 MiB, so raising AYS_MAX_BODY_BYTES silently left imports
-    capped at the old value — the two limits disagreed and only one of them
-    was configurable.
-    """
-    try:
-        return int(os.environ.get("AYS_MAX_BODY_BYTES", str(DEFAULT_MAX_BODY_BYTES)))
-    except ValueError:
-        return DEFAULT_MAX_BODY_BYTES
 
 
 @router.get("", response_model=list[ScriptListItem])
@@ -101,7 +86,8 @@ def import_script(
     ponytail: sync handler so FastAPI runs it in a threadpool — the slow
     ManageSieve PUT no longer blocks the event loop (Perf C1 / Fwk C-1).
     """
-    cap = _max_upload_bytes()
+    cfg: Settings = request.app.state.settings
+    cap = cfg.max_body_bytes
     raw = file.file.read()
     if len(raw) > cap:
         raise HTTPException(413, f"File too large (max {cap // 1024}KB)")
