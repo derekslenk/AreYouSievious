@@ -1,5 +1,5 @@
 <!-- Parent: ../AGENTS.md -->
-<!-- Generated: 2026-04-08 | Updated: 2026-04-08 -->
+<!-- Generated: 2026-04-08 | Updated: 2026-08-20 -->
 
 # lib
 
@@ -18,7 +18,10 @@ Shared utilities, state management, and API client used across all frontend comp
 ## For AI Agents
 
 ### Working In This Directory
-- `api.js` uses cookie-based auth (`ays_session`); all methods are async
+- `api.js` uses cookie-based auth (`ays_session`). All methods are async except
+  `exportScript(name)`, which synchronously returns a download URL for `window.open`
+- Mutating calls attach `X-CSRF-Token` read from the non-httponly `ays_csrf` cookie;
+  safe methods and `/auth/login` are exempt (mirrors `backend/middleware.py`)
 - `stores.js` is the single source of truth for app state; `view` store drives routing
 - `sortable.js` action: critical to revert SortableJS DOM moves in `onEnd` before calling `onReorder`, so Svelte owns DOM reconciliation
 - The `filter` option in sortable excludes buttons from initiating drags
@@ -26,5 +29,8 @@ Shared utilities, state management, and API client used across all frontend comp
 ### Common Patterns
 - Stores are plain Svelte `writable()` — no complex state library
 - API methods return parsed JSON or throw on error
+- `scriptDocument.js` mutations are pure: each returns a NEW document so Svelte reactivity
+  fires on reassignment. `previewRule` is a second implementation of the backend generator
+  and must stay byte-identical to it
 
 <!-- MANUAL: -->

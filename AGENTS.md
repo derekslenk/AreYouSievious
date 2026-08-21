@@ -1,4 +1,4 @@
-<!-- Generated: 2026-04-08 | Updated: 2026-04-08 -->
+<!-- Generated: 2026-04-08 | Updated: 2026-08-20 -->
 
 # AreYouSievious
 
@@ -26,8 +26,11 @@ Self-hosted Sieve email filter management UI. Single-process FastAPI backend ser
 ## For AI Agents
 
 ### Working In This Directory
-- Tests: `cd backend && python -m pytest tests/ -v` (15 files) and `cd frontend && npm test` (vitest)
-- Lint/format: `ruff check backend/` and `ruff format --check backend/`; `pre-commit install` wires both to commit
+- Tests: `cd backend && python -m pytest tests/ -v` (18 files) and `cd frontend && npm test` (vitest)
+- Lint/format: `ruff check backend/` and `ruff format --check backend/`
+- `pre-commit install` wires three hooks: ruff-format, ruff --fix, and `tools/regen-wire-types.sh`
+  (the last regenerates the SPA's wire types when a schema-bearing backend file is staged, so a stale
+  artifact fails locally instead of in CI's `contract` job)
 - Build with `cd frontend && npm run build` to verify frontend changes
 - All Sieve state lives on the mail server; no local database to manage
 
