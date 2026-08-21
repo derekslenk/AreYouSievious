@@ -17,12 +17,12 @@ FastAPI application that serves the Svelte SPA as static files and provides a RE
 | `middleware.py` | `BodySizeLimitMiddleware` (Content-Length + streamed-byte cap) and `CSRFMiddleware` (double-submit cookie) |
 | `ssrf.py` | SSRF + DNS-rebinding guards. `validate_host` pins an IP at login; `assert_host_resolves_to` re-checks at every connect |
 | `protocol_names.py` | `validate_script_name` / `validate_folder_name` / `ProtocolNameError` — one rule for both ManageSieve and IMAP framing, rejected before any protocol call |
-| `mail_dial.py` | **The only way to open a mail-server connection.** `open_imap` / `open_sieve` apply the whole dialling policy: rebinding re-check, dial the pinned IP, TLS SNI on the hostname, timeouts. Both take the caller's `Settings`; `build_tls_context` caches on it, so no dial can use a different vintage than its app |
+| `mail_dial.py` | **The only way to open a mail-server connection.** `open_imap` / `open_sieve` apply the whole dialling policy: rebinding re-check, dial the pinned IP, TLS SNI on the hostname, timeouts. Both take the caller's `Settings`; `build_tls_context` caches on it, so no dial can use a different vintage than its app. Both also translate what the transport RAISES into `mail_errors` — `OSError` kin, `imaplib.IMAP4.error`/`abort`, and sievelib's own `Error` — so a dead server is a 502, not a 500 |
 | `sieve_transform.py` | Core Sieve parser (`SieveParser`), generator (`SieveGenerator`), and data models (`Rule`, `Condition`, `Action`, `RawBlock`, `SieveScript`) |
 | `mail_stores.py` | The two mail-server seams as `Protocol`s: `ScriptStore` (list/get/put/activate/delete) and `FolderStore` (list/create). Kept separate — a single seven-operation store would be a union, not an abstraction |
 | `mail_errors.py` | The semantic vocabulary the seams fail in (`MailStoreError` + `ScriptNotFound`, `ScriptRejected`, `QuotaExceeded`, `FolderRejected`, `MailServerUnavailable`, `AuthFailed`). Protocol-free AND HTTP-free; `app.py` owns the status mapping |
 | `managesieve_client.py` | `SieveClient` context manager for ManageSieve (port 4190) — the ScriptStore adapter. Owns the script operations and translates sievelib's falsy returns + `errcode`/`errmsg` into `mail_errors`; dialling policy lives in `mail_dial` |
-| `imap_client.py` | `IMAPClient` context manager for IMAP (port 993) — the FolderStore adapter. Owns what to say once connected; `create_folder` raises `FolderRejected` (it returned a bool the router had to interpret) and checks the SUBSCRIBE status as well as CREATE; dialling policy lives in `mail_dial` |
+| `imap_client.py` | `IMAPClient` context manager for IMAP (port 993) — the FolderStore adapter. Owns what to say once connected; maps `imaplib.IMAP4.abort`/`error` on LOGIN to `MailServerUnavailable`/`AuthFailed` (abort first — it subclasses error), and `create_folder` raises `FolderRejected` (it returned a bool the router had to interpret) and checks the SUBSCRIBE status as well as CREATE; dialling policy lives in `mail_dial` |
 | `fetch_grak_script.py` | Standalone utility to pull scripts off a real server into `test_scripts/`. Not imported by the app |
 | `requirements.txt` | Runtime dependencies: fastapi, uvicorn, sievelib, python-multipart |
 | `requirements-dev.txt` | pytest, pytest-asyncio, httpx, ruff, basedpyright, pre-commit |
@@ -31,7 +31,7 @@ FastAPI application that serves the Svelte SPA as static files and provides a RE
 | Directory | Purpose |
 |-----------|---------|
 | `routers/` | One module per URL area: `auth`, `scripts`, `folders`, `health`, `static`. Do NOT cross-import between routers — shared helpers belong in `dependencies.py` |
-| `tests/` | 23 pytest files plus a shared conftest.py and `fakes.py` (in-memory ScriptStore/FolderStore), mostly regression locks tied to a bead id in the module docstring |
+| `tests/` | 24 pytest files plus a shared conftest.py and `fakes.py` (in-memory ScriptStore/FolderStore), mostly regression locks tied to a bead id in the module docstring |
 | `test_scripts/` | Sample Sieve scripts used as round-trip fixtures (see `test_scripts/AGENTS.md`) |
 
 ## For AI Agents
@@ -47,6 +47,7 @@ FastAPI application that serves the Svelte SPA as static files and provides a RE
 - Request bodies use Pydantic `BaseModel` subclasses from `api_models.py`
 - All mutating endpoints return `{"ok": True, ...}`
 - Errors caused by the REQUEST map to 4xx, never 5xx: `HostValidationError` and `ProtocolNameError` have app-level handlers covering every sink. Do NOT add a local `except ValueError` in a router — it would turn unrelated `ValueError`s into user-input errors. Failures originating UPSTREAM keep a 5xx that says so (`MailServerUnavailable` → 502, `QuotaExceeded` → 507); what must never happen is an upstream failure surfacing as a bare 500 that reads like our own bug.
+- The transport RAISES as well as returning falsy. `mail_dial` wraps both dials in `_transport_failures_are_semantic`, and the adapters map their library's own exceptions (`imaplib.IMAP4.abort` before `IMAP4.error` — abort subclasses error). A `ConnectionRefusedError` reaching a handler is a 500 that blames this app for the mail server being down.
 - Mail-server failures raise from `mail_errors.py`; `app.py`'s `_MAIL_ERROR_STATUS` table maps each to its status, registered once on the `MailStoreError` base. Routers keep no `try/except` — add the status to the table, not a handler to the router.
 
 ### Sieve Transform Pipeline
@@ -56,7 +57,7 @@ FastAPI application that serves the Svelte SPA as static files and provides a RE
 4. **Order**: `SieveScript.entries` is ONE ordered sequence of `Rule | RawBlock` — position IS the evaluation order. `.rules` and `.raw_blocks` are read-only filtered views. There is no separate `order` array; the parallel-array representation it replaced could drop a rule on save when the arrays disagreed.
 
 ### Testing Requirements
-- `cd backend && python -m pytest tests/ -v` — 23 files. Install with `pip install -r requirements.txt -r requirements-dev.txt`.
+- `cd backend && python -m pytest tests/ -v` — 24 files. Install with `pip install -r requirements.txt -r requirements-dev.txt`.
 - Lint/format: `ruff check backend/` and `ruff format --check backend/`. CI runs both.
 - Round-trip fidelity is asserted as a *fixed point* over every `test_scripts/*.sieve` fixture, in both text and AST. Counting rules is not sufficient — count-only assertions stayed green while action order silently changed.
 - Regression tests name the bead they lock in their module docstring; keep that convention when adding one.

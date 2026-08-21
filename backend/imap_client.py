@@ -5,12 +5,13 @@ Dialling policy — rebinding re-check, pinned connect, TLS context, timeouts �
 lives in `mail_dial`. This module owns what to say once connected.
 """
 
+import imaplib
 import re
 
 from auth import Session
 from config import Settings
 from mail_dial import open_imap
-from mail_errors import FolderRejected, relayed, server_text
+from mail_errors import AuthFailed, FolderRejected, MailServerUnavailable, relayed, server_text
 from protocol_names import validate_folder_name
 
 
@@ -29,7 +30,18 @@ class IMAPClient:
             self.session.port_imap,
             cfg=self.cfg,
         )
-        self._conn.login(self.session.username, self.session.password)
+        try:
+            self._conn.login(self.session.username, self.session.password)
+        except imaplib.IMAP4.abort as exc:
+            # MUST precede IMAP4.error, which it subclasses. A dropped socket
+            # is not a rejected password, and telling the user to reset a
+            # working one sends them somewhere that cannot help.
+            raise MailServerUnavailable("The connection to the mail server was lost.") from exc
+        except imaplib.IMAP4.error as exc:
+            # The stored credentials worked at login and do not now — an
+            # expired or revoked password. This used to escape as a 500 on
+            # every folder request.
+            raise AuthFailed() from exc
         return self
 
     def __exit__(self, *args):

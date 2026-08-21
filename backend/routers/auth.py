@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import imaplib
 import ipaddress
-import ssl
 import time
 from collections import defaultdict
 
@@ -24,6 +23,7 @@ from config import Settings
 from dependencies import SESSION_COOKIE, get_optional_session
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from mail_dial import open_imap
+from mail_errors import MailStoreError
 from middleware import CSRF_COOKIE, generate_csrf_token
 from ssrf import HostValidationError, validate_host
 
@@ -164,10 +164,17 @@ def login(req: LoginRequest, request: Request, response: Response):
         # `except Exception` would report it as "Cannot connect to mail
         # server" (502), indistinguishable from an ordinary network failure.
         raise
+    except MailStoreError:
+        # Also precedes the catch-all. `mail_dial` now reports transport
+        # failures semantically, and app.py maps each with a message that says
+        # what actually happened — a refused connection, an unresolvable
+        # hostname, an unverifiable certificate. Letting those fall through to
+        # `except Exception` would flatten all of them back into "Cannot
+        # connect to mail server", which is what this ladder did before the
+        # dial could tell them apart.
+        raise
     except imaplib.IMAP4.error:
         raise HTTPException(401, "Authentication failed")  # noqa: B904
-    except ssl.SSLCertVerificationError:
-        raise HTTPException(502, "Mail server TLS certificate could not be verified")  # noqa: B904
     except Exception:
         raise HTTPException(502, "Cannot connect to mail server")  # noqa: B904
 
