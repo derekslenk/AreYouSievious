@@ -19,3 +19,4 @@ frontend/dist/
 
 # OMC operational state (agent runtime artifacts, not project files)
 .omc/
+.omo/
