@@ -22,19 +22,11 @@ Run from the backend/ directory:
 
 from __future__ import annotations
 
-import sys
-from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-import pytest
-from fastapi.testclient import TestClient
-
-BACKEND = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(BACKEND))
-
 import managesieve_client
-from auth import Session, sessions
-from dependencies import SESSION_COOKIE
+import pytest
+from auth import Session
 from imap_client import IMAPClient
 from protocol_names import MAX_SCRIPT_NAME_BYTES, ProtocolNameError
 
@@ -204,76 +196,32 @@ def test_benign_names_reach_the_protocol_unchanged():
 # ── One HTTP mapping, every sink ──
 
 
-def _authed() -> tuple[str, str, dict[str, str]]:
-    token = sessions.create(
-        host="mail.example.com",
-        host_ip="93.184.216.34",
-        username="user@example.com",
-        password="hunter2",
-    )
-    csrf = "csrf-test-token-value"
-    return token, csrf, {SESSION_COOKIE: token, "ays_csrf": csrf}
+@pytest.mark.usefixtures("sieve_client_passthrough")
+def test_malicious_script_name_is_400_via_the_shared_handler(authed_client):
+    """The passthrough neutralises __enter__/__exit__ (not the class) so the
+    REAL put_script runs — a full mock would swallow the guard under test."""
+    with authed_client() as http:
+        r = http.post(
+            "/api/scripts/import",
+            data={"name": 'x"\r\nDELETESCRIPT "primary'},
+            files={"file": ("x.sieve", b"keep;\n", "application/sieve")},
+        )
+    assert r.status_code == 400, r.text
+    assert "forbidden" in r.json()["detail"].lower()
 
 
-def _bypass_enter(self):
-    return self
+@pytest.mark.usefixtures("sieve_client_passthrough")
+def test_malicious_script_name_in_the_url_is_400(authed_client):
+    with authed_client() as http:
+        r = http.post("/api/scripts/x%22%0D%0ASETACTIVE%20%22backdoor/activate")
+    assert r.status_code == 400, r.text
 
 
-def _bypass_exit(*_args):
-    return None
-
-
-def test_malicious_script_name_is_400_via_the_shared_handler():
-    """Patch __enter__/__exit__ (not the class) so the REAL put_script runs —
-    a full mock would swallow the guard under test."""
-    import app as app_mod
-    from routers import scripts as scripts_mod
-
-    token, csrf, cookies = _authed()
-    try:
-        with (
-            patch.object(scripts_mod.SieveClient, "__enter__", _bypass_enter),
-            patch.object(scripts_mod.SieveClient, "__exit__", _bypass_exit),
-        ):
-            with TestClient(app_mod.app, cookies=cookies) as http:
-                r = http.post(
-                    "/api/scripts/import",
-                    data={"name": 'x"\r\nDELETESCRIPT "primary'},
-                    files={"file": ("x.sieve", b"keep;\n", "application/sieve")},
-                    headers={"X-CSRF-Token": csrf},
-                )
-        assert r.status_code == 400, r.text
-        assert "forbidden" in r.json()["detail"].lower()
-    finally:
-        sessions.destroy(token)
-
-
-def test_malicious_script_name_in_the_url_is_400():
-    import app as app_mod
-    from routers import scripts as scripts_mod
-
-    token, csrf, cookies = _authed()
-    try:
-        with (
-            patch.object(scripts_mod.SieveClient, "__enter__", _bypass_enter),
-            patch.object(scripts_mod.SieveClient, "__exit__", _bypass_exit),
-        ):
-            with TestClient(app_mod.app, cookies=cookies) as http:
-                r = http.post(
-                    "/api/scripts/x%22%0D%0ASETACTIVE%20%22backdoor/activate",
-                    headers={"X-CSRF-Token": csrf},
-                )
-        assert r.status_code == 400, r.text
-    finally:
-        sessions.destroy(token)
-
-
-def test_benign_folder_name_still_creates():
+def test_benign_folder_name_still_creates(authed_client):
     """The guard must not cost the happy path. Absorbed from
     test_folders_error_mapping.py, whose other two tests duplicated the
     rejection cases above and whose premise (a local try/except in the
     folders router) no longer exists."""
-    import app as app_mod
     from routers import folders as folders_mod
 
     def stub_enter(self):
@@ -282,50 +230,33 @@ def test_benign_folder_name_still_creates():
         self._conn.subscribe.return_value = ("OK", [b"subscribed"])
         return self
 
-    token, csrf, cookies = _authed()
-    try:
-        with (
-            patch.object(folders_mod.IMAPClient, "__enter__", stub_enter),
-            patch.object(folders_mod.IMAPClient, "__exit__", _bypass_exit),
-        ):
-            with TestClient(app_mod.app, cookies=cookies) as http:
-                r = http.post(
-                    "/api/folders",
-                    json={"name": "Archive/2026"},
-                    headers={"X-CSRF-Token": csrf},
-                )
-        assert r.status_code == 200, r.text
-        assert r.json() == {"ok": True, "name": "Archive/2026"}
-    finally:
-        sessions.destroy(token)
+    with (
+        patch.object(folders_mod.IMAPClient, "__enter__", stub_enter),
+        patch.object(folders_mod.IMAPClient, "__exit__", lambda *_a: None),
+    ):
+        with authed_client() as http:
+            r = http.post("/api/folders", json={"name": "Archive/2026"})
+    assert r.status_code == 200, r.text
+    assert r.json() == {"ok": True, "name": "Archive/2026"}
 
 
-def test_malicious_folder_name_is_400_via_the_same_handler():
+def test_malicious_folder_name_is_400_via_the_same_handler(authed_client):
     """REGRESSION: folders.py used to carry its own `except ValueError ->
     HTTPException(400)`. Both sinks now share one app-level handler, and this
     proves removing the local one did not regress the status."""
-    import app as app_mod
     from routers import folders as folders_mod
 
     def stub_enter(self):
         self._conn = MagicMock()
         return self
 
-    token, csrf, cookies = _authed()
-    try:
-        with (
-            patch.object(folders_mod.IMAPClient, "__enter__", stub_enter),
-            patch.object(folders_mod.IMAPClient, "__exit__", _bypass_exit),
-        ):
-            with TestClient(app_mod.app, cookies=cookies) as http:
-                r = http.post(
-                    "/api/folders",
-                    json={"name": 'Inbox\r\nDELETE "Other"'},
-                    headers={"X-CSRF-Token": csrf},
-                )
-        assert r.status_code == 400, r.text
-        assert "forbidden" in r.json()["detail"].lower()
-        assert "traceback" not in r.text.lower()
-        assert "valueerror" not in r.text.lower()
-    finally:
-        sessions.destroy(token)
+    with (
+        patch.object(folders_mod.IMAPClient, "__enter__", stub_enter),
+        patch.object(folders_mod.IMAPClient, "__exit__", lambda *_a: None),
+    ):
+        with authed_client() as http:
+            r = http.post("/api/folders", json={"name": 'Inbox\r\nDELETE "Other"'})
+    assert r.status_code == 400, r.text
+    assert "forbidden" in r.json()["detail"].lower()
+    assert "traceback" not in r.text.lower()
+    assert "valueerror" not in r.text.lower()

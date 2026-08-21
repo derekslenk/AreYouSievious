@@ -18,16 +18,10 @@ Run from the backend/ directory:
 
 from __future__ import annotations
 
-import sys
-from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-import pytest
-
-BACKEND = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(BACKEND))
-
 import mail_dial
+import pytest
 from config import Settings
 
 # ── Parsing: env -> Settings ──

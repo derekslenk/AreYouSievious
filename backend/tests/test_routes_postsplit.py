@@ -21,17 +21,8 @@ Run from the backend/ directory:
 
 from __future__ import annotations
 
-import sys
-from pathlib import Path
-
-import httpx
 import pytest
 from fastapi.routing import APIRoute
-
-BACKEND = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(BACKEND))
-
-from app import app
 
 # ── Expected route surface (the contract this refactor must preserve) ──
 
@@ -62,6 +53,12 @@ EXPECTED_ROUTES: frozenset[tuple[str, str]] = frozenset(
 )
 
 
+@pytest.fixture
+def app(make_app):
+    """This module's own app — route introspection needs the object itself."""
+    return make_app()
+
+
 def _flatten_routes(routes):
     """Yield every APIRoute, descending through FastAPI's _IncludedRouter
     wrappers. FastAPI wraps include_router() calls in a _IncludedRouter
@@ -75,7 +72,7 @@ def _flatten_routes(routes):
             yield route
 
 
-def _registered_routes() -> set[tuple[str, str]]:
+def _registered_routes(app) -> set[tuple[str, str]]:
     """Return every (method, path) pair currently mounted on the app."""
     pairs: set[tuple[str, str]] = set()
     for route in _flatten_routes(app.routes):
@@ -88,31 +85,24 @@ def _registered_routes() -> set[tuple[str, str]]:
     return pairs
 
 
-def test_every_expected_route_is_registered():
+def test_every_expected_route_is_registered(app):
     """REGRESSION LOCK: if a router drops a handler or a path moves,
     this assert names the missing pair explicitly."""
-    registered = _registered_routes()
+    registered = _registered_routes(app)
     missing = EXPECTED_ROUTES - registered
     assert not missing, f"Routes vanished from app.routes: {sorted(missing)}"
 
 
-def test_no_unexpected_routes_appeared():
+def test_no_unexpected_routes_appeared(app):
     """Symmetric guard: if the refactor silently ADDS a route (e.g. a
     new debug endpoint), surface it so the maintainer chooses whether
     to widen EXPECTED_ROUTES on purpose."""
-    registered = _registered_routes()
+    registered = _registered_routes(app)
     extra = registered - EXPECTED_ROUTES
     assert not extra, f"Unexpected routes registered: {sorted(extra)}"
 
 
 # ── HTTP status round-trip ──
-
-
-async def _client() -> httpx.AsyncClient:
-    return httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app),
-        base_url="http://test",
-    )
 
 
 # Safe GETs (no CSRF check). Auth-required routes return 401, status
@@ -135,8 +125,8 @@ async def _client() -> httpx.AsyncClient:
     ],
 )
 @pytest.mark.asyncio
-async def test_get_route_status(path: str, expected: int):
-    async with await _client() as client:
+async def test_get_route_status(path: str, expected: int, app, asgi_client_for):
+    async with asgi_client_for(app) as client:
         r = await client.get(path)
     assert r.status_code == expected, f"GET {path} → {r.status_code} (expected {expected})"
 
@@ -156,8 +146,8 @@ async def test_get_route_status(path: str, expected: int):
     ],
 )
 @pytest.mark.asyncio
-async def test_csrf_protected_route_returns_403(method: str, path: str):
-    async with await _client() as client:
+async def test_csrf_protected_route_returns_403(method: str, path: str, app, asgi_client_for):
+    async with asgi_client_for(app) as client:
         r = await client.request(method, path)
     assert r.status_code == 403, (
         f"{method} {path} → {r.status_code} (expected 403 from CSRF middleware)"
@@ -168,8 +158,8 @@ async def test_csrf_protected_route_returns_403(method: str, path: str):
 # Pydantic rejects it → 422. The point is the route IS reachable past
 # CSRF middleware, which is the regression we're locking.
 @pytest.mark.asyncio
-async def test_login_route_reachable_past_csrf():
-    async with await _client() as client:
+async def test_login_route_reachable_past_csrf(app, asgi_client_for):
+    async with asgi_client_for(app) as client:
         r = await client.post("/api/auth/login", json={})
     assert r.status_code == 422, (
         f"POST /api/auth/login → {r.status_code} (expected 422 from empty body)"

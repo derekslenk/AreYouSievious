@@ -16,20 +16,11 @@ Run from the backend/ directory:
 from __future__ import annotations
 
 import asyncio
-import sys
 import time
-from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import httpx
 import pytest
-
-BACKEND = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(BACKEND))
-
-import app as app_mod
-from auth import sessions
-from dependencies import SESSION_COOKIE  # moved out of app.py in u40 router split
 from routers import scripts as scripts_mod  # SieveClient is imported here post-u40
 
 SLOW_SECONDS = 1.0
@@ -39,7 +30,7 @@ N_CONCURRENT = 5
 def _slow_sieve_client(_session):
     """Drop-in replacement for SieveClient whose put_script sleeps SLOW_SECONDS.
 
-    Used as `patch.object(app_mod, "SieveClient", side_effect=...)` so the
+    Used as `patch.object(scripts_mod, "SieveClient", side_effect=...)` so the
     test never opens a real ManageSieve connection — only the threadpool /
     event-loop interaction matters here.
     """
@@ -52,7 +43,7 @@ def _slow_sieve_client(_session):
 
 
 @pytest.mark.asyncio
-async def test_import_script_does_not_block_event_loop():
+async def test_import_script_does_not_block_event_loop(authed_session, make_app, asgi_client_for):
     """A slow upload MUST NOT serialize other requests on the event loop.
 
     Revert `import_script` to `async def` with sync `client.put_script` inside
@@ -63,25 +54,10 @@ async def test_import_script_does_not_block_event_loop():
       - The async /api/auth/status calls fired during the uploads can't
         be scheduled and their latency explodes past SLOW_SECONDS.
     """
-    token = sessions.create(
-        host="imap.example.com",
-        host_ip="93.184.216.34",
-        username="user@example.com",
-        password="hunter2",
-    )
-    csrf_token = "test-csrf-token-value"
-    cookies = {
-        SESSION_COOKIE: token,
-        "ays_csrf": csrf_token,
-    }
+    _token, csrf_token, cookies = authed_session
 
     with patch.object(scripts_mod, "SieveClient", side_effect=_slow_sieve_client):
-        transport = httpx.ASGITransport(app=app_mod.app)
-        async with httpx.AsyncClient(
-            transport=transport,
-            base_url="http://test",
-            cookies=cookies,
-        ) as client:
+        async with asgi_client_for(make_app(), cookies=cookies) as client:
 
             async def do_import(idx: int) -> httpx.Response:
                 return await client.post(

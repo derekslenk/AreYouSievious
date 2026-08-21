@@ -18,12 +18,7 @@ Run from the backend/ directory:
 from __future__ import annotations
 
 import ssl
-import sys
-from pathlib import Path
 from unittest.mock import MagicMock, patch
-
-BACKEND = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(BACKEND))
 
 import mail_dial
 from auth import Session

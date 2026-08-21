@@ -15,17 +15,11 @@ Run from the backend/ directory:
 from __future__ import annotations
 
 import socket
-import sys
-from pathlib import Path
 from unittest.mock import patch
-
-import pytest
-
-BACKEND = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(BACKEND))
 
 import imap_client
 import mail_dial
+import pytest
 import ssrf
 from auth import Session
 
