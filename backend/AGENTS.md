@@ -48,7 +48,7 @@ FastAPI application that serves the Svelte SPA as static files and provides a RE
 - Request bodies use Pydantic `BaseModel` subclasses from `api_models.py`
 - All mutating endpoints return `{"ok": True, ...}`
 - Errors caused by the REQUEST map to 4xx, never 5xx: `HostValidationError` and `ProtocolNameError` have app-level handlers covering every sink. Do NOT add a local `except ValueError` in a router — it would turn unrelated `ValueError`s into user-input errors. Failures originating UPSTREAM keep a 5xx that says so (`MailServerUnavailable` → 502, `QuotaExceeded` → 507); what must never happen is an upstream failure surfacing as a bare 500 that reads like our own bug.
-- The transport RAISES as well as returning falsy. `mail_dial` wraps both dials in `_transport_failures_are_semantic`, and the adapters map their library's own exceptions (`imaplib.IMAP4.abort` before `IMAP4.error` — abort subclasses error). A `ConnectionRefusedError` reaching a handler is a 500 that blames this app for the mail server being down.
+- The transport RAISES as well as returning falsy. `mail_dial` wraps both dials in `transport_failures_are_semantic`, and the adapters map their library's own exceptions (`imaplib.IMAP4.abort` before `IMAP4.error` — abort subclasses error). A `ConnectionRefusedError` reaching a handler is a 500 that blames this app for the mail server being down.
 - Mail-server failures raise from `mail_errors.py`; `app.py`'s `_MAIL_ERROR_STATUS` table maps each to its status, registered once on the `MailStoreError` base. Routers keep no `try/except` — add the status to the table, not a handler to the router.
 
 ### Sieve Transform Pipeline

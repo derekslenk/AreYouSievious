@@ -86,10 +86,22 @@ class ImapFolderStore:
             self.session.port_imap,
             cfg=self.cfg,
         )
-        _login(self._conn, self.session.username, self.session.password)
+        try:
+            _login(self._conn, self.session.username, self.session.password)
+        except Exception:
+            # `__exit__` only runs if `__enter__` RETURNED, so a failed login
+            # would leave this socket open — one leaked connection per
+            # request, which stale credentials plus a polling client turns
+            # into a steady drip.
+            self._close()
+            raise
         return self
 
     def __exit__(self, *args):
+        self._close()
+
+    def _close(self):
+        """Hang up, and never let the goodbye mask why we are leaving."""
         if self._conn:
             try:
                 self._conn.logout()
