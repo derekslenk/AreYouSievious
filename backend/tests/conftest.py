@@ -79,7 +79,7 @@ def authed_client(authed_session):
 
     Pass `script_store` / `folder_store` to substitute a seam. They go in
     through `dependency_overrides`, which is why they can be anything with
-    the right methods — no patching of SieveClient/IMAPClient internals, and
+    the right methods — no patching of SieveClient/ImapFolderStore internals, and
     nothing for the substitute to accidentally inherit.
     """
 

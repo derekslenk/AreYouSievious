@@ -28,7 +28,7 @@ import managesieve_client
 import pytest
 from auth import Session
 from config import Settings
-from imap_client import IMAPClient
+from imap_client import ImapFolderStore
 from protocol_names import MAX_SCRIPT_NAME_BYTES, ProtocolNameError
 
 # `managesieve_client` is looked up dynamically (not `from ... import
@@ -71,7 +71,7 @@ def _sieve_client(**client_attrs):
 
 
 def _imap_client(**conn_attrs):
-    client = IMAPClient(_session(), Settings())
+    client = ImapFolderStore(_session(), Settings())
     client._conn = MagicMock(
         **{
             "create.return_value": ("OK", [b"created"]),

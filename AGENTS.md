@@ -85,7 +85,7 @@ Browser → FastAPI REST API → ManageSieve (port 4190) / IMAP (port 993) → M
 
 Every API call extracts a session token from the `ays_session` cookie (or
 `Authorization: Bearer` header), looks up in-memory credentials, and opens a fresh
-ManageSieve/IMAP connection via context managers (`SieveClient`, `IMAPClient`).
+ManageSieve/IMAP connection via context managers (`SieveClient`, `ImapFolderStore`).
 Connections are not pooled.
 
 ### Sieve transform pipeline

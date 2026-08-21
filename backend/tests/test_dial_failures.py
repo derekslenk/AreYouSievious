@@ -13,8 +13,10 @@ all verified escaping as HTTP 500. A mail server that is simply down read as
 a bug in this app, and a password that had expired since login read as one
 too.
 
-Only the login route was protected, by a bare `except Exception -> 502` that
-`.9` wants to delete. These tests are what make deleting it safe.
+Only the login route was protected, by a bare `except Exception -> 502`.
+These tests are what made deleting it safe in `.9` — and one of them exists
+because deleting it was NOT safe at first: the net covered the dial but not
+the conversation, so a socket dying mid-LOGIN still answered 500.
 
 The messages are deliberately OUR words. `MailServerUnavailable` is absent
 from `mail_errors.RELAYS_SERVER_TEXT`, so interpolating a transport
@@ -32,8 +34,8 @@ import mail_dial
 import pytest
 from auth import Session
 from config import Settings
-from imap_client import IMAPClient
-from mail_errors import AuthFailed, MailServerUnavailable
+from imap_client import ImapFolderStore
+from mail_errors import AuthFailed, MailServerUnavailable, MailStoreError
 from managesieve_client import SieveClient
 
 # Every way the transport can fail before we have said anything.
@@ -209,7 +211,7 @@ def test_an_expired_password_is_an_auth_failure_not_a_server_error():
     conn.login.side_effect = imaplib.IMAP4.error("AUTHENTICATIONFAILED")
     with patch("imap_client.open_imap", return_value=conn):
         with pytest.raises(AuthFailed):
-            with IMAPClient(_session(), Settings()):
+            with ImapFolderStore(_session(), Settings()):
                 pass
 
 
@@ -221,7 +223,7 @@ def test_a_dropped_connection_during_login_is_not_an_auth_failure():
     conn.login.side_effect = imaplib.IMAP4.abort("connection closed")
     with patch("imap_client.open_imap", return_value=conn):
         with pytest.raises(MailServerUnavailable):
-            with IMAPClient(_session(), Settings()):
+            with ImapFolderStore(_session(), Settings()):
                 pass
 
 
@@ -230,7 +232,7 @@ def test_a_dropped_connection_during_login_is_not_an_auth_failure():
 
 def test_folders_reports_a_dead_server_as_502(authed_client):
     with patch(
-        "dependencies.IMAPClient",
+        "dependencies.ImapFolderStore",
         MagicMock(side_effect=MailServerUnavailable()),
     ):
         with authed_client() as http:
@@ -279,13 +281,13 @@ def test_sieve_client_still_constructs_normally():
     ids=["dropped-socket", "bad-password"],
 )
 def test_login_tells_a_dropped_socket_from_a_bad_password(make_app, failure, status):
-    """`login` calls imaplib directly rather than through IMAPClient, so the
-    adapter's abort/error split does not cover it. Without its own, a network
-    blip during login answered 401 "Authentication failed" — identical to a
-    genuinely wrong password, sending the user to reset a working credential.
+    """A network blip during login once answered 401 "Authentication failed" —
+    identical to a genuinely wrong password, sending the user to reset a
+    working credential. `login` used to call imaplib directly and needed its
+    own abort/error split; since `.9` it goes through `verify_credentials`
+    and shares the adapter's. Asserted through the route either way, because
+    that is what the user sees.
 
-    `.9` retires this ladder entirely; until then it has to draw the same
-    distinction the adapters draw.
     """
     from fastapi.testclient import TestClient
 
@@ -293,7 +295,9 @@ def test_login_tells_a_dropped_socket_from_a_bad_password(make_app, failure, sta
     conn.login.side_effect = failure
     with (
         patch("routers.auth.validate_host", return_value="93.184.216.34"),
-        patch("routers.auth.open_imap", return_value=conn),
+        # The dial lives in the adapter now: the router no longer imports
+        # imaplib or open_imap, which is the point of `.9`.
+        patch("imap_client.open_imap", return_value=conn),
     ):
         with TestClient(make_app()) as http:
             r = http.post(
@@ -301,6 +305,74 @@ def test_login_tells_a_dropped_socket_from_a_bad_password(make_app, failure, sta
                 json={"host": "mail.example.com", "username": "u", "password": "p"},
             )
     assert r.status_code == status, r.text
+
+
+@pytest.mark.parametrize("failure", TRANSPORT_FAILURES, ids=IDS)
+def test_a_socket_that_dies_mid_login_is_not_our_bug(failure):
+    """The conversation needs the same net the connection gets.
+
+    imaplib does not wrap OSError, so a socket reset while we are talking
+    raises straight through the adapter. `.9` retired login's bare
+    `except Exception -> 502`, which had been quietly covering this — without
+    extending the net, a mail server that dropped mid-LOGIN answered 500 and
+    blamed this app. Both call sites of `_login` are covered: the login route
+    and the store's `__enter__`.
+    """
+    conn = MagicMock()
+    conn.login.side_effect = failure
+    with patch("imap_client.open_imap", return_value=conn):
+        with pytest.raises(MailServerUnavailable):
+            with ImapFolderStore(_session(), Settings()):
+                pass
+
+
+@pytest.mark.parametrize("failure", TRANSPORT_FAILURES, ids=IDS)
+def test_login_survives_a_transport_failure_mid_conversation(make_app, failure):
+    """The regression this bead caused, guarded where the user meets it.
+
+    `.9` retired login's bare `except Exception -> 502`, which had been
+    covering the LOGIN conversation as well as the dial. The adapter-level
+    test above proves the net now catches these; this proves the route does,
+    which is the claim that actually matters and the one a docstring was
+    asserting without a test behind it.
+    """
+    from fastapi.testclient import TestClient
+    from routers import auth as auth_mod
+
+    # The limiter is process-global, so a parametrized sweep of login attempts
+    # trips it and every case after the fifth reads 429.
+    auth_mod._login_limiter._attempts.clear()
+
+    conn = MagicMock()
+    conn.login.side_effect = failure
+    with (
+        patch("routers.auth.validate_host", return_value="93.184.216.34"),
+        patch("imap_client.open_imap", return_value=conn),
+    ):
+        with TestClient(make_app(), raise_server_exceptions=False) as http:
+            r = http.post(
+                "/api/auth/login",
+                json={"host": "mail.example.com", "username": "u", "password": "p"},
+            )
+    assert r.status_code == 502, r.text
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [imaplib.IMAP4.error("AUTHENTICATIONFAILED"), ConnectionResetError("reset")],
+    ids=["rejected", "transport"],
+)
+def test_a_failed_login_does_not_leak_the_connection(failure):
+    """`__exit__` only runs if `__enter__` RETURNED, so raising from inside it
+    left the socket open — one leaked connection per request, which stale
+    credentials plus a polling client turns into a steady drip."""
+    conn = MagicMock()
+    conn.login.side_effect = failure
+    with patch("imap_client.open_imap", return_value=conn):
+        with pytest.raises(MailStoreError):
+            with ImapFolderStore(_session(), Settings()):
+                pass
+    assert conn.logout.called, "the socket was never closed"
 
 
 def test_sievelibs_own_error_is_translated_too():

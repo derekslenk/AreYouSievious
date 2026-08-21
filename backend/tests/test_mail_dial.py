@@ -3,7 +3,7 @@ Tests for the module that owns dialling the user's mail server.
 
 Connection policy used to be re-derived at each call site. That is what let
 areyousievious-vzs fix the third-resolution TOCTOU twice — once as an imaplib
-subclass for IMAPClient, once via sievelib's srvhostname for SieveClient — and
+subclass for ImapFolderStore, once via sievelib's srvhostname for SieveClient — and
 still leave the login handler building a stock `imaplib.IMAP4_SSL(host, …)`
 that re-resolved the hostname after the rebinding guard had run.
 
@@ -148,6 +148,46 @@ def test_sieve_connect_restores_the_default_even_when_connect_raises():
 
 
 # ── Nobody can bypass the module ──
+#
+# Two locks, guarding two different things.
+#
+# The IMPORT allowlist below is the primary one. It catches by construction
+# rather than by enumeration: a module that cannot import `imaplib` cannot
+# name `IMAP4.error`, so it cannot build its own opinion about what a protocol
+# failure means. It is not a complete guard against SPEAKING — a module can
+# still take a connection from `open_imap` and call duck-typed methods on it —
+# but it removes the vocabulary needed to handle the protocol's own failures,
+# which is where the drift actually happened. `routers/auth.py`
+# imported imaplib and ssl and PASSED, because it did not dial. It used
+# `open_imap` and then spoke IMAP verbs and decided for itself what a protocol
+# error meant. The denylist guarded dialling; nothing guarded speaking.
+#
+# The CALL denylist is kept for the modules the allowlist must let in. `ssrf`
+# needs `socket` to resolve names; having it, nothing else stops it opening a
+# connection with what it imported. Enumeration is a weak guard, but it is the
+# right one for the handful of modules that legitimately hold the tools.
+
+# Every library that talks to a mail server, or can.
+_PROTOCOL_LIBRARIES = {"imaplib", "sievelib", "imapclient", "ssl", "socket"}
+
+# Who may import what, and nothing else may import any of it. Each entry is a
+# claim about what that module is FOR — widening one is a design decision, not
+# a convenience.
+# Keyed on the path relative to backend/, not the bare filename: a future
+# `routers/ssrf.py` must not inherit `ssrf.py`'s grant by sharing its name.
+_MAY_IMPORT: dict[str, set[str]] = {
+    # The dial itself: the whole policy lives here.
+    "mail_dial.py": _PROTOCOL_LIBRARIES,
+    # The FolderStore adapter: speaks IMAP verbs once mail_dial has connected.
+    "imap_client.py": {"imaplib"},
+    # The ScriptStore adapter: the same, for ManageSieve.
+    "managesieve_client.py": {"sievelib"},
+    # Resolves names and checks addresses. Never connects — and the call
+    # denylist below still holds it to that, since it legitimately has socket.
+    "ssrf.py": {"socket"},
+    # Standalone utility, not imported by the app.
+    "fetch_grak_script.py": _PROTOCOL_LIBRARIES,
+}
 
 _ALLOWED_TO_DIAL = {"mail_dial.py"}
 _RAW_DIAL_CALLS = {"IMAP4_SSL", "Client", "create_connection"}
@@ -173,16 +213,55 @@ def _dialling_calls(path: Path) -> set[str]:
     return found
 
 
+def _protocol_imports(path: Path) -> set[str]:
+    """The mail-protocol libraries `path` imports, by top-level name."""
+    tree = ast.parse(path.read_text())
+    found = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            found.update(alias.name.split(".")[0] for alias in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.module and node.level == 0:
+            found.add(node.module.split(".")[0])
+    return found & _PROTOCOL_LIBRARIES
+
+
+_APP_MODULES = sorted(
+    p for p in BACKEND.rglob("*.py") if "tests" not in p.parts and "__pycache__" not in p.parts
+)
+
+
+@pytest.mark.parametrize("path", _APP_MODULES, ids=lambda p: str(p.relative_to(BACKEND)))
+def test_only_the_dial_and_its_adapters_may_import_a_protocol_library(path: Path) -> None:
+    """ARCHITECTURAL LOCK: only the dial and its adapters hold the protocol.
+
+    Catching by construction rather than by enumeration. The call denylist
+    below guards DIALLING and always did; this guards owning the protocol's
+    vocabulary, which is how
+    `routers/auth.py` came to own a private ladder mapping
+    `imaplib.IMAP4.error` to 401 and bare `Exception` to 502 — wording that
+    drifted from every other sink, and a catch-all that blamed the mail server
+    for our own bugs.
+
+    If this fails, do not widen `_MAY_IMPORT`. Put the protocol conversation
+    behind the seam that already owns it — `mail_stores.ScriptStore` /
+    `FolderStore` — so the next caller cannot have the tools either.
+    """
+    allowed = _MAY_IMPORT.get(str(path.relative_to(BACKEND)), set())
+    offenders = _protocol_imports(path) - allowed
+    assert not offenders, (
+        f"{path.relative_to(BACKEND)} imports {sorted(offenders)}, which only "
+        f"{sorted(n for n, libs in _MAY_IMPORT.items() if libs & offenders)} may. "
+        "Route the conversation through a store adapter instead."
+    )
+
+
 @pytest.mark.parametrize(
     "path",
-    sorted(
+    [
         p
-        for p in BACKEND.rglob("*.py")
-        if "tests" not in p.parts
-        and "__pycache__" not in p.parts
-        and p.name not in _ALLOWED_TO_DIAL
-        and p.name != "fetch_grak_script.py"
-    ),
+        for p in _APP_MODULES
+        if p.name not in _ALLOWED_TO_DIAL and p.name != "fetch_grak_script.py"
+    ],
     ids=lambda p: str(p.relative_to(BACKEND)),
 )
 def test_no_module_outside_mail_dial_opens_its_own_connection(path: Path) -> None:
@@ -221,7 +300,7 @@ def test_login_goes_through_the_pinned_dial(make_app):
     """REGRESSION (the candidate-04 gap): login used to build a stock
     imaplib.IMAP4_SSL(host, …), which re-resolves the hostname AFTER the
     rebinding guard ran — a live TOCTOU on the first connection the app makes,
-    while IMAPClient and SieveClient were both already pinned."""
+    while ImapFolderStore and SieveClient were both already pinned."""
     with (
         patch.object(ssrf.socket, "getaddrinfo", return_value=_addrinfo("93.184.216.34")),
         patch.object(mail_dial, "_PinnedIMAP4_SSL") as mock_pinned,

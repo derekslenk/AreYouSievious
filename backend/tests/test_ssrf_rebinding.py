@@ -206,7 +206,7 @@ def test_full_rebinding_attack_blocked(monkeypatch):
 
 
 def test_imap_client_aborts_on_rebinding_before_touching_network():
-    """IMAPClient.__enter__ MUST re-validate BEFORE constructing the SSL
+    """ImapFolderStore.__enter__ MUST re-validate BEFORE constructing the SSL
     client so a rebinding never reaches the socket layer.
 
     Post-vzs the client is `_PinnedIMAP4_SSL` (not stock `imaplib.IMAP4_SSL`).
@@ -220,7 +220,7 @@ def test_imap_client_aborts_on_rebinding_before_touching_network():
         with patch.object(mail_dial, "_PinnedIMAP4_SSL") as mock_pinned:
             mock_pinned.return_value = MagicMock()
             with pytest.raises(ssrf.HostValidationError, match="rebinding"):
-                with imap_client.IMAPClient(session, Settings()):
+                with imap_client.ImapFolderStore(session, Settings()):
                     pass
             mock_pinned.assert_not_called()
 
@@ -253,7 +253,7 @@ def test_pinned_imap4_ssl_create_socket_uses_pinned_ip_and_sni_hostname():
 
 
 def test_imap_client_constructs_pinned_subclass_with_correct_args():
-    """IMAPClient.__enter__ instantiates _PinnedIMAP4_SSL with (host,
+    """ImapFolderStore.__enter__ instantiates _PinnedIMAP4_SSL with (host,
     host_ip, port, ssl_context=, timeout=) so the subclass's overridden
     _create_socket has both values available to split the connect target
     from the SNI hostname."""
@@ -265,7 +265,7 @@ def test_imap_client_constructs_pinned_subclass_with_correct_args():
         patch.object(mail_dial, "_PinnedIMAP4_SSL") as mock_pinned,
     ):
         mock_pinned.return_value = MagicMock()
-        with imap_client.IMAPClient(session, Settings()):
+        with imap_client.ImapFolderStore(session, Settings()):
             pass
 
     mock_pinned.assert_called_once()

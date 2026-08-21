@@ -21,7 +21,7 @@ import mail_dial
 import pytest
 from auth import Session
 from config import Settings
-from imap_client import IMAPClient
+from imap_client import ImapFolderStore
 from mail_errors import (
     AuthFailed,
     FolderRejected,
@@ -233,8 +233,8 @@ def test_a_successful_dial_still_returns_the_client():
 # ── The folder sink ──
 
 
-def _imap(create_status: str, subscribe_status: str) -> IMAPClient:
-    client = IMAPClient(_session(), Settings())
+def _imap(create_status: str, subscribe_status: str) -> ImapFolderStore:
+    client = ImapFolderStore(_session(), Settings())
     conn = MagicMock()
     conn.create.return_value = (create_status, [b""])
     conn.subscribe.return_value = (subscribe_status, [b""])

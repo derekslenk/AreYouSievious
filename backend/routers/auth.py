@@ -12,7 +12,6 @@ Behavior is byte-identical to the pre-u40 inline handlers in app.py.
 
 from __future__ import annotations
 
-import imaplib
 import ipaddress
 import time
 from collections import defaultdict
@@ -20,12 +19,11 @@ from collections import defaultdict
 from api_models import AuthStatusResponse, LoginRequest, OkResponse
 from auth import Session, sessions
 from config import Settings
-from dependencies import SESSION_COOKIE, get_optional_session
+from dependencies import SESSION_COOKIE, get_optional_session, get_settings
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
-from mail_dial import open_imap
-from mail_errors import MailServerUnavailable, MailStoreError
+from imap_client import verify_credentials
 from middleware import CSRF_COOKIE, generate_csrf_token
-from ssrf import HostValidationError, validate_host
+from ssrf import validate_host
 
 router = APIRouter(prefix="/api/auth")
 
@@ -139,51 +137,27 @@ def _is_secure(request: Request, cfg: Settings) -> bool:
 
 
 @router.post("/login", response_model=OkResponse, response_model_exclude_none=True)
-def login(req: LoginRequest, request: Request, response: Response):
+def login(
+    req: LoginRequest,
+    request: Request,
+    response: Response,
+    cfg: Settings = Depends(get_settings),
+):
     """Authenticate with IMAP credentials."""
-    cfg: Settings = request.app.state.settings
     client_ip = _get_client_ip(request, cfg)
     if not _login_limiter.check(client_ip):
         raise HTTPException(429, "Too many login attempts. Try again in 5 minutes.")
 
     host_ip = validate_host(req.host)
 
-    try:
-        # Goes through mail_dial like every other connection. Building an
-        # imaplib.IMAP4_SSL here directly is what left the login path
-        # re-resolving the hostname after the rebinding guard had run, while
-        # IMAPClient and SieveClient were both pinned — the fix had been
-        # applied twice and missed the one caller that did not use them.
-        # open_imap re-validates, so the separate assert here is redundant.
-        conn = open_imap(req.host, host_ip, req.port_imap, cfg=cfg)
-        conn.login(req.username, req.password)
-        conn.logout()
-    except HostValidationError:
-        # MUST precede the catch-all. A rebinding attempt is a 400 with an
-        # explicit message via app.py's handler; letting it fall through to
-        # `except Exception` would report it as "Cannot connect to mail
-        # server" (502), indistinguishable from an ordinary network failure.
-        raise
-    except MailStoreError:
-        # Also precedes the catch-all. `mail_dial` now reports transport
-        # failures semantically, and app.py maps each with a message that says
-        # what actually happened — a refused connection, an unresolvable
-        # hostname, an unverifiable certificate. Letting those fall through to
-        # `except Exception` would flatten all of them back into "Cannot
-        # connect to mail server", which is what this ladder did before the
-        # dial could tell them apart.
-        raise
-    except imaplib.IMAP4.abort as exc:
-        # MUST precede IMAP4.error, which it subclasses. A socket dropped
-        # mid-LOGIN is not a rejected password, and saying so sends the user
-        # to reset a credential that works. This is the same distinction the
-        # adapters draw; login calls imaplib directly, so it has to draw it
-        # too until `.9` retires this ladder.
-        raise MailServerUnavailable("The connection to the mail server was lost.") from exc
-    except imaplib.IMAP4.error:
-        raise HTTPException(401, "Authentication failed")  # noqa: B904
-    except Exception:
-        raise HTTPException(502, "Cannot connect to mail server")  # noqa: B904
+    # Goes through mail_dial like every other connection, and reports failure
+    # in the shared vocabulary. There is no try/except here on purpose: the
+    # ladder this replaced decided for itself what a protocol error meant, in
+    # wording that drifted from every other sink, and its bare
+    # `except Exception -> 502` blamed the mail server for our own bugs.
+    # app.py maps AuthFailed to 401, MailServerUnavailable to 502 and
+    # HostValidationError to 400 — the same statuses, decided in one place.
+    verify_credentials(req.host, host_ip, req.port_imap, req.username, req.password, cfg=cfg)
 
     token = sessions.create(
         host=req.host,

@@ -134,9 +134,10 @@ def test_adapter_failure_reaches_the_client_as_its_status(authed_client, error_t
     so a test hands the router a different object rather than reaching into
     SieveClient's internals.
 
-    Note this pins propagation, not the absence of try/except — `auth.py`
-    still hand-maps `imaplib.IMAP4.error` to 401 and bare `Exception` to 502.
-    Retiring that is `.26`.
+    Note this pins propagation, not the absence of try/except. `auth.py`'s
+    own ladder — which hand-mapped `imaplib.IMAP4.error` to 401 and bare
+    `Exception` to 502 — was retired in `.9`; login now speaks the same
+    vocabulary through `verify_credentials`.
     """
     store = FakeScriptStore()
     store.reject_next(error_type("upstream said no"))
@@ -206,11 +207,11 @@ def test_neither_seam_is_runtime_checkable():
     "seam,implementation",
     [
         (ScriptStore, "managesieve_client.SieveClient"),
-        (FolderStore, "imap_client.IMAPClient"),
+        (FolderStore, "imap_client.ImapFolderStore"),
         (ScriptStore, "tests.fakes.FakeScriptStore"),
         (FolderStore, "tests.fakes.FakeFolderStore"),
     ],
-    ids=["SieveClient", "IMAPClient", "FakeScriptStore", "FakeFolderStore"],
+    ids=["SieveClient", "ImapFolderStore", "FakeScriptStore", "FakeFolderStore"],
 )
 def test_every_implementation_offers_the_whole_seam(seam, implementation):
     """The seam describes what already exists, so `.7` can inject the shipped
