@@ -31,7 +31,7 @@ import pytest
 from auth import Session
 from config import Settings
 from imap_store import ImapFolderStore
-from mail_errors import MailServerUnavailable
+from mail_errors import AuthFailed, MailServerUnavailable, MailStoreError
 
 
 def _session() -> Session:
@@ -167,8 +167,8 @@ def test_a_refused_list_raises_instead_of_reporting_an_empty_account():
     """`status != "OK"` used to `return folders` — an empty one. A server
     that refused the command was indistinguishable from an account with no
     folders, so the user was told to create folders they already had."""
-    with pytest.raises(MailServerUnavailable):
-        _store([b"[AUTHENTICATIONFAILED] Authentication failed."], status="NO").list_folders()
+    with pytest.raises(MailStoreError):
+        _store([b"Server refused the command."], status="NO").list_folders()
 
 
 def test_a_refused_list_does_not_repeat_the_servers_banner():
@@ -224,8 +224,72 @@ def test_a_nil_delimiter_folder_survives_the_response_model(authed_client):
 def test_a_refused_list_answers_502_rather_than_an_empty_listing(authed_client):
     """The user-visible half of the `status != "OK"` fix: not "you have no
     folders", but "the mail server is unavailable"."""
-    store = _store([b"[AUTHENTICATIONFAILED] Authentication failed."], status="NO")
+    store = _store([b"Server refused the command."], status="NO")
     with authed_client(folder_store=store) as http:
         response = http.get("/api/folders")
     assert response.status_code == 502
     assert response.json() != []
+
+
+# ── A name the codec cannot read must not become a 500 ──
+#
+# Found in review of this bead's own first commit. `imap_utf7.decode` raises
+# UnicodeDecodeError on a lone `&`, and the decode ran OUTSIDE the try that
+# guards parsing — so it escaped `list_folders` uncaught. That is the same
+# failure class as the literal-tuple TypeError this bead exists to remove,
+# one field over: the regex produced mojibake here, the first fix produced a
+# 500.
+
+
+def test_a_raw_ampersand_in_a_name_does_not_crash_the_listing():
+    r"""A compliant server encodes `&` as `&-`; some do not, and `Q&A` is an
+    ordinary folder name. `mail_errors.server_text` already sets this
+    codebase's precedent for undecodable server bytes — losing the wording is
+    acceptable, raising UnicodeDecodeError out is not — and the folder is
+    real, so refusing the whole listing over it would be worse than the
+    mojibake it replaced."""
+    assert _one(rb'(\HasNoChildren) "." "Q&A"')["name"] == "Q&A"
+
+
+def test_a_flag_is_never_run_through_the_mutf7_codec():
+    r"""Flags are atoms, and `&` is a legal ATOM-CHAR. They are never
+    mUTF-7-encoded, so decoding them is wrong in principle — and fatal in
+    practice, because `$Junk&x` raised UnicodeDecodeError and took the whole
+    folder listing with it."""
+    assert _one(rb'(\HasNoChildren \$Junk&x) "." "INBOX"')["flags"] == [
+        "\\HasNoChildren",
+        "\\$Junk&x",
+    ]
+
+
+def test_a_mutf7_name_still_decodes_alongside_an_undecodable_one():
+    """The fallback must not cost the encoding it was added to protect."""
+    rows = [rb'(\HasNoChildren) "." "&AOk-t&AOk-"', rb'(\HasNoChildren) "." "Q&A"']
+    assert [f["name"] for f in _store(rows).list_folders()] == ["Q&A", "été"]
+
+
+# ── The named case in the bead: AUTHENTICATIONFAILED ──
+
+
+def test_authenticationfailed_on_list_is_an_auth_failure_not_an_outage():
+    """The symptom the bead names by name. `MailServerUnavailable` told a
+    user with stale credentials that the server was down, which sends them
+    somewhere that cannot help. The RFC 5530 response CODE is not a banner —
+    and `AuthFailed` relays no text either, so reading it leaks nothing."""
+    store = _store([b"[AUTHENTICATIONFAILED] Authentication failed."], status="NO")
+    with pytest.raises(AuthFailed):
+        store.list_folders()
+
+
+def test_an_unexplained_no_is_still_an_unavailable_server():
+    """No response code means nothing the caller can act on, and blaming
+    their credentials for it would be a guess."""
+    with pytest.raises(MailServerUnavailable):
+        _store([b"Internal error"], status="NO").list_folders()
+
+
+def test_an_auth_failure_on_list_does_not_repeat_the_servers_banner():
+    store = _store([b"[AUTHENTICATIONFAILED] dovecot 2.3.19 said no"], status="NO")
+    with pytest.raises(AuthFailed) as caught:
+        store.list_folders()
+    assert "dovecot" not in str(caught.value)

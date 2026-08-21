@@ -4,10 +4,12 @@ The FolderStore adapter: IMAP folder operations.
 Dialling policy — rebinding re-check, pinned connect, TLS context, timeouts —
 lives in `mail_dial`. This module owns what to say once connected.
 
-Reading a LIST response is `imapclient`'s job, not ours. Two things are used
-from it and nothing else — `response_parser.parse_response` for the grammar
-and `imap_utf7` for the encoding — while imaplib stays the transport, so
-`mail_dial` takes a zero-line diff. See `_folder_from_list_row`.
+Reading a LIST response is `imapclient`'s job, not ours. Three names are used
+from it and nothing else — `response_parser.parse_response` for the grammar,
+`imap_utf7` for the encoding, and `ProtocolError`, which is how the grammar
+reports a line it cannot read (it does NOT subclass ValueError, so catching
+`parse_response` needs the name). imaplib stays the transport, so `mail_dial`
+takes a zero-line diff. See `_folder_from_list_row`.
 """
 
 import imaplib
@@ -18,23 +20,52 @@ from imapclient import imap_utf7
 from imapclient.exceptions import ProtocolError
 from imapclient.response_parser import parse_response
 from mail_dial import open_imap, transport_failures_are_semantic
-from mail_errors import AuthFailed, FolderRejected, MailServerUnavailable, relayed, server_text
+from mail_errors import (
+    AuthFailed,
+    FolderRejected,
+    MailServerUnavailable,
+    MailStoreError,
+    relayed,
+    server_text,
+)
 from protocol_names import validate_folder_name
 
 
-def _text(atom) -> str:
-    """One parsed atom as the text a caller can put in a Sieve `fileinto`.
+def _decode_name(atom) -> str:
+    """A mailbox name or delimiter as text a caller can put in a `fileinto`.
 
-    Three shapes arrive here from one grammar. Bytes are the ordinary case and
-    carry modified UTF-7 — IMAP's own encoding, which is NOT stdlib utf-7 (the
-    stdlib emits `+AOk-` where IMAP requires `&AOk-`; CPython declined to ship
-    the codec, bpo-22598). A bare numeric atom is typed as an int, because a
-    mailbox name is an astring and `2024` is legal unquoted. NIL is None, and
-    only ever reaches this as a delimiter, which is handled by the caller.
+    Bytes are the ordinary case and carry modified UTF-7 — IMAP's own
+    encoding, which is NOT stdlib utf-7 (the stdlib emits `+AOk-` where IMAP
+    requires `&AOk-`; CPython declined to ship the codec, bpo-22598). A bare
+    numeric atom is typed as an int by the grammar, because a mailbox name is
+    an astring and `2024` is legal unquoted.
+
+    The fallback is load-bearing. A compliant server writes a literal `&` as
+    `&-`, and `imap_utf7.decode` raises UnicodeDecodeError on a lone one — so
+    an ordinary `Q&A` on a sloppy server threw straight out of `list_folders`,
+    a 500 for a folder that exists. That is the same failure this bead exists
+    to remove, so it is answered the way `mail_errors.server_text` already
+    answers it: losing fidelity is acceptable, raising out is not. Refusing
+    the whole listing over one odd name would be worse than the mojibake the
+    regex produced.
     """
     if isinstance(atom, bytes):
-        return imap_utf7.decode(atom)
+        try:
+            return imap_utf7.decode(atom)
+        except UnicodeDecodeError:
+            return atom.decode("utf-8", "replace")
     return str(atom)
+
+
+def _decode_flag(atom) -> str:
+    """One LIST flag, which is an ATOM and never modified UTF-7.
+
+    Separate from `_decode_name` because running flags through the codec is
+    wrong in principle and was fatal in practice: `&` is a legal ATOM-CHAR, so
+    a server offering `\\$Junk&x` raised UnicodeDecodeError and took the
+    entire folder listing down with it.
+    """
+    return atom.decode("ascii", "replace") if isinstance(atom, bytes) else str(atom)
 
 
 def _folder_from_list_row(row) -> dict | None:
@@ -64,13 +95,36 @@ def _folder_from_list_row(row) -> dict | None:
         raise MailServerUnavailable()
     flags, delimiter, name = parsed[:3]
     return {
-        "name": _text(name),
+        "name": _decode_name(name),
         # NIL, and therefore None, for a server with a flat namespace. The
         # regex required a quoted character here and so matched nothing at
         # all, and a row that matched nothing was skipped by the loop.
-        "delimiter": _text(delimiter) if delimiter is not None else None,
-        "flags": [_text(f) for f in flags or ()],
+        "delimiter": _decode_name(delimiter) if delimiter is not None else None,
+        "flags": [_decode_flag(f) for f in flags or ()],
     }
+
+
+# RFC 5530 response codes worth telling apart when the server refuses LIST.
+# The CODE is not a banner — it is a fixed token from the spec — so reading it
+# leaks nothing, and neither error relays the text that follows it.
+_LIST_REFUSALS: dict[str, type[MailStoreError]] = {"AUTHENTICATIONFAILED": AuthFailed}
+
+
+def _refusal(detail) -> MailStoreError:
+    """What a `NO` to LIST means, in the mail vocabulary.
+
+    `AUTHENTICATIONFAILED` is the case this bead names: credentials that
+    worked once and no longer do. Answering `MailServerUnavailable` told that
+    user the server was down and sent them somewhere that cannot help, which
+    is the same class of misdirection as reporting an empty account.
+
+    Anything else stays `MailServerUnavailable`: no response code means
+    nothing the caller can act on, and blaming their credentials for it would
+    be a guess.
+    """
+    text = server_text(detail) or ""
+    code = text[1 : text.index("]")].upper() if text.startswith("[") and "]" in text else ""
+    return relayed(_LIST_REFUSALS.get(code.split("/", 1)[0], MailServerUnavailable), text)
 
 
 def _login(conn, username: str, password: str, *, rejected: str | None = None) -> None:
@@ -182,7 +236,7 @@ class ImapFolderStore:
         """
         status, data = self._conn.list()
         if status != "OK":
-            raise MailServerUnavailable()
+            raise _refusal(data)
 
         folders = [f for f in (_folder_from_list_row(row) for row in data) if f is not None]
         folders.sort(key=lambda f: f["name"].lower())
