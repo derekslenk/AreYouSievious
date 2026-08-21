@@ -15,8 +15,6 @@ Two things are pinned here:
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock
-
 import pytest
 from app import _MAIL_ERROR_STATUS, _status_for
 from mail_errors import (
@@ -28,6 +26,8 @@ from mail_errors import (
     ScriptRejected,
 )
 from mail_stores import FolderStore, ScriptStore
+
+from tests.fakes import FakeScriptStore
 
 # The vocabulary, and the status each failure means to a client.
 ERROR_STATUS = [
@@ -138,8 +138,8 @@ def test_adapter_failure_reaches_the_client_as_its_status(authed_client, error_t
     still hand-maps `imaplib.IMAP4.error` to 401 and bare `Exception` to 502.
     Retiring that is `.26`.
     """
-    store = MagicMock()
-    store.list_scripts.side_effect = error_type("upstream said no")
+    store = FakeScriptStore()
+    store.reject_next(error_type("upstream said no"))
     with authed_client(script_store=store) as http:
         r = http.get("/api/scripts")
     assert r.status_code == status, r.text
@@ -203,20 +203,28 @@ def test_neither_seam_is_runtime_checkable():
 
 
 @pytest.mark.parametrize(
-    "seam,adapter_module,adapter_name",
+    "seam,implementation",
     [
-        (ScriptStore, "managesieve_client", "SieveClient"),
-        (FolderStore, "imap_client", "IMAPClient"),
+        (ScriptStore, "managesieve_client.SieveClient"),
+        (FolderStore, "imap_client.IMAPClient"),
+        (ScriptStore, "tests.fakes.FakeScriptStore"),
+        (FolderStore, "tests.fakes.FakeFolderStore"),
     ],
-    ids=["ScriptStore/SieveClient", "FolderStore/IMAPClient"],
+    ids=["SieveClient", "IMAPClient", "FakeScriptStore", "FakeFolderStore"],
 )
-def test_the_shipped_adapter_has_every_operation(seam, adapter_module, adapter_name):
-    """The seam describes what already exists, so `.7` can inject it and `.8`
-    can substitute a fake without either changing the routers.
+def test_every_implementation_offers_the_whole_seam(seam, implementation):
+    """The seam describes what already exists, so `.7` can inject the shipped
+    adapter and `.8` can substitute a fake without either changing a router.
+    Both live here, because a fake that drifts from the interface makes every
+    test using it prove something the real adapter does not do.
 
-    Method presence only — that both adapters RAISE rather than return a
-    falsy value is pinned in tests/test_adapter_failures.py (`.6`).
+    Method presence only, and claiming no more: this module refuses
+    `runtime_checkable` precisely because names cannot show whether failure
+    raises. That the adapters raise is pinned in test_adapter_failures.py
+    (`.6`); that the fakes do is pinned in test_save_path.py (`.8`).
     """
-    adapter = getattr(__import__(adapter_module), adapter_name)
+    module_name, _, class_name = implementation.rpartition(".")
+    module = __import__(module_name, fromlist=[class_name])
+    impl = getattr(module, class_name)
     for op in _operations(seam):
-        assert callable(getattr(adapter, op, None)), f"{adapter_name} lacks {op}"
+        assert callable(getattr(impl, op, None)), f"{class_name} lacks {op}"

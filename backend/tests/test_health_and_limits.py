@@ -16,10 +16,10 @@ Run from the backend/ directory:
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock
-
 import pytest
 from config import Settings
+
+from tests.fakes import FakeScriptStore
 
 # ── /healthz ──
 
@@ -75,7 +75,7 @@ def _import_of_size(http, size: int):
 
 
 def test_import_under_the_configured_cap_succeeds(authed_client):
-    with authed_client(Settings(max_body_bytes=4096), script_store=MagicMock()) as http:
+    with authed_client(Settings(max_body_bytes=4096), script_store=FakeScriptStore()) as http:
         assert _import_of_size(http, 1000).status_code == 200
 
 
@@ -83,7 +83,7 @@ def test_import_over_the_configured_cap_is_413(authed_client):
     """A raised cap must actually raise the import limit — the whole point.
     Previously the route hardcoded 1 MiB while the middleware read the env var,
     so the smaller of the two silently won."""
-    with authed_client(Settings(max_body_bytes=4096), script_store=MagicMock()) as http:
+    with authed_client(Settings(max_body_bytes=4096), script_store=FakeScriptStore()) as http:
         r = _import_of_size(http, 5000)
         assert r.status_code == 413, r.text
 
@@ -91,7 +91,9 @@ def test_import_over_the_configured_cap_is_413(authed_client):
 def test_a_raised_cap_admits_a_body_the_default_would_reject(authed_client):
     """Regression for the two-limits-disagree bug, stated as behaviour: a body
     larger than the 1 MiB default is accepted when the cap is raised."""
-    with authed_client(Settings(max_body_bytes=4 * 1024 * 1024), script_store=MagicMock()) as http:
+    with authed_client(
+        Settings(max_body_bytes=4 * 1024 * 1024), script_store=FakeScriptStore()
+    ) as http:
         r = _import_of_size(http, 2 * 1024 * 1024)
         assert r.status_code == 200, r.text
 

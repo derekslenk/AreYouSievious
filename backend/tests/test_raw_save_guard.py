@@ -11,11 +11,11 @@ future frontend regression re-opens the window.
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock
-
 import pytest
 from api_models import SaveRawRequest
 from pydantic import ValidationError
+
+from tests.fakes import FakeScriptStore
 
 # ── Model layer ──
 
@@ -49,16 +49,16 @@ def test_put_raw_with_empty_content_never_reaches_the_sink(authed_client):
     — see the `.7` follow-up bead — and is invisible here because this test
     substitutes the store.
     """
-    store = MagicMock()
+    store = FakeScriptStore({"primary": "keep;\n"})
     with authed_client(script_store=store) as http:
         r = http.put("/api/scripts/primary/raw", json={"content": ""})
     assert r.status_code == 422, r.text
-    store.put_script.assert_not_called()
+    assert store.scripts == {"primary": "keep;\n"}, "the real script must be untouched"
 
 
 def test_put_raw_with_real_content_still_saves(authed_client):
-    store = MagicMock()
+    store = FakeScriptStore()
     with authed_client(script_store=store) as http:
         r = http.put("/api/scripts/primary/raw", json={"content": "keep;\n"})
     assert r.status_code == 200, r.text
-    store.put_script.assert_called_once_with("primary", "keep;\n")
+    assert store.scripts == {"primary": "keep;\n"}
