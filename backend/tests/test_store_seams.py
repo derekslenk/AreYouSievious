@@ -61,6 +61,20 @@ def test_script_rejected_carries_its_reason():
     assert "fileintoo" in str(exc)
 
 
+@pytest.mark.parametrize("empty", [None, ""], ids=["none", "empty-string"])
+def test_script_rejected_reason_and_message_never_disagree(empty):
+    """An empty reason must read as "nothing to relay" BOTH ways.
+
+    Without normalising, ScriptRejected("") gave the safe default from
+    str(exc) while .reason stayed "" — two readings of one error saying
+    different things. `.6` passes sievelib's errmsg straight in here, which
+    is exactly where an empty string comes from.
+    """
+    exc = ScriptRejected(empty)
+    assert exc.reason is None
+    assert str(exc) == ScriptRejected.default_detail
+
+
 @pytest.mark.parametrize("error_type,_status", ERROR_STATUS)
 def test_errors_carry_no_http_status(error_type, _status):
     """Protocol-free by construction. A status living on the semantic type is

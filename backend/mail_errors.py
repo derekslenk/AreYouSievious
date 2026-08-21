@@ -52,7 +52,11 @@ class ScriptRejected(MailStoreError):
 
     def __init__(self, reason: str | None = None):
         super().__init__(reason)
-        self.reason = reason
+        # Normalised to None, so `.reason` and `str(exc)` can never disagree:
+        # an empty reason means the server gave us nothing worth relaying, and
+        # both readings should say so. `.6` feeds this sievelib's errmsg,
+        # which is exactly the source an empty string would come from.
+        self.reason = reason or None
 
 
 class QuotaExceeded(MailStoreError):
