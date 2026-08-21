@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
-from unittest.mock import patch
 
 BACKEND = Path(__file__).resolve().parent.parent
 if str(BACKEND) not in sys.path:
@@ -23,7 +22,12 @@ import httpx  # noqa: E402
 import pytest  # noqa: E402
 from app import create_app  # noqa: E402
 from auth import sessions  # noqa: E402
-from dependencies import SESSION_COOKIE  # noqa: E402
+from config import Settings  # noqa: E402
+from dependencies import (  # noqa: E402
+    SESSION_COOKIE,
+    get_folder_store,
+    get_script_store,
+)
 from fastapi.testclient import TestClient  # noqa: E402
 
 # One CSRF literal. Three inline copies had drifted ("csrf-test-token-value"
@@ -71,32 +75,28 @@ def authed_session():
 
 @pytest.fixture
 def authed_client(authed_session):
-    """Factory: a TestClient over a fresh app, with the session and CSRF
-    cookies preloaded and the X-CSRF-Token header preset on every request."""
+    """Factory: a TestClient over a fresh app, session and CSRF preloaded.
 
-    def _make(settings=None) -> TestClient:
+    Pass `script_store` / `folder_store` to substitute a seam. They go in
+    through `dependency_overrides`, which is why they can be anything with
+    the right methods — no patching of SieveClient/IMAPClient internals, and
+    nothing for the substitute to accidentally inherit.
+    """
+
+    def _make(
+        settings: Settings | None = None,
+        *,
+        script_store=None,
+        folder_store=None,
+    ) -> TestClient:
         _token, csrf, cookies = authed_session
-        client = TestClient(create_app(settings), cookies=cookies)
+        app = create_app(settings)
+        if script_store is not None:
+            app.dependency_overrides[get_script_store] = lambda: script_store
+        if folder_store is not None:
+            app.dependency_overrides[get_folder_store] = lambda: folder_store
+        client = TestClient(app, cookies=cookies)
         client.headers["X-CSRF-Token"] = csrf
         return client
 
     return _make
-
-
-@pytest.fixture
-def sieve_client_passthrough():
-    """Neutralise SieveClient's context manager (no network dial) while keeping
-    its methods real, so the code under test runs against the actual class.
-    Patch a method on top if the test does not want the real one.
-
-    Yields the scripts router module, looked up lazily — a `from X import Y`
-    here would freeze a pre-reload reference (test_managesieve_timeout reloads
-    modules).
-    """
-    from routers import scripts as scripts_mod
-
-    with (
-        patch.object(scripts_mod.SieveClient, "__enter__", lambda self: self),
-        patch.object(scripts_mod.SieveClient, "__exit__", lambda *_a: None),
-    ):
-        yield scripts_mod

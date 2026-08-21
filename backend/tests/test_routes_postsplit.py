@@ -164,3 +164,32 @@ async def test_login_route_reachable_past_csrf(app, asgi_client_for):
     assert r.status_code == 422, (
         f"POST /api/auth/login → {r.status_code} (expected 422 from empty body)"
     )
+
+
+# ── /api/auth/status reports, it does not gate (areyousievious-8fg.7) ──
+
+
+def test_status_reports_an_authenticated_session(authed_client):
+    """The authenticated arm of `get_optional_session`.
+
+    This endpoint answers rather than 401s, so it takes the optional session
+    dependency — it used to call `get_session` inside the handler and catch
+    the HTTPException, which is the reach-out the seam work removed.
+    """
+    with authed_client() as http:
+        r = http.get("/api/auth/status")
+    assert r.status_code == 200
+    assert r.json()["authenticated"] is True
+    assert r.json()["username"] == "user@example.com"
+
+
+def test_status_reports_no_session_without_raising(app, asgi_client_for):
+    import anyio
+
+    async def _call():
+        async with asgi_client_for(app) as client:
+            return await client.get("/api/auth/status")
+
+    r = anyio.run(_call)
+    assert r.status_code == 200
+    assert r.json() == {"authenticated": False}

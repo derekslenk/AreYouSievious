@@ -20,6 +20,7 @@ from unittest.mock import MagicMock, patch
 import mail_dial
 import pytest
 from auth import Session
+from config import Settings
 from imap_client import IMAPClient
 from mail_errors import (
     AuthFailed,
@@ -47,20 +48,9 @@ def _session() -> Session:
     )
 
 
-def _as(adapter: SieveClient, sievelib_client) -> SieveClient:
-    """Enter the REAL adapter with a stubbed sievelib client underneath.
-
-    Patching `__enter__` rather than the class keeps every translation path
-    under test — a full mock of SieveClient would swallow the very code these
-    tests exist to exercise.
-    """
-    adapter._client = sievelib_client
-    return adapter
-
-
 def _sieve(**client_attrs) -> SieveClient:
     """A SieveClient whose sievelib client fails the way the server would."""
-    client = SieveClient(_session())
+    client = SieveClient(_session(), Settings())
     client._client = MagicMock(**client_attrs)
     return client
 
@@ -208,7 +198,9 @@ def test_refused_credentials_are_an_auth_failure():
         patch.object(mail_dial, "Client", return_value=_connect_returning(False, tls=True)),
     ):
         with pytest.raises(AuthFailed):
-            mail_dial.open_sieve("mail.example.com", "93.184.216.34", 4190, "u", "p")
+            mail_dial.open_sieve(
+                "mail.example.com", "93.184.216.34", 4190, "u", "p", cfg=Settings()
+            )
 
 
 def test_refused_starttls_is_a_transport_failure_not_an_auth_failure():
@@ -219,7 +211,9 @@ def test_refused_starttls_is_a_transport_failure_not_an_auth_failure():
         patch.object(mail_dial, "Client", return_value=_connect_returning(False, tls=False)),
     ):
         with pytest.raises(MailServerUnavailable):
-            mail_dial.open_sieve("mail.example.com", "93.184.216.34", 4190, "u", "p")
+            mail_dial.open_sieve(
+                "mail.example.com", "93.184.216.34", 4190, "u", "p", cfg=Settings()
+            )
 
 
 def test_a_successful_dial_still_returns_the_client():
@@ -228,14 +222,19 @@ def test_a_successful_dial_still_returns_the_client():
         patch.object(mail_dial, "assert_host_resolves_to"),
         patch.object(mail_dial, "Client", return_value=stub),
     ):
-        assert mail_dial.open_sieve("mail.example.com", "93.184.216.34", 4190, "u", "p") is stub
+        assert (
+            mail_dial.open_sieve(
+                "mail.example.com", "93.184.216.34", 4190, "u", "p", cfg=Settings()
+            )
+            is stub
+        )
 
 
 # ── The folder sink ──
 
 
 def _imap(create_status: str, subscribe_status: str) -> IMAPClient:
-    client = IMAPClient(_session())
+    client = IMAPClient(_session(), Settings())
     conn = MagicMock()
     conn.create.return_value = (create_status, [b""])
     conn.subscribe.return_value = (subscribe_status, [b""])
@@ -264,9 +263,7 @@ def test_create_folder_returns_nothing_on_success():
 # ── Through the HTTP stack: the failure now reaches the user ──
 
 
-def test_saving_an_uncompilable_script_answers_400_with_the_diagnostic(
-    authed_client, sieve_client_passthrough
-):
+def test_saving_an_uncompilable_script_answers_400_with_the_diagnostic(authed_client):
     """The bead's headline, end to end.
 
     Before: the route answered `200 {ok: true}` and the user believed their
@@ -274,50 +271,39 @@ def test_saving_an_uncompilable_script_answers_400_with_the_diagnostic(
     through the adapter, the vocabulary and app.py's table — no try/except
     anywhere in the router.
     """
-    client_mock = MagicMock()
-    client_mock.putscript.return_value = False
-    client_mock.errcode = b""
-    client_mock.errmsg = b"line 4: unknown command 'vacation'"
-
-    with patch.object(
-        sieve_client_passthrough.SieveClient, "__enter__", lambda self: _as(self, client_mock)
-    ):
-        with authed_client() as http:
-            r = http.put("/api/scripts/filters/raw", json={"content": "vacation :days 1;\n"})
+    store = _sieve(
+        putscript=MagicMock(return_value=False),
+        errcode=b"",
+        errmsg=b"line 4: unknown command 'vacation'",
+    )
+    with authed_client(script_store=store) as http:
+        r = http.put("/api/scripts/filters/raw", json={"content": "vacation :days 1;\n"})
 
     assert r.status_code == 400, r.text
     assert r.json()["detail"] == "line 4: unknown command 'vacation'"
 
 
-def test_quota_on_save_answers_507_not_a_generic_error(authed_client, sieve_client_passthrough):
+def test_quota_on_save_answers_507_not_a_generic_error(authed_client):
     """A full account is neither the user's syntax error nor a dead server."""
-    client_mock = MagicMock()
-    client_mock.putscript.return_value = False
-    client_mock.errcode = b"QUOTA/MAXSIZE"
-    client_mock.errmsg = b"script too large"
-
-    with patch.object(
-        sieve_client_passthrough.SieveClient, "__enter__", lambda self: _as(self, client_mock)
-    ):
-        with authed_client() as http:
-            r = http.put("/api/scripts/filters/raw", json={"content": "keep;\n"})
+    store = _sieve(
+        putscript=MagicMock(return_value=False),
+        errcode=b"QUOTA/MAXSIZE",
+        errmsg=b"script too large",
+    )
+    with authed_client(script_store=store) as http:
+        r = http.put("/api/scripts/filters/raw", json={"content": "keep;\n"})
 
     assert r.status_code == 507, r.text
 
 
-def test_fetching_a_missing_script_answers_404_not_500(authed_client, sieve_client_passthrough):
+def test_fetching_a_missing_script_answers_404_not_500(authed_client):
     """Before: getscript returned None and parse_sieve(None) raised
     AttributeError, so a script that is merely absent read as a server bug."""
-    client_mock = MagicMock()
-    client_mock.getscript.return_value = None
-    client_mock.errcode = b"NONEXISTENT"
-    client_mock.errmsg = b"no such script"
-
-    with patch.object(
-        sieve_client_passthrough.SieveClient, "__enter__", lambda self: _as(self, client_mock)
-    ):
-        with authed_client() as http:
-            r = http.get("/api/scripts/ghost/raw")
+    store = _sieve(
+        getscript=MagicMock(return_value=None), errcode=b"NONEXISTENT", errmsg=b"no such script"
+    )
+    with authed_client(script_store=store) as http:
+        r = http.get("/api/scripts/ghost/raw")
 
     assert r.status_code == 404, r.text
 
@@ -357,7 +343,9 @@ def test_auth_failure_never_repeats_the_servers_words():
         patch.object(mail_dial, "Client", return_value=_connect_returning(False, tls=True)),
     ):
         with pytest.raises(AuthFailed) as caught:
-            mail_dial.open_sieve("mail.example.com", "93.184.216.34", 4190, "u", "p")
+            mail_dial.open_sieve(
+                "mail.example.com", "93.184.216.34", 4190, "u", "p", cfg=Settings()
+            )
     assert str(caught.value) == AuthFailed.default_detail
 
 

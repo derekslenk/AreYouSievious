@@ -19,10 +19,10 @@ import time
 from collections import defaultdict
 
 from api_models import AuthStatusResponse, LoginRequest, OkResponse
-from auth import sessions
+from auth import Session, sessions
 from config import Settings
-from dependencies import SESSION_COOKIE, get_session
-from fastapi import APIRouter, HTTPException, Request, Response
+from dependencies import SESSION_COOKIE, get_optional_session
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from mail_dial import open_imap
 from middleware import CSRF_COOKIE, generate_csrf_token
 from ssrf import HostValidationError, validate_host
@@ -155,7 +155,7 @@ def login(req: LoginRequest, request: Request, response: Response):
         # IMAPClient and SieveClient were both pinned — the fix had been
         # applied twice and missed the one caller that did not use them.
         # open_imap re-validates, so the separate assert here is redundant.
-        conn = open_imap(req.host, host_ip, req.port_imap)
+        conn = open_imap(req.host, host_ip, req.port_imap, cfg=cfg)
         conn.login(req.username, req.password)
         conn.logout()
     except HostValidationError:
@@ -210,13 +210,16 @@ def logout(request: Request, response: Response):
 
 
 @router.get("/status", response_model=AuthStatusResponse, response_model_exclude_none=True)
-async def auth_status(request: Request):
-    try:
-        session = get_session(request)
-        return {
-            "authenticated": True,
-            "username": session.username,
-            "host": session.host,
-        }
-    except HTTPException:
+async def auth_status(session: Session | None = Depends(get_optional_session)):
+    """Report whether this request carries a live session.
+
+    Never 401s — an unauthenticated caller is the answer, not an error, which
+    is why this takes `get_optional_session` rather than `get_session`.
+    """
+    if session is None:
         return {"authenticated": False}
+    return {
+        "authenticated": True,
+        "username": session.username,
+        "host": session.host,
+    }

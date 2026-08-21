@@ -22,7 +22,6 @@ from __future__ import annotations
 import ipaddress
 import os
 from dataclasses import dataclass, field
-from functools import lru_cache
 
 DEFAULT_MAX_BODY_BYTES = 1 * 1024 * 1024  # 1 MiB
 DEFAULT_CORS_ORIGINS = "https://areyousievious.com"
@@ -121,7 +120,6 @@ class Settings:
         )
 
 
-@lru_cache(maxsize=1)
 def settings() -> Settings:
     """The process-wide Settings, read from the environment once.
 
@@ -129,6 +127,10 @@ def settings() -> Settings:
     inside a request should prefer `request.app.state.settings`, so a test can
     build an app with different configuration instead of mutating os.environ.
 
-    Tests that must change the environment call `settings.cache_clear()`.
+    NOT cached. It is read once, by `create_app`, and the resulting Settings
+    is what the app and every dependency below it use — so a cache here bought
+    nothing and cost correctness: it held whatever vintage of the environment
+    it was first called with, while `mail_dial` kept a second cache that
+    clearing this one did not invalidate.
     """
     return Settings.from_env()

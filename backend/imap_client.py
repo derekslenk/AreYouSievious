@@ -8,6 +8,7 @@ lives in `mail_dial`. This module owns what to say once connected.
 import re
 
 from auth import Session
+from config import Settings
 from mail_dial import open_imap
 from mail_errors import FolderRejected, relayed, server_text
 from protocol_names import validate_folder_name
@@ -16,8 +17,9 @@ from protocol_names import validate_folder_name
 class IMAPClient:
     """Minimal IMAP client for folder listing."""
 
-    def __init__(self, session: Session):
+    def __init__(self, session: Session, cfg: Settings):
         self.session = session
+        self.cfg = cfg
         self._conn = None
 
     def __enter__(self):
@@ -25,6 +27,7 @@ class IMAPClient:
             self.session.host,
             self.session.host_ip,
             self.session.port_imap,
+            cfg=self.cfg,
         )
         self._conn.login(self.session.username, self.session.password)
         return self

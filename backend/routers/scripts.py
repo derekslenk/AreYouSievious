@@ -22,9 +22,9 @@ from api_models import (
     ScriptResponse,
 )
 from config import Settings
-from dependencies import get_session
-from fastapi import APIRouter, File, Form, HTTPException, Request, Response, UploadFile
-from managesieve_client import SieveClient
+from dependencies import get_script_store, get_settings
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Response, UploadFile
+from mail_stores import ScriptStore
 from sieve_transform import (
     generate_sieve,
     json_to_script,
@@ -36,36 +36,27 @@ router = APIRouter(prefix="/api/scripts")
 
 
 @router.get("", response_model=list[ScriptListItem])
-def list_scripts(request: Request):
-    session = get_session(request)
-    with SieveClient(session) as client:
-        return client.list_scripts()
+def list_scripts(store: ScriptStore = Depends(get_script_store)):
+    return store.list_scripts()
 
 
 @router.get("/{name}", response_model=ScriptResponse)
-def get_script(name: str, request: Request):
+def get_script(name: str, store: ScriptStore = Depends(get_script_store)):
     """Get script parsed as JSON rules."""
-    session = get_session(request)
-    with SieveClient(session) as client:
-        sieve_text = client.get_script(name)
-    script = parse_sieve(sieve_text)
+    script = parse_sieve(store.get_script(name))
     return script_to_json(script)
 
 
 @router.get("/{name}/raw", response_model=ScriptRawResponse)
-def get_script_raw(name: str, request: Request):
+def get_script_raw(name: str, store: ScriptStore = Depends(get_script_store)):
     """Get raw Sieve text."""
-    session = get_session(request)
-    with SieveClient(session) as client:
-        return {"name": name, "content": client.get_script(name)}
+    return {"name": name, "content": store.get_script(name)}
 
 
 @router.get("/{name}/export")
-def export_script(name: str, request: Request):
+def export_script(name: str, store: ScriptStore = Depends(get_script_store)):
     """Download script as a .sieve file."""
-    session = get_session(request)
-    with SieveClient(session) as client:
-        content = client.get_script(name)
+    content = store.get_script(name)
     return Response(
         content=content,
         media_type="application/sieve",
@@ -77,16 +68,16 @@ def export_script(name: str, request: Request):
 
 @router.post("/import", response_model=OkResponse, response_model_exclude_none=True)
 def import_script(
-    request: Request,
     name: str = Form(...),
     file: UploadFile = File(...),
+    store: ScriptStore = Depends(get_script_store),
+    cfg: Settings = Depends(get_settings),
 ):
     """Import a .sieve file as a new script.
 
     ponytail: sync handler so FastAPI runs it in a threadpool — the slow
     ManageSieve PUT no longer blocks the event loop (Perf C1 / Fwk C-1).
     """
-    cfg: Settings = request.app.state.settings
     cap = cfg.max_body_bytes
     raw = file.file.read()
     if len(raw) > cap:
@@ -95,43 +86,33 @@ def import_script(
         content = raw.decode("utf-8")
     except UnicodeDecodeError:
         raise HTTPException(400, "File must be valid UTF-8 text")  # noqa: B904
-    session = get_session(request)
-    with SieveClient(session) as client:
-        client.put_script(name, content)
+    store.put_script(name, content)
     return {"ok": True, "name": name}
 
 
 @router.put("/{name}", response_model=OkResponse, response_model_exclude_none=True)
-def save_script(name: str, req: SaveScriptRequest, request: Request):
+def save_script(name: str, req: SaveScriptRequest, store: ScriptStore = Depends(get_script_store)):
     """Save script from JSON rules (generates Sieve)."""
-    session = get_session(request)
     script = json_to_script(req.model_dump())
     sieve_text = generate_sieve(script)
-    with SieveClient(session) as client:
-        client.put_script(name, sieve_text)
+    store.put_script(name, sieve_text)
     return {"ok": True, "sieve": sieve_text}
 
 
 @router.put("/{name}/raw", response_model=OkResponse, response_model_exclude_none=True)
-def save_script_raw(name: str, req: SaveRawRequest, request: Request):
+def save_script_raw(name: str, req: SaveRawRequest, store: ScriptStore = Depends(get_script_store)):
     """Save raw Sieve text directly."""
-    session = get_session(request)
-    with SieveClient(session) as client:
-        client.put_script(name, req.content)
+    store.put_script(name, req.content)
     return {"ok": True}
 
 
 @router.post("/{name}/activate", response_model=OkResponse, response_model_exclude_none=True)
-def activate_script(name: str, request: Request):
-    session = get_session(request)
-    with SieveClient(session) as client:
-        client.activate_script(name)
+def activate_script(name: str, store: ScriptStore = Depends(get_script_store)):
+    store.activate_script(name)
     return {"ok": True}
 
 
 @router.delete("/{name}", response_model=OkResponse, response_model_exclude_none=True)
-def delete_script(name: str, request: Request):
-    session = get_session(request)
-    with SieveClient(session) as client:
-        client.delete_script(name)
+def delete_script(name: str, store: ScriptStore = Depends(get_script_store)):
+    store.delete_script(name)
     return {"ok": True}

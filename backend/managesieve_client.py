@@ -17,6 +17,7 @@ had refused to compile, with the compiler's own diagnostic sitting unread in
 from typing import NoReturn
 
 from auth import Session
+from config import Settings
 from mail_dial import open_sieve
 from mail_errors import (
     MailServerUnavailable,
@@ -62,8 +63,9 @@ def _fail(client, when_no_response_code: type[MailStoreError]) -> NoReturn:
 class SieveClient:
     """Wraps a sievelib ManageSieve client with session credentials."""
 
-    def __init__(self, session: Session):
+    def __init__(self, session: Session, cfg: Settings):
         self.session = session
+        self.cfg = cfg
         self._client = None
 
     def __enter__(self):
@@ -73,6 +75,7 @@ class SieveClient:
             self.session.port_sieve,
             self.session.username,
             self.session.password,
+            cfg=self.cfg,
         )
         return self
 

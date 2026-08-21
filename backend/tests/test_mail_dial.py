@@ -23,6 +23,7 @@ from unittest.mock import MagicMock, patch
 import mail_dial
 import pytest
 import ssrf
+from config import Settings
 from fastapi.testclient import TestClient
 
 BACKEND = Path(__file__).resolve().parent.parent
@@ -57,7 +58,7 @@ def test_open_imap_revalidates_dns_before_touching_the_network():
     with patch.object(ssrf.socket, "getaddrinfo", return_value=_addrinfo("10.0.0.5")):
         with patch.object(mail_dial, "_PinnedIMAP4_SSL") as mock_pinned:
             with pytest.raises(ssrf.HostValidationError, match="rebinding"):
-                mail_dial.open_imap("example.com", "93.184.216.34", 993)
+                mail_dial.open_imap("example.com", "93.184.216.34", 993, cfg=Settings())
             mock_pinned.assert_not_called()
 
 
@@ -65,7 +66,7 @@ def test_open_sieve_revalidates_dns_before_touching_the_network():
     with patch.object(ssrf.socket, "getaddrinfo", return_value=_addrinfo("10.0.0.5")):
         with patch.object(mail_dial, "Client") as mock_client:
             with pytest.raises(ssrf.HostValidationError, match="rebinding"):
-                mail_dial.open_sieve("example.com", "93.184.216.34", 4190, "u", "p")
+                mail_dial.open_sieve("example.com", "93.184.216.34", 4190, "u", "p", cfg=Settings())
             mock_client.assert_not_called()
 
 
@@ -73,7 +74,9 @@ def test_open_sieve_splits_dial_from_sni():
     with patch.object(mail_dial, "assert_host_resolves_to", lambda *a, **kw: None):
         with patch.object(mail_dial, "Client") as mock_client:
             mock_client.return_value = MagicMock(sock=MagicMock())
-            mail_dial.open_sieve("sieve.example.com", "93.184.216.34", 4190, "u", "p")
+            mail_dial.open_sieve(
+                "sieve.example.com", "93.184.216.34", 4190, "u", "p", cfg=Settings()
+            )
 
     assert mock_client.call_args.args[0] == "93.184.216.34"
     assert mock_client.call_args.kwargs["srvhostname"] == "sieve.example.com"
@@ -106,7 +109,7 @@ def test_concurrent_sieve_connects_do_not_leak_the_process_default_timeout():
 
     def run():
         try:
-            mail_dial.open_sieve("h.example.com", "93.184.216.34", 4190, "u", "p")
+            mail_dial.open_sieve("h.example.com", "93.184.216.34", 4190, "u", "p", cfg=Settings())
         except BaseException as exc:
             # Collected rather than raised: an exception in a worker thread
             # would otherwise vanish and the assertion below would pass on a
@@ -138,7 +141,9 @@ def test_sieve_connect_restores_the_default_even_when_connect_raises():
     with patch.object(mail_dial, "assert_host_resolves_to", lambda *a, **kw: None):
         with patch.object(mail_dial, "Client", side_effect=RuntimeError("upstream down")):
             with pytest.raises(RuntimeError):
-                mail_dial.open_sieve("h.example.com", "93.184.216.34", 4190, "u", "p")
+                mail_dial.open_sieve(
+                    "h.example.com", "93.184.216.34", 4190, "u", "p", cfg=Settings()
+                )
     assert socket.getdefaulttimeout() == baseline
 
 

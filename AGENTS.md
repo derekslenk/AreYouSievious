@@ -26,7 +26,7 @@ Self-hosted Sieve email filter management UI. Single-process FastAPI backend ser
 ## For AI Agents
 
 ### Working In This Directory
-- Tests: `cd backend && python -m pytest tests/ -v` (21 files) and `cd frontend && npm test` (vitest)
+- Tests: `cd backend && python -m pytest tests/ -v` (22 files) and `cd frontend && npm test` (vitest)
 - Lint/format: `ruff check backend/` and `ruff format --check backend/`
 - `pre-commit install` wires three hooks: ruff-format, ruff --fix, and `tools/regen-wire-types.sh`
   (the last regenerates the SPA's wire types when a schema-bearing backend file is staged, so a stale
@@ -121,8 +121,8 @@ on 401 responses.
 
 - Endpoints use sync `def` (not `async def`) — exception: `auth_status` and `import_script`
   which need `await`
-- Auth: `get_session(request)` extracts/validates session, raises HTTP 401
-- ManageSieve/IMAP ops use context managers: `with SieveClient(session) as client:`
+- Auth: `Depends(get_session)` validates the session and raises 401; `Depends(get_optional_session)` for the one endpoint that reports rather than gates
+- ManageSieve/IMAP ops arrive injected: `store: ScriptStore = Depends(get_script_store)`. The dependency owns the connection's lifetime, so handlers never construct an adapter and tests substitute via `dependency_overrides`
 - Request bodies use Pydantic `BaseModel` subclasses
 - All mutating endpoints return `{"ok": True, ...}`
 

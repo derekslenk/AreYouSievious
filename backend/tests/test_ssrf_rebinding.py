@@ -22,6 +22,7 @@ import mail_dial
 import pytest
 import ssrf
 from auth import Session
+from config import Settings
 
 
 def _addrinfo(*ips: str):
@@ -219,7 +220,7 @@ def test_imap_client_aborts_on_rebinding_before_touching_network():
         with patch.object(mail_dial, "_PinnedIMAP4_SSL") as mock_pinned:
             mock_pinned.return_value = MagicMock()
             with pytest.raises(ssrf.HostValidationError, match="rebinding"):
-                with imap_client.IMAPClient(session):
+                with imap_client.IMAPClient(session, Settings()):
                     pass
             mock_pinned.assert_not_called()
 
@@ -264,7 +265,7 @@ def test_imap_client_constructs_pinned_subclass_with_correct_args():
         patch.object(mail_dial, "_PinnedIMAP4_SSL") as mock_pinned,
     ):
         mock_pinned.return_value = MagicMock()
-        with imap_client.IMAPClient(session):
+        with imap_client.IMAPClient(session, Settings()):
             pass
 
     mock_pinned.assert_called_once()
@@ -293,7 +294,7 @@ def test_sieve_client_uses_srvhostname_param_to_split_dial_from_sni():
         stub = MagicMock()
         stub.sock = MagicMock()
         mock_client.return_value = stub
-        with managesieve_client.SieveClient(session):
+        with managesieve_client.SieveClient(session, Settings()):
             pass
 
     mock_client.assert_called_once()

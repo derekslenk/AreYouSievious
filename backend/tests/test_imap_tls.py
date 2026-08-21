@@ -26,18 +26,18 @@ from config import Settings
 
 
 def test_default_context_verifies_chain_and_hostname():
-    ctx = mail_dial._build_tls_context(Settings())
+    ctx = mail_dial.build_tls_context(Settings())
     assert ctx.verify_mode == ssl.CERT_REQUIRED
     assert ctx.check_hostname is True
 
 
 def test_default_context_requires_tls_1_2_or_better():
-    assert mail_dial._build_tls_context(Settings()).minimum_version >= ssl.TLSVersion.TLSv1_2
+    assert mail_dial.build_tls_context(Settings()).minimum_version >= ssl.TLSVersion.TLSv1_2
 
 
 def test_insecure_setting_disables_verification_and_warns(caplog):
     with caplog.at_level("WARNING", logger="ays.dial"):
-        ctx = mail_dial._build_tls_context(Settings(imap_insecure=True))
+        ctx = mail_dial.build_tls_context(Settings(imap_insecure=True))
     assert ctx.verify_mode == ssl.CERT_NONE
     assert ctx.check_hostname is False
     assert any("AYS_IMAP_INSECURE" in r.message for r in caplog.records), (
@@ -57,9 +57,21 @@ def test_insecure_env_var_reaches_settings(monkeypatch):
     assert Settings.from_env().imap_insecure is False
 
 
-def test_tls_context_is_cached():
-    """One context is shared across connections rather than rebuilt per dial."""
-    assert mail_dial.tls_context() is mail_dial.tls_context()
+def test_tls_context_is_cached_per_configuration():
+    """One context per configuration, not one per dial and not one per process.
+
+    The argument-less cache this replaced held whatever vintage of the
+    environment it was first built with, and clearing `config.settings`'s
+    cache did not invalidate it. Keying on the frozen Settings makes a
+    different configuration a different entry by construction — so two apps
+    with different TLS policy cannot share a context (areyousievious-8fg.7).
+    """
+    default = Settings()
+    assert mail_dial.build_tls_context(default) is mail_dial.build_tls_context(default)
+    assert mail_dial.build_tls_context(default) is mail_dial.build_tls_context(Settings())
+    assert mail_dial.build_tls_context(Settings(imap_insecure=True)) is not (
+        mail_dial.build_tls_context(default)
+    )
 
 
 def test_open_imap_passes_the_verified_context():
@@ -80,7 +92,7 @@ def test_open_imap_passes_the_verified_context():
         patch.object(mail_dial, "_PinnedIMAP4_SSL") as mock_pinned,
     ):
         mock_pinned.return_value = MagicMock()
-        mail_dial.open_imap(session.host, session.host_ip, session.port_imap)
+        mail_dial.open_imap(session.host, session.host_ip, session.port_imap, cfg=Settings())
 
     ctx = mock_pinned.call_args.kwargs["ssl_context"]
     assert isinstance(ctx, ssl.SSLContext)

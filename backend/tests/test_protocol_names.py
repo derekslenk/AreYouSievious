@@ -22,11 +22,12 @@ Run from the backend/ directory:
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import managesieve_client
 import pytest
 from auth import Session
+from config import Settings
 from imap_client import IMAPClient
 from protocol_names import MAX_SCRIPT_NAME_BYTES, ProtocolNameError
 
@@ -56,18 +57,28 @@ def _session() -> Session:
 # reached — rejecting AFTER the frame hits the wire would be no defence.
 
 
-def _sieve_client():
-    client = managesieve_client.SieveClient(_session())
-    client._client = MagicMock()
-    client._client.getscript.return_value = ("OK", {}, "keep;\n")
+# A REAL adapter over a stubbed socket library.
+#
+# The guards under test live in the adapter, so the adapter has to be the real
+# one — a bare mock store would swallow the very thing being tested. Only the
+# library beneath it is replaced.
+
+
+def _sieve_client(**client_attrs):
+    client = managesieve_client.SieveClient(_session(), Settings())
+    client._client = MagicMock(**{"getscript.return_value": ("OK", {}, "keep;\n"), **client_attrs})
     return client
 
 
-def _imap_client():
-    client = IMAPClient(_session())
-    client._conn = MagicMock()
-    client._conn.create.return_value = ("OK", [b"created"])
-    client._conn.subscribe.return_value = ("OK", [b"subscribed"])
+def _imap_client(**conn_attrs):
+    client = IMAPClient(_session(), Settings())
+    client._conn = MagicMock(
+        **{
+            "create.return_value": ("OK", [b"created"]),
+            "subscribe.return_value": ("OK", [b"subscribed"]),
+            **conn_attrs,
+        }
+    )
     return client
 
 
@@ -196,11 +207,11 @@ def test_benign_names_reach_the_protocol_unchanged():
 # ── One HTTP mapping, every sink ──
 
 
-@pytest.mark.usefixtures("sieve_client_passthrough")
 def test_malicious_script_name_is_400_via_the_shared_handler(authed_client):
-    """The passthrough neutralises __enter__/__exit__ (not the class) so the
-    REAL put_script runs — a full mock would swallow the guard under test."""
-    with authed_client() as http:
+    """A REAL SieveClient is injected with its sievelib client stubbed, so the
+    genuine put_script — and therefore the genuine name guard — runs. A bare
+    mock store would swallow the guard under test."""
+    with authed_client(script_store=_sieve_client()) as http:
         r = http.post(
             "/api/scripts/import",
             data={"name": 'x"\r\nDELETESCRIPT "primary'},
@@ -210,9 +221,8 @@ def test_malicious_script_name_is_400_via_the_shared_handler(authed_client):
     assert "forbidden" in r.json()["detail"].lower()
 
 
-@pytest.mark.usefixtures("sieve_client_passthrough")
 def test_malicious_script_name_in_the_url_is_400(authed_client):
-    with authed_client() as http:
+    with authed_client(script_store=_sieve_client()) as http:
         r = http.post("/api/scripts/x%22%0D%0ASETACTIVE%20%22backdoor/activate")
     assert r.status_code == 400, r.text
 
@@ -222,20 +232,8 @@ def test_benign_folder_name_still_creates(authed_client):
     test_folders_error_mapping.py, whose other two tests duplicated the
     rejection cases above and whose premise (a local try/except in the
     folders router) no longer exists."""
-    from routers import folders as folders_mod
-
-    def stub_enter(self):
-        self._conn = MagicMock()
-        self._conn.create.return_value = ("OK", [b"created"])
-        self._conn.subscribe.return_value = ("OK", [b"subscribed"])
-        return self
-
-    with (
-        patch.object(folders_mod.IMAPClient, "__enter__", stub_enter),
-        patch.object(folders_mod.IMAPClient, "__exit__", lambda *_a: None),
-    ):
-        with authed_client() as http:
-            r = http.post("/api/folders", json={"name": "Archive/2026"})
+    with authed_client(folder_store=_imap_client()) as http:
+        r = http.post("/api/folders", json={"name": "Archive/2026"})
     assert r.status_code == 200, r.text
     assert r.json() == {"ok": True, "name": "Archive/2026"}
 
@@ -244,18 +242,8 @@ def test_malicious_folder_name_is_400_via_the_same_handler(authed_client):
     """REGRESSION: folders.py used to carry its own `except ValueError ->
     HTTPException(400)`. Both sinks now share one app-level handler, and this
     proves removing the local one did not regress the status."""
-    from routers import folders as folders_mod
-
-    def stub_enter(self):
-        self._conn = MagicMock()
-        return self
-
-    with (
-        patch.object(folders_mod.IMAPClient, "__enter__", stub_enter),
-        patch.object(folders_mod.IMAPClient, "__exit__", lambda *_a: None),
-    ):
-        with authed_client() as http:
-            r = http.post("/api/folders", json={"name": 'Inbox\r\nDELETE "Other"'})
+    with authed_client(folder_store=_imap_client()) as http:
+        r = http.post("/api/folders", json={"name": 'Inbox\r\nDELETE "Other"'})
     assert r.status_code == 400, r.text
     assert "forbidden" in r.json()["detail"].lower()
     assert "traceback" not in r.text.lower()
