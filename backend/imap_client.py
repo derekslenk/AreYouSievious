@@ -10,13 +10,69 @@ import re
 
 from auth import Session
 from config import Settings
-from mail_dial import open_imap
+from mail_dial import open_imap, transport_failures_are_semantic
 from mail_errors import AuthFailed, FolderRejected, MailServerUnavailable, relayed, server_text
 from protocol_names import validate_folder_name
 
 
-class IMAPClient:
-    """Minimal IMAP client for folder listing."""
+def _login(conn, username: str, password: str, *, rejected: str | None = None) -> None:
+    """Say LOGIN, and report the two ways it fails in the mail vocabulary.
+
+    One place, because two callers need it: the store's `__enter__` and the
+    credential check the login route performs before any session exists.
+    """
+    # Nesting matters. The protocol's own errors are handled INSIDE the
+    # transport net, because the net reads an IMAP4.error as "the server would
+    # not talk to us" — true at the dial, where no credentials have been sent,
+    # and wrong here, where it means exactly the opposite: the server talked
+    # and refused these. Outside-in, a mistyped password answered 502 "could
+    # not be reached".
+    #
+    # The net still wraps this, because imaplib does not wrap OSError: a reset
+    # socket raises straight through. It passes our AuthFailed out untouched
+    # via its MailStoreError exemption.
+    with transport_failures_are_semantic():
+        try:
+            conn.login(username, password)
+        except imaplib.IMAP4.abort as exc:
+            # MUST precede IMAP4.error, which it subclasses. A dropped socket
+            # is not a rejected password, and telling the user to reset a
+            # working one sends them somewhere that cannot help.
+            raise MailServerUnavailable("The connection to the mail server was lost.") from exc
+        except imaplib.IMAP4.error as exc:
+            raise AuthFailed(rejected) from exc
+
+
+def verify_credentials(
+    host: str, host_ip: str, port: int, username: str, password: str, *, cfg: Settings
+) -> None:
+    """Prove these credentials open a mailbox, then hang up.
+
+    What the login route needs and a FolderStore cannot give it: there is no
+    session yet, so there is nothing to build a store around. Speaking IMAP
+    lives here rather than in the router, which is what lets `routers/auth.py`
+    stop importing imaplib and stop deciding what a protocol error means.
+    """
+    conn = open_imap(host, host_ip, port, cfg=cfg)
+    try:
+        _login(conn, username, password, rejected="Authentication failed")
+    finally:
+        try:
+            conn.logout()
+        except Exception:
+            # Already said what we came to say; a failed goodbye is not the
+            # caller's problem and must not mask the reason we are leaving.
+            pass
+
+
+class ImapFolderStore:
+    """The FolderStore adapter.
+
+    Named for the seam rather than the protocol. This class was `IMAPClient`;
+    `imapclient.IMAPClient` is the LIST parser `.12` introduces into this very
+    module, and two different classes of that name in one file is a mistake
+    waiting to be made.
+    """
 
     def __init__(self, session: Session, cfg: Settings):
         self.session = session
@@ -30,18 +86,7 @@ class IMAPClient:
             self.session.port_imap,
             cfg=self.cfg,
         )
-        try:
-            self._conn.login(self.session.username, self.session.password)
-        except imaplib.IMAP4.abort as exc:
-            # MUST precede IMAP4.error, which it subclasses. A dropped socket
-            # is not a rejected password, and telling the user to reset a
-            # working one sends them somewhere that cannot help.
-            raise MailServerUnavailable("The connection to the mail server was lost.") from exc
-        except imaplib.IMAP4.error as exc:
-            # The stored credentials worked at login and do not now — an
-            # expired or revoked password. This used to escape as a 500 on
-            # every folder request.
-            raise AuthFailed() from exc
+        _login(self._conn, self.session.username, self.session.password)
         return self
 
     def __exit__(self, *args):

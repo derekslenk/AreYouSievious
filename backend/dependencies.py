@@ -27,7 +27,7 @@ from collections.abc import Iterator
 from auth import Session, sessions
 from config import Settings
 from fastapi import Depends, HTTPException, Request
-from imap_client import IMAPClient
+from imap_client import ImapFolderStore
 from mail_stores import FolderStore, ScriptStore
 from managesieve_client import SieveClient
 
@@ -92,5 +92,5 @@ def get_folder_store(
     cfg: Settings = Depends(get_settings),
 ) -> Iterator[FolderStore]:
     """An open FolderStore for this request, closed when it ends."""
-    with IMAPClient(session, cfg) as store:
+    with ImapFolderStore(session, cfg) as store:
         yield store

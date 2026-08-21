@@ -2,7 +2,7 @@
 IMAP folder router (areyousievious-u40 split from app.py).
 
 Owns GET /api/folders (list) and POST /api/folders (create). Both
-proxy directly to the per-session IMAPClient. Behavior is
+proxy directly to the per-session ImapFolderStore. Behavior is
 byte-identical to the pre-u40 inline handlers in app.py.
 """
 

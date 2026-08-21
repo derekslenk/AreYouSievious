@@ -12,7 +12,7 @@ Structural (`Protocol`, not ABC) on purpose, and deliberately NOT
 NAMES only. It cannot see a return type, and it cannot see whether failure
 raises or is swallowed — which is the whole substance of this contract. A
 check blind to the only thing that matters is worse than no check. The shipped `SieveClient` and
-`IMAPClient` satisfy these by having the right methods, with no base class to
+`ImapFolderStore` satisfy these by having the right methods, with no base class to
 inherit and no registration step, and so does an in-memory fake (`.8`). The
 seam describes what already exists; it does not ask the adapters to be
 rebuilt around it.
@@ -21,7 +21,7 @@ EVERY operation reports failure by RAISING from `mail_errors` — never by
 returning a falsy value, and never by returning `None` and letting the caller
 trip over it later. The shipped adapters were brought onto this contract in
 `.6`: `SieveClient` translates sievelib's falsy returns plus its `errcode` /
-`errmsg`, and `IMAPClient.create_folder` raises instead of handing back a
+`errmsg`, and `ImapFolderStore.create_folder` raises instead of handing back a
 bool for `routers/folders.py` to interpret.
 """
 

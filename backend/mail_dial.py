@@ -4,11 +4,11 @@ One module owns dialling the user's mail server.
 Connection policy — re-validate DNS, dial the IP pinned at login, keep TLS SNI
 and certificate verification on the original hostname, apply timeouts — used to
 be re-derived at each call site, in each library's idiom. That is a locality
-failure with teeth: a caller that does not go through `IMAPClient` silently
+failure with teeth: a caller that does not go through `ImapFolderStore` silently
 gets none of the policy.
 
 It cost us a real gap. areyousievious-vzs closed the third-resolution TOCTOU
-for `IMAPClient` (via `_PinnedIMAP4_SSL`) and for `SieveClient` (via sievelib's
+for `ImapFolderStore` (via `_PinnedIMAP4_SSL`) and for `SieveClient` (via sievelib's
 `srvhostname`), but the login handler built its own `imaplib.IMAP4_SSL(host, …)`
 and was left re-resolving the hostname — on the very first connection the app
 makes, with the user's credentials in hand. The fix was applied twice and
@@ -59,8 +59,12 @@ _TRANSPORT_DEFAULT = "The mail server could not be reached."
 
 
 @contextmanager
-def _transport_failures_are_semantic():
+def transport_failures_are_semantic():
     """Translate whatever the transport raises into the mail vocabulary.
+
+    Public because speaking is as exposed as dialling: `imaplib` does not wrap
+    OSError, so a socket that dies mid-LOGIN raises straight through the
+    adapter. The conversation needs the same net the connection gets.
 
     Deliberately lets `MailStoreError` and `HostValidationError` through
     untouched: the first is already semantic, and the second is a 400 whose
@@ -71,13 +75,17 @@ def _transport_failures_are_semantic():
     try:
         yield
     except (MailStoreError, HostValidationError):
-        # Nothing below catches these today — they are neither OSError nor a
-        # library error — so this is belt-and-braces against the net ever
-        # being widened. It matters because both carry meaning this function
-        # would destroy: the first is already semantic, and the second is a
-        # 400 whose explicit message must survive. Reporting a rebinding
-        # attempt as an ordinary outage is the confusion `routers/auth.py`
-        # ordered its excepts to avoid.
+        # Load-bearing, not defensive. `imap_client._login` raises AuthFailed
+        # from INSIDE this net — the protocol's own errors have to be read
+        # before the net sees them, because an IMAP4.error means "would not
+        # talk to us" at the dial and "refused these credentials" during
+        # LOGIN. Without this exemption a mistyped password would come back
+        # out as "the mail server could not be reached".
+        #
+        # HostValidationError is here for its own reason: it is a 400 whose
+        # explicit message must survive, and reporting a rebinding attempt as
+        # an ordinary outage is the confusion `routers/auth.py` ordered its
+        # excepts to avoid.
         raise
     except OSError as exc:
         for cause, message in _TRANSPORT_CAUSES:
@@ -188,7 +196,7 @@ def open_imap(host: str, host_ip: str, port: int, *, cfg: Settings, timeout: flo
     # and calling that "TLS negotiation with the mail server failed" would
     # blame the server for a fault on this machine.
     tls = build_tls_context(cfg)
-    with _transport_failures_are_semantic():
+    with transport_failures_are_semantic():
         return _PinnedIMAP4_SSL(
             host,
             host_ip,
@@ -236,7 +244,7 @@ def open_sieve(
             # verification on the name the user typed. sievelib supports the
             # split natively, so no monkey-patch is needed.
             client = Client(host_ip, port, srvhostname=host)
-            with _transport_failures_are_semantic():
+            with transport_failures_are_semantic():
                 connected = client.connect(username, password, starttls=True)
         finally:
             socket.setdefaulttimeout(previous_default)
