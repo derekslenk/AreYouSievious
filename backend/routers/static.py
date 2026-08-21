@@ -43,16 +43,29 @@ def serve_frontend(full_path: str):
         raise HTTPException(404)
 
     # Path-traversal containment. `full_path` is user-controlled (catch-all
-    # route param), but the `resolve() + relative_to()` pair is the canonical
-    # Python guard: any payload that escapes `static_dir` after resolution
-    # raises ValueError and we return 403. Phase 2 of the security audit
-    # empirically verified this against 6 payloads (raw `../`, URL-encoded
-    # `%2e%2e`, double-encoded `%252e%252e`, etc.) — all 404'd.
-    # See .full-review/05-final-report.md:220 and 02a-security-findings.md:17.
+    # route param), so escapes are stopped by two layers, not one:
+    #
+    #   1. Starlette normalizes the request path before routing. Raw `../`
+    #      and `....//` collapse there and never reach this handler at all —
+    #      they arrive as an ordinary miss and fall through to the SPA
+    #      fallback below (200 + index.html, no escape).
+    #   2. Percent-encoded variants (`%2e%2e/`, `%252e%252e/`, `..%2f`)
+    #      survive normalization and arrive here as literal `..` segments.
+    #      Those are what `resolve() + relative_to()` catches: resolution
+    #      collapses the segments, relative_to() raises ValueError when the
+    #      result landed outside static_dir, and we return 403.
+    #
+    # So the two layers produce *different* status codes for traversal
+    # attempts (200-with-index vs 403). Both contain; neither leaks. Do not
+    # "fix" the 200 case into a 404 without checking layer 1 — the payload
+    # never escaped, it just looks like an unknown SPA route.
+    #
     # CodeQL's py/path-injection flags the user input reaching Path() and does
     # not recognize the post-construction containment check; dismissed as a
-    # false positive. Wave 2 (bd:areyousievious-4pr) replaces this handler
-    # with FastAPI's StaticFiles(html=True), which CodeQL recognizes natively.
+    # false positive. bd:areyousievious-4pr replaces this handler with
+    # FastAPI's StaticFiles(html=True), which CodeQL recognizes natively.
+    #
+    # All of the above is pinned by tests/test_static_traversal.py.
     file_path = (static_dir / full_path).resolve()
     try:
         file_path.relative_to(static_dir.resolve())
