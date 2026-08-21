@@ -219,7 +219,7 @@ areyousievious/
 │   ├── auth.py                 # Session management
 │   ├── sieve_transform.py      # Sieve <-> JSON
 │   ├── managesieve_client.py   # ManageSieve wrapper
-│   ├── imap_client.py          # IMAP folder ops
+│   ├── imap_store.py           # IMAP folder ops
 │   ├── test_engine.py          # Rule test runner
 │   └── requirements.txt
 ├── docs/

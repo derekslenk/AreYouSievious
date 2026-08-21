@@ -27,7 +27,7 @@ from collections.abc import Iterator
 from auth import Session, sessions
 from config import Settings
 from fastapi import Depends, HTTPException, Request
-from imap_client import ImapFolderStore
+from imap_store import ImapFolderStore
 from mail_stores import FolderStore, ScriptStore
 from managesieve_client import SieveClient
 

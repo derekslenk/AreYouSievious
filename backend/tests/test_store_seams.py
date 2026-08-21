@@ -207,7 +207,7 @@ def test_neither_seam_is_runtime_checkable():
     "seam,implementation",
     [
         (ScriptStore, "managesieve_client.SieveClient"),
-        (FolderStore, "imap_client.ImapFolderStore"),
+        (FolderStore, "imap_store.ImapFolderStore"),
         (ScriptStore, "tests.fakes.FakeScriptStore"),
         (FolderStore, "tests.fakes.FakeFolderStore"),
     ],

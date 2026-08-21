@@ -30,7 +30,7 @@ from unittest.mock import MagicMock
 import pytest
 from auth import Session
 from config import Settings
-from imap_client import ImapFolderStore
+from imap_store import ImapFolderStore
 from mail_errors import MailServerUnavailable
 
 

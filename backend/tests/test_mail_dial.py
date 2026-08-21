@@ -182,7 +182,7 @@ _MAY_IMPORT: dict[str, set[str]] = {
     # and reads the LIST grammar with imapclient's parser rather than a regex
     # of its own (.12). imapclient is here as a PARSER: it may not dial, and
     # the call denylist below still holds it to that.
-    "imap_client.py": {"imaplib", "imapclient"},
+    "imap_store.py": {"imaplib", "imapclient"},
     # The ScriptStore adapter: the same, for ManageSieve.
     "managesieve_client.py": {"sievelib"},
     # Resolves names and checks addresses. Never connects — and the call

@@ -1,5 +1,5 @@
 """
-IMAP client for folder operations.
+The FolderStore adapter: IMAP folder operations.
 
 Dialling policy — rebinding re-check, pinned connect, TLS context, timeouts —
 lives in `mail_dial`. This module owns what to say once connected.
@@ -126,10 +126,12 @@ def verify_credentials(
 class ImapFolderStore:
     """The FolderStore adapter.
 
-    Named for the seam rather than the protocol. This class was `IMAPClient`;
-    `imapclient.IMAPClient` is the LIST parser `.12` introduces into this very
-    module, and two different classes of that name in one file is a mistake
-    waiting to be made.
+    Named for the seam rather than the protocol, and so is the MODULE: this
+    class was `IMAPClient` in `imap_client.py`, and the file now imports the
+    `imapclient` package. Two spellings of the same word, one of them a
+    third-party client this module deliberately does not use, is a mistake
+    waiting to be made. `managesieve_client.py` keeps its name — it has no
+    such collision, and renaming it would be churn without a reason.
     """
 
     def __init__(self, session: Session, cfg: Settings):

@@ -17,7 +17,7 @@ from __future__ import annotations
 import socket
 from unittest.mock import patch
 
-import imap_client
+import imap_store
 import mail_dial
 import pytest
 import ssrf
@@ -220,7 +220,7 @@ def test_imap_client_aborts_on_rebinding_before_touching_network():
         with patch.object(mail_dial, "_PinnedIMAP4_SSL") as mock_pinned:
             mock_pinned.return_value = MagicMock()
             with pytest.raises(ssrf.HostValidationError, match="rebinding"):
-                with imap_client.ImapFolderStore(session, Settings()):
+                with imap_store.ImapFolderStore(session, Settings()):
                     pass
             mock_pinned.assert_not_called()
 
@@ -265,7 +265,7 @@ def test_imap_client_constructs_pinned_subclass_with_correct_args():
         patch.object(mail_dial, "_PinnedIMAP4_SSL") as mock_pinned,
     ):
         mock_pinned.return_value = MagicMock()
-        with imap_client.ImapFolderStore(session, Settings()):
+        with imap_store.ImapFolderStore(session, Settings()):
             pass
 
     mock_pinned.assert_called_once()
