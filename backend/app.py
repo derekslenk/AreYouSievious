@@ -16,6 +16,14 @@ from config import Settings, settings
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from mail_errors import (
+    AuthFailed,
+    MailServerUnavailable,
+    MailStoreError,
+    QuotaExceeded,
+    ScriptNotFound,
+    ScriptRejected,
+)
 from middleware import (
     BodySizeLimitMiddleware,
     CSRFMiddleware,
@@ -35,6 +43,38 @@ from ssrf import HostValidationError
 async def _host_validation_handler(_request: Request, exc: Exception):
     """Surface SSRF-guard rejections as 400s instead of generic 500s."""
     return JSONResponse(status_code=400, content={"detail": str(exc)})
+
+
+# What each semantic mail-store failure means to a client. This table is the
+# ONLY place that decision is made: adapters raise in domain terms and routers
+# carry no try/except, so a status can never drift between two sinks the way
+# the folders/scripts 400s once did.
+_MAIL_ERROR_STATUS: dict[type[MailStoreError], int] = {
+    ScriptNotFound: 404,
+    ScriptRejected: 400,
+    QuotaExceeded: 507,
+    MailServerUnavailable: 502,
+    AuthFailed: 401,
+}
+
+
+def _status_for(exc: BaseException) -> int:
+    """The status for a semantic failure, most-derived mapping first.
+
+    Walking the MRO rather than reading `type(exc)` means a future subclass
+    inherits its parent's status instead of silently falling back. The
+    fallback itself is 502, not 500: an unclassified mail-store failure is
+    still the upstream server's, and must not read like a bug in this app.
+    """
+    for cls in type(exc).__mro__:
+        if cls in _MAIL_ERROR_STATUS:
+            return _MAIL_ERROR_STATUS[cls]
+    return 502
+
+
+async def _mail_store_handler(_request: Request, exc: Exception):
+    """Surface a mail-server failure as the status its meaning deserves."""
+    return JSONResponse(status_code=_status_for(exc), content={"detail": str(exc)})
 
 
 async def _protocol_name_handler(_request: Request, exc: Exception):
@@ -75,6 +115,10 @@ def create_app(config: Settings | None = None) -> FastAPI:
 
     app.add_exception_handler(HostValidationError, _host_validation_handler)
     app.add_exception_handler(ProtocolNameError, _protocol_name_handler)
+    # One registration for the whole vocabulary: Starlette resolves a handler
+    # by walking the exception's MRO, so every MailStoreError subclass lands
+    # here and gets its status from the table above.
+    app.add_exception_handler(MailStoreError, _mail_store_handler)
 
     # Middleware: last-added runs first — CORS outermost, CSRF innermost.
     app.add_middleware(CSRFMiddleware)
