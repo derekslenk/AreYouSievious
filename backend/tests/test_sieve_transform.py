@@ -6,6 +6,7 @@ Coverage:
   - Quality C-2: parser handling of else/elsif chains and address-test modifiers
   - Security C-2: ReDoS on unterminated quoted strings (CWE-1333)
   - Round-trip stability across every test_scripts/*.sieve fixture
+  - Recognition census pinning the rules/raw split per fixture (areyousievious-8fg.1)
 
 Run from the backend/ directory:
     cd backend && python -m pytest tests/ -v
@@ -69,6 +70,36 @@ def test_round_trip_preserves_every_entry_and_require(path: Path) -> None:
 
     assert second.entries == first.entries, f"{path.name}: entries changed on round-trip"
     assert set(second.requires) == set(first.requires), f"{path.name}: a require was lost"
+
+
+# ── Recognition census (areyousievious-8fg.1) ──
+
+# Pinned (rules, raw_blocks) per fixture. The fixed-point tests above are
+# vacuous for anything the parser declines to recognise — a RawBlock is a
+# trivial fixed point, text in, same text out — so a change that makes the
+# recogniser strictly WORSE keeps them green. This census is what fails
+# instead. If a count changes on purpose (recogniser upgrade, fixture edit),
+# re-measure and update the pin here.
+RECOGNITION_CENSUS = {
+    "grak.sieve": (26, 0),
+    "roundcube.sieve": (0, 1),
+    "sogo.sieve": (14, 0),
+}
+
+
+@pytest.mark.parametrize("path", TEST_SCRIPTS, ids=lambda p: p.name)
+def test_recognition_does_not_regress(path: Path) -> None:
+    """Every fixture keeps its recognised rules/raw split; new fixtures must be censused."""
+    assert path.name in RECOGNITION_CENSUS, (
+        f"{path.name}: uncensused fixture — measure (len(rules), len(raw_blocks)) "
+        "and add it to RECOGNITION_CENSUS"
+    )
+    script = st.parse_sieve(path.read_text())
+    got = (len(script.rules), len(script.raw_blocks))
+    assert got == RECOGNITION_CENSUS[path.name], (
+        f"{path.name}: recognition changed: (rules, raw_blocks) = {got}, "
+        f"pinned {RECOGNITION_CENSUS[path.name]}"
+    )
 
 
 # ── Round-trip fidelity (architecture candidate 02) ──
