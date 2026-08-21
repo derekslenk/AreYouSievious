@@ -358,14 +358,18 @@
       },
       "SaveRawRequest": {
         "additionalProperties": false,
+        "description": "`content` is required and non-empty: an empty raw save destroys the\nuser's script, and the one observed way to send one was a bug, not an\nintent (areyousievious-8fg.20). Clearing a script is expressed by\ndeleting it, not by overwriting it with nothing.",
         "properties": {
           "content": {
-            "default": "",
             "maxLength": 262144,
+            "minLength": 1,
             "title": "Content",
             "type": "string"
           }
         },
+        "required": [
+          "content"
+        ],
         "title": "SaveRawRequest",
         "type": "object"
       },

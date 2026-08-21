@@ -5,19 +5,27 @@
 
   let content = '';
   let loading = true;
+  let loadFailed = false;
   let saving = false;
   let dirty = false;
 
-  onMount(async () => {
+  onMount(load);
+
+  async function load() {
+    loading = true;
+    loadFailed = false;
     try {
       const data = await api.getScriptRaw($currentScriptName);
       content = data.content;
     } catch (e) {
+      // Without this gate a failed load rendered an empty textarea with Save
+      // enabled — one click PUT an empty string over the real script.
+      loadFailed = true;
       showToast(e.message, 'error');
     } finally {
       loading = false;
     }
-  });
+  }
 
   async function save() {
     saving = true;
@@ -47,13 +55,18 @@
       <h2>{$currentScriptName} (raw)</h2>
       {#if dirty}<span class="dirty-badge">unsaved</span>{/if}
     </div>
-    <button class="btn-sm btn-accent" on:click={save} disabled={saving}>
+    <button class="btn-sm btn-accent" on:click={save} disabled={saving || loading || loadFailed || content === ''}>
       {saving ? 'Saving...' : 'Save'}
     </button>
   </header>
 
   {#if loading}
     <p class="muted">Loading...</p>
+  {:else if loadFailed}
+    <div class="load-failed">
+      <p class="muted">Could not load the script, so there is nothing safe to edit.</p>
+      <button class="btn-sm" on:click={load}>Retry</button>
+    </div>
   {:else}
     <textarea
       bind:value={content}
@@ -80,4 +93,5 @@
   }
   textarea:focus { outline: none; border-color: var(--accent); }
   .muted { color: var(--text2); }
+  .load-failed { display: flex; flex-direction: column; align-items: flex-start; gap: 0.5rem; }
 </style>

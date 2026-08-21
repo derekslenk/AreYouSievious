@@ -39,7 +39,7 @@ from pydantic import ValidationError
             SaveScriptRequest,
             {"entries": [], "requires": []},
         ),
-        (SaveRawRequest, {"content": ""}),
+        (SaveRawRequest, {"content": "keep;"}),
         (CreateFolderRequest, {"name": "Inbox"}),
         (
             LoginRequest,
