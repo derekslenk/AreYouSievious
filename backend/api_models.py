@@ -119,9 +119,14 @@ class SaveScriptRequest(BaseModel):
 
 
 class SaveRawRequest(BaseModel):
+    """`content` is required and non-empty: an empty raw save destroys the
+    user's script, and the one observed way to send one was a bug, not an
+    intent (areyousievious-8fg.20). Clearing a script is expressed by
+    deleting it, not by overwriting it with nothing."""
+
     model_config = _STRICT
 
-    content: str = Field(default="", max_length=262144)
+    content: str = Field(min_length=1, max_length=262144)
 
 
 class CreateFolderRequest(BaseModel):

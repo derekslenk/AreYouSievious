@@ -424,12 +424,15 @@ export interface components {
              */
             name: string;
         };
-        /** SaveRawRequest */
+        /**
+         * SaveRawRequest
+         * @description `content` is required and non-empty: an empty raw save destroys the
+         *     user's script, and the one observed way to send one was a bug, not an
+         *     intent (areyousievious-8fg.20). Clearing a script is expressed by
+         *     deleting it, not by overwriting it with nothing.
+         */
         SaveRawRequest: {
-            /**
-             * Content
-             * @default
-             */
+            /** Content */
             content: string;
         };
         /**
