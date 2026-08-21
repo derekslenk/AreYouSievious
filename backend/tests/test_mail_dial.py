@@ -178,8 +178,11 @@ _PROTOCOL_LIBRARIES = {"imaplib", "sievelib", "imapclient", "ssl", "socket"}
 _MAY_IMPORT: dict[str, set[str]] = {
     # The dial itself: the whole policy lives here.
     "mail_dial.py": _PROTOCOL_LIBRARIES,
-    # The FolderStore adapter: speaks IMAP verbs once mail_dial has connected.
-    "imap_client.py": {"imaplib"},
+    # The FolderStore adapter: speaks IMAP verbs once mail_dial has connected,
+    # and reads the LIST grammar with imapclient's parser rather than a regex
+    # of its own (.12). imapclient is here as a PARSER: it may not dial, and
+    # the call denylist below still holds it to that.
+    "imap_client.py": {"imaplib", "imapclient"},
     # The ScriptStore adapter: the same, for ManageSieve.
     "managesieve_client.py": {"sievelib"},
     # Resolves names and checks addresses. Never connects — and the call

@@ -152,8 +152,15 @@
       "FolderListItem": {
         "properties": {
           "delimiter": {
-            "title": "Delimiter",
-            "type": "string"
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Delimiter"
           },
           "flags": {
             "items": {
@@ -168,8 +175,7 @@
           }
         },
         "required": [
-          "name",
-          "delimiter"
+          "name"
         ],
         "title": "FolderListItem",
         "type": "object"

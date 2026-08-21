@@ -162,7 +162,11 @@ class ScriptListItem(BaseModel):
 
 class FolderListItem(BaseModel):
     name: str
-    delimiter: str
+    # None for a server whose namespace is flat: RFC 3501 reports that as NIL
+    # rather than a quoted character. Required `str` here would have answered
+    # a ResponseValidationError — a 500 — for the very rows .12 stopped the
+    # LIST parser from silently dropping.
+    delimiter: str | None = None
     flags: list[str] = Field(default_factory=list)
 
 

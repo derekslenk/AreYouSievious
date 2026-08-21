@@ -3,16 +3,74 @@ IMAP client for folder operations.
 
 Dialling policy — rebinding re-check, pinned connect, TLS context, timeouts —
 lives in `mail_dial`. This module owns what to say once connected.
+
+Reading a LIST response is `imapclient`'s job, not ours. Two things are used
+from it and nothing else — `response_parser.parse_response` for the grammar
+and `imap_utf7` for the encoding — while imaplib stays the transport, so
+`mail_dial` takes a zero-line diff. See `_folder_from_list_row`.
 """
 
 import imaplib
-import re
 
 from auth import Session
 from config import Settings
+from imapclient import imap_utf7
+from imapclient.exceptions import ProtocolError
+from imapclient.response_parser import parse_response
 from mail_dial import open_imap, transport_failures_are_semantic
 from mail_errors import AuthFailed, FolderRejected, MailServerUnavailable, relayed, server_text
 from protocol_names import validate_folder_name
+
+
+def _text(atom) -> str:
+    """One parsed atom as the text a caller can put in a Sieve `fileinto`.
+
+    Three shapes arrive here from one grammar. Bytes are the ordinary case and
+    carry modified UTF-7 — IMAP's own encoding, which is NOT stdlib utf-7 (the
+    stdlib emits `+AOk-` where IMAP requires `&AOk-`; CPython declined to ship
+    the codec, bpo-22598). A bare numeric atom is typed as an int, because a
+    mailbox name is an astring and `2024` is legal unquoted. NIL is None, and
+    only ever reaches this as a delimiter, which is handled by the caller.
+    """
+    if isinstance(atom, bytes):
+        return imap_utf7.decode(atom)
+    return str(atom)
+
+
+def _folder_from_list_row(row) -> dict | None:
+    """One `{name, delimiter, flags}` from one untagged LIST row, or None.
+
+    `row` is exactly what imaplib hands back: bytes for an ordinary line, or a
+    `(line_ending_in_{n}, literal)` tuple when the server sent the name as a
+    literal — which `re.match` answered with a TypeError, a 500 for a folder
+    listing. Passing the item through untouched is what makes both work, since
+    the lexer takes the tuple as one logical line.
+
+    None means the row held nothing at all: imaplib reports "no untagged LIST
+    responses" as `[None]`, which is an empty account rather than a failure.
+    An UNREADABLE row is the opposite and raises, because silently skipping it
+    is precisely how the NIL-delimiter namespace went missing without a trace.
+
+    Anything past the third field is discarded: RFC 5258 LIST-EXTENDED appends
+    extended data after the name, and no caller of ours wants it.
+    """
+    try:
+        parsed = parse_response([row])
+    except (ProtocolError, ValueError) as exc:
+        raise MailServerUnavailable() from exc
+    if not parsed:
+        return None
+    if len(parsed) < 3:
+        raise MailServerUnavailable()
+    flags, delimiter, name = parsed[:3]
+    return {
+        "name": _text(name),
+        # NIL, and therefore None, for a server with a flat namespace. The
+        # regex required a quoted character here and so matched nothing at
+        # all, and a row that matched nothing was skipped by the loop.
+        "delimiter": _text(delimiter) if delimiter is not None else None,
+        "flags": [_text(f) for f in flags or ()],
+    }
 
 
 def _login(conn, username: str, password: str, *, rejected: str | None = None) -> None:
@@ -109,28 +167,22 @@ class ImapFolderStore:
                 pass
 
     def list_folders(self) -> list[dict]:
-        """Return flat list of {name, delimiter, flags} dicts."""
+        """Every folder on the account, as {name, delimiter, flags} dicts.
+
+        A refused LIST raises. It used to `return folders` — the empty list
+        built two lines above — so a server that would not answer was
+        indistinguishable from an account with no folders, and the user was
+        invited to create folders they already had. `MailServerUnavailable`
+        because an unexplained NO after a successful LOGIN is not evidence the
+        caller did anything wrong, and it does not relay the server's banner
+        (see mail_errors.RELAYS_SERVER_TEXT) — nothing in an IMAP NO is
+        actionable, and it is exactly where a version string would leak.
+        """
         status, data = self._conn.list()
-        folders = []
         if status != "OK":
-            return folders
+            raise MailServerUnavailable()
 
-        for item in data:
-            if isinstance(item, bytes):
-                item = item.decode("utf-8", errors="replace")
-            # Parse IMAP LIST response: (flags) "delimiter" "name"
-            match = re.match(r'\(([^)]*)\)\s+"([^"]+)"\s+"?([^"]*)"?', item)
-            if match:
-                flags_str, delimiter, name = match.groups()
-                flags = [f.strip() for f in flags_str.split() if f.strip()]
-                folders.append(
-                    {
-                        "name": name.strip('"'),
-                        "delimiter": delimiter,
-                        "flags": flags,
-                    }
-                )
-
+        folders = [f for f in (_folder_from_list_row(row) for row in data) if f is not None]
         folders.sort(key=lambda f: f["name"].lower())
         return folders
 

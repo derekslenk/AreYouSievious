@@ -22,9 +22,9 @@ FastAPI application that serves the Svelte SPA as static files and provides a RE
 | `mail_stores.py` | The two mail-server seams as `Protocol`s: `ScriptStore` (list/get/put/activate/delete) and `FolderStore` (list/create). Kept separate — a single seven-operation store would be a union, not an abstraction |
 | `mail_errors.py` | The semantic vocabulary the seams fail in (`MailStoreError` + `ScriptNotFound`, `ScriptRejected`, `QuotaExceeded`, `FolderRejected`, `MailServerUnavailable`, `AuthFailed`). Protocol-free AND HTTP-free; `app.py` owns the status mapping |
 | `managesieve_client.py` | `SieveClient` context manager for ManageSieve (port 4190) — the ScriptStore adapter. Owns the script operations and translates sievelib's falsy returns + `errcode`/`errmsg` into `mail_errors`; dialling policy lives in `mail_dial` |
-| `imap_client.py` | `ImapFolderStore` context manager for IMAP (port 993) — the FolderStore adapter. Owns what to say once connected; maps `imaplib.IMAP4.abort`/`error` on LOGIN to `MailServerUnavailable`/`AuthFailed` (abort first — it subclasses error), exposes `verify_credentials` for the login route (which has no session, so no store), and `create_folder` raises `FolderRejected` (it returned a bool the router had to interpret) and checks the SUBSCRIBE status as well as CREATE; dialling policy lives in `mail_dial`. Named for the seam, not the protocol: `imapclient.IMAPClient` is the LIST parser `.12` brings into this module |
+| `imap_client.py` | `ImapFolderStore` context manager for IMAP (port 993) — the FolderStore adapter. Owns what to say once connected; maps `imaplib.IMAP4.abort`/`error` on LOGIN to `MailServerUnavailable`/`AuthFailed` (abort first — it subclasses error), exposes `verify_credentials` for the login route (which has no session, so no store), and `create_folder` raises `FolderRejected` (it returned a bool the router had to interpret) and checks the SUBSCRIBE status as well as CREATE; dialling policy lives in `mail_dial`. Reads LIST with `imapclient`'s grammar and mUTF-7 codec, never a regex (`.12`) — the regex dropped NIL-delimiter rows, truncated names at an escaped quote, and raised TypeError on a literal — and a refused LIST raises `MailServerUnavailable` rather than returning an empty listing. Named for the seam, not the protocol |
 | `fetch_grak_script.py` | Standalone utility to pull scripts off a real server into `test_scripts/`. Not imported by the app |
-| `requirements.txt` | Runtime dependencies: fastapi, uvicorn, sievelib, python-multipart |
+| `requirements.txt` | Runtime dependencies: fastapi, uvicorn, sievelib, imapclient, python-multipart |
 | `requirements-dev.txt` | pytest, pytest-asyncio, httpx, ruff, basedpyright, pre-commit |
 
 ## Subdirectories
@@ -74,6 +74,8 @@ FastAPI application that serves the Svelte SPA as static files and provides a RE
 ### External
 - `fastapi` + `uvicorn` — Web framework and ASGI server
 - `sievelib` — ManageSieve protocol client (its AST is NOT used; the parser is hand-rolled)
+- `imapclient` — IMAP grammar + modified-UTF-7 codec ONLY (`response_parser.parse_response`,
+  `imap_utf7`); `imapclient.IMAPClient` is not used and imaplib remains the transport
 - `python-multipart` — File upload handling for the import endpoint
 
 <!-- MANUAL: -->

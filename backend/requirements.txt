@@ -1,4 +1,8 @@
 fastapi>=0.100.0
 uvicorn>=0.20.0
 sievelib>=1.4.0
+# The IMAP grammar and the modified-UTF-7 codec, used by imap_client's LIST
+# parser. BSD-3, and no runtime dependencies of its own. imaplib stays the
+# transport; this is a parser, not a client.
+imapclient>=3.1.0
 python-multipart>=0.0.18
