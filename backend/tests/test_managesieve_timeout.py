@@ -59,11 +59,13 @@ def test_zero_or_negative_is_clamped(monkeypatch, value):
 # ── Wiring: Settings -> sockets ──
 
 
-def _stub_settings(connect: float, io: float):
-    """Serve a known Settings to mail_dial without touching the environment."""
-    return patch.object(
-        mail_dial, "settings", lambda: Settings(sieve_connect_timeout=connect, sieve_io_timeout=io)
-    )
+# The timeouts under test, handed to open_sieve directly.
+#
+# This used to patch `mail_dial.settings` because the dial read a process
+# global. Since areyousievious-8fg.7 the configuration is an argument, so a
+# test states what it wants and passes it — there is no global left to stub,
+# which is the same reason four Settings fields stopped being inert.
+SIEVE_TIMEOUTS = Settings(sieve_connect_timeout=3.0, sieve_io_timeout=7.5)
 
 
 def test_connect_timeout_is_set_before_the_client_then_restored():
@@ -74,13 +76,12 @@ def test_connect_timeout_is_set_before_the_client_then_restored():
     mock_client = MagicMock(sock=MagicMock())
 
     with (
-        _stub_settings(3.0, 7.5),
         patch.object(mail_dial, "assert_host_resolves_to", lambda *a, **kw: None),
         patch.object(mail_dial.socket, "getdefaulttimeout", lambda: None),
         patch.object(mail_dial.socket, "setdefaulttimeout", calls.append),
         patch.object(mail_dial, "Client", return_value=mock_client),
     ):
-        mail_dial.open_sieve("h.example.com", "93.184.216.34", 4190, "u", "p")
+        mail_dial.open_sieve("h.example.com", "93.184.216.34", 4190, "u", "p", cfg=SIEVE_TIMEOUTS)
 
     assert calls[0] == 3.0, f"first setdefaulttimeout was {calls[0]}, expected the connect timeout"
     assert calls[-1] is None, "the previous default was not restored"
@@ -89,11 +90,10 @@ def test_connect_timeout_is_set_before_the_client_then_restored():
 def test_io_timeout_is_set_on_the_live_socket():
     mock_client = MagicMock(sock=MagicMock())
     with (
-        _stub_settings(3.0, 7.5),
         patch.object(mail_dial, "assert_host_resolves_to", lambda *a, **kw: None),
         patch.object(mail_dial, "Client", return_value=mock_client),
     ):
-        mail_dial.open_sieve("h.example.com", "93.184.216.34", 4190, "u", "p")
+        mail_dial.open_sieve("h.example.com", "93.184.216.34", 4190, "u", "p", cfg=SIEVE_TIMEOUTS)
 
     mock_client.sock.settimeout.assert_called_with(7.5)
 
@@ -103,14 +103,15 @@ def test_default_is_restored_even_when_connect_raises():
     request."""
     calls: list[float | None] = []
     with (
-        _stub_settings(3.0, 7.5),
         patch.object(mail_dial, "assert_host_resolves_to", lambda *a, **kw: None),
         patch.object(mail_dial.socket, "getdefaulttimeout", lambda: None),
         patch.object(mail_dial.socket, "setdefaulttimeout", calls.append),
         patch.object(mail_dial, "Client", side_effect=RuntimeError("upstream down")),
     ):
         with pytest.raises(RuntimeError):
-            mail_dial.open_sieve("h.example.com", "93.184.216.34", 4190, "u", "p")
+            mail_dial.open_sieve(
+                "h.example.com", "93.184.216.34", 4190, "u", "p", cfg=SIEVE_TIMEOUTS
+            )
 
     assert calls[0] == 3.0
     assert calls[-1] is None, "default NOT restored after a failed connect"

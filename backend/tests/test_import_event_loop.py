@@ -17,29 +17,27 @@ from __future__ import annotations
 
 import asyncio
 import time
-from unittest.mock import MagicMock, patch
 
 import httpx
 import pytest
-from routers import scripts as scripts_mod  # SieveClient is imported here post-u40
+from dependencies import get_script_store
 
 SLOW_SECONDS = 1.0
 N_CONCURRENT = 5
 
 
-def _slow_sieve_client(_session):
-    """Drop-in replacement for SieveClient whose put_script sleeps SLOW_SECONDS.
+class _SlowScriptStore:
+    """A ScriptStore whose put_script sleeps, so the upload is slow but real.
 
-    Used as `patch.object(scripts_mod, "SieveClient", side_effect=...)` so the
-    test never opens a real ManageSieve connection — only the threadpool /
-    event-loop interaction matters here.
+    Substituted through `dependency_overrides` since areyousievious-8fg.7 —
+    the test used to patch the SieveClient symbol the router had imported,
+    which stopped reaching anything once the store became a dependency. Only
+    the threadpool / event-loop interaction matters here; no ManageSieve
+    connection is ever opened.
     """
-    cm = MagicMock()
-    client = MagicMock()
-    client.put_script = lambda name, content: time.sleep(SLOW_SECONDS)
-    cm.__enter__.return_value = client
-    cm.__exit__.return_value = False
-    return cm
+
+    def put_script(self, name: str, content: str) -> None:
+        time.sleep(SLOW_SECONDS)
 
 
 @pytest.mark.asyncio
@@ -56,28 +54,29 @@ async def test_import_script_does_not_block_event_loop(authed_session, make_app,
     """
     _token, csrf_token, cookies = authed_session
 
-    with patch.object(scripts_mod, "SieveClient", side_effect=_slow_sieve_client):
-        async with asgi_client_for(make_app(), cookies=cookies) as client:
+    app = make_app()
+    app.dependency_overrides[get_script_store] = _SlowScriptStore
+    async with asgi_client_for(app, cookies=cookies) as client:
 
-            async def do_import(idx: int) -> httpx.Response:
-                return await client.post(
-                    "/api/scripts/import",
-                    data={"name": f"rule_{idx}"},
-                    files={"file": (f"rule_{idx}.sieve", b"# rule\n", "application/sieve")},
-                    headers={"X-CSRF-Token": csrf_token},
-                )
-
-            async def do_status() -> tuple[httpx.Response, float]:
-                t0 = time.monotonic()
-                r = await client.get("/api/auth/status")
-                return r, time.monotonic() - t0
-
-            start = time.monotonic()
-            results = await asyncio.gather(
-                *(do_import(i) for i in range(N_CONCURRENT)),
-                *(do_status() for _ in range(N_CONCURRENT)),
+        async def do_import(idx: int) -> httpx.Response:
+            return await client.post(
+                "/api/scripts/import",
+                data={"name": f"rule_{idx}"},
+                files={"file": (f"rule_{idx}.sieve", b"# rule\n", "application/sieve")},
+                headers={"X-CSRF-Token": csrf_token},
             )
-            elapsed = time.monotonic() - start
+
+        async def do_status() -> tuple[httpx.Response, float]:
+            t0 = time.monotonic()
+            r = await client.get("/api/auth/status")
+            return r, time.monotonic() - t0
+
+        start = time.monotonic()
+        results = await asyncio.gather(
+            *(do_import(i) for i in range(N_CONCURRENT)),
+            *(do_status() for _ in range(N_CONCURRENT)),
+        )
+        elapsed = time.monotonic() - start
 
     upload_responses = results[:N_CONCURRENT]
     status_pairs = results[N_CONCURRENT:]

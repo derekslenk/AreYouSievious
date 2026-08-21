@@ -27,7 +27,7 @@ import ssl
 import threading
 from functools import lru_cache
 
-from config import Settings, settings
+from config import Settings
 from mail_errors import AuthFailed, MailServerUnavailable
 from sievelib.managesieve import Client
 from ssrf import assert_host_resolves_to
@@ -37,8 +37,14 @@ _log = logging.getLogger("ays.dial")
 
 # ── TLS ──
 
+# A running process serves one app and therefore one configuration; the extra
+# room is for test suites, which build many. Bounded rather than unbounded so
+# a caller constructing Settings in a loop cannot grow this without limit.
+_TLS_CONTEXT_CACHE = 8
 
-def _build_tls_context(cfg: Settings) -> ssl.SSLContext:
+
+@lru_cache(maxsize=_TLS_CONTEXT_CACHE)
+def build_tls_context(cfg: Settings) -> ssl.SSLContext:
     """Build the TLS context used for every outbound connection.
 
     Defaults: verify the server certificate chain against the system root store
@@ -48,6 +54,15 @@ def _build_tls_context(cfg: Settings) -> ssl.SSLContext:
 
     Opt-out: `AYS_IMAP_INSECURE=1` falls back to an unverified context for
     self-signed test setups. Emits a warning so the operator cannot miss it.
+
+    Cached ON THE CONFIGURATION, so building the system CA store does not
+    repeat per connection. This is not the argument-less cache it replaced:
+    that one held whatever vintage of the environment it was first called
+    with, and clearing `config.settings`'s cache did not invalidate it — two
+    caches, two vintages, no relationship between them. Keying on `cfg` makes
+    a different configuration a different entry by construction. `create_app`
+    builds one eagerly so a broken CA store still fails at startup rather
+    than on a user's first login.
     """
     if cfg.imap_insecure:
         _log.warning(
@@ -58,23 +73,6 @@ def _build_tls_context(cfg: Settings) -> ssl.SSLContext:
     ctx = ssl.create_default_context()
     ctx.minimum_version = ssl.TLSVersion.TLSv1_2
     return ctx
-
-
-@lru_cache(maxsize=1)
-def tls_context() -> ssl.SSLContext:
-    """The shared outbound TLS context.
-
-    Cached rather than rebuilt per connection, and built eagerly at import
-    (below) so a missing system CA store fails at startup rather than on a
-    user's first login. Tests that need a different context call
-    `tls_context.cache_clear()` — previously this required `importlib.reload`,
-    because the value was a module constant computed from the environment.
-    """
-    return _build_tls_context(settings())
-
-
-# Eager build preserves fail-fast on a broken CA store.
-tls_context()
 
 
 # ── IMAP ──
@@ -110,20 +108,24 @@ class _PinnedIMAP4_SSL(imaplib.IMAP4_SSL):
         return self.ssl_context.wrap_socket(sock, server_hostname=self.host)
 
 
-def open_imap(host: str, host_ip: str, port: int, *, timeout: float | None = None):
+def open_imap(host: str, host_ip: str, port: int, *, cfg: Settings, timeout: float | None = None):
     """Return a connected, policy-checked IMAP connection.
 
     Re-resolves `host` and aborts if it no longer answers with `host_ip`, then
     dials the pinned address. The caller still performs LOGIN — this owns
     getting to the right machine safely, not what you say once you are there.
+
+    `cfg` arrives from the caller rather than being read out of the process
+    global. Reading the global is what made four of nine Settings fields inert
+    when passed to `create_app`: the app honoured them and the dial did not.
     """
     assert_host_resolves_to(host, host_ip)
     return _PinnedIMAP4_SSL(
         host,
         host_ip,
         port,
-        ssl_context=tls_context(),
-        timeout=settings().imap_timeout if timeout is None else timeout,
+        ssl_context=build_tls_context(cfg),
+        timeout=cfg.imap_timeout if timeout is None else timeout,
     )
 
 
@@ -147,7 +149,9 @@ def open_imap(host: str, host_ip: str, port: int, *, timeout: float | None = Non
 _CONNECT_TIMEOUT_LOCK = threading.Lock()
 
 
-def open_sieve(host: str, host_ip: str, port: int, username: str, password: str) -> Client:
+def open_sieve(
+    host: str, host_ip: str, port: int, username: str, password: str, *, cfg: Settings
+) -> Client:
     """Return a connected, authenticated, policy-checked ManageSieve client.
 
     Unlike `open_imap` this performs the login too, because sievelib fuses
@@ -157,7 +161,7 @@ def open_sieve(host: str, host_ip: str, port: int, username: str, password: str)
 
     with _CONNECT_TIMEOUT_LOCK:
         previous_default = socket.getdefaulttimeout()
-        socket.setdefaulttimeout(settings().sieve_connect_timeout)
+        socket.setdefaulttimeout(cfg.sieve_connect_timeout)
         try:
             # srvaddr is the pinned IP; srvhostname keeps TLS SNI and cert
             # verification on the name the user typed. sievelib supports the
@@ -184,5 +188,5 @@ def open_sieve(host: str, host_ip: str, port: int, username: str, password: str)
         raise MailServerUnavailable("The mail server refused to start TLS.")
 
     if client.sock is not None:
-        client.sock.settimeout(settings().sieve_io_timeout)
+        client.sock.settimeout(cfg.sieve_io_timeout)
     return client

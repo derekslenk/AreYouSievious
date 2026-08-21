@@ -11,7 +11,7 @@ future frontend regression re-opens the window.
 
 from __future__ import annotations
 
-from unittest.mock import patch
+from unittest.mock import MagicMock
 
 import pytest
 from api_models import SaveRawRequest
@@ -39,27 +39,26 @@ def test_real_content_still_validates():
 # ── Endpoint layer: the wire refuses to destroy a script ──
 
 
-def test_put_raw_with_empty_content_is_422_and_never_dials(authed_client, sieve_client_passthrough):
-    calls = []
-    with patch.object(
-        sieve_client_passthrough.SieveClient,
-        "put_script",
-        lambda self, n, c: calls.append((n, c)),
-    ):
-        with authed_client() as http:
-            r = http.put("/api/scripts/primary/raw", json={"content": ""})
+def test_put_raw_with_empty_content_never_reaches_the_sink(authed_client):
+    """The destructive path is closed at the model, before any write.
+
+    This proves `put_script` is never CALLED. It does not prove nothing is
+    dialled: since `.7` the store is a dependency, and FastAPI resolves
+    dependencies before it validates the body, so the real adapter opens a
+    connection even for a request that 422s. That cost is tracked separately
+    — see the `.7` follow-up bead — and is invisible here because this test
+    substitutes the store.
+    """
+    store = MagicMock()
+    with authed_client(script_store=store) as http:
+        r = http.put("/api/scripts/primary/raw", json={"content": ""})
     assert r.status_code == 422, r.text
-    assert calls == [], "an empty PUT must never reach the ManageSieve sink"
+    store.put_script.assert_not_called()
 
 
-def test_put_raw_with_real_content_still_saves(authed_client, sieve_client_passthrough):
-    calls = []
-    with patch.object(
-        sieve_client_passthrough.SieveClient,
-        "put_script",
-        lambda self, n, c: calls.append((n, c)),
-    ):
-        with authed_client() as http:
-            r = http.put("/api/scripts/primary/raw", json={"content": "keep;\n"})
+def test_put_raw_with_real_content_still_saves(authed_client):
+    store = MagicMock()
+    with authed_client(script_store=store) as http:
+        r = http.put("/api/scripts/primary/raw", json={"content": "keep;\n"})
     assert r.status_code == 200, r.text
-    assert calls == [("primary", "keep;\n")]
+    store.put_script.assert_called_once_with("primary", "keep;\n")

@@ -589,6 +589,7 @@
     },
     "/api/auth/status": {
       "get": {
+        "description": "Report whether this request carries a live session.\n\nNever 401s \u2014 an unauthenticated caller is the answer, not an error, which\nis why this takes `get_optional_session` rather than `get_session`.",
         "operationId": "auth_status_api_auth_status_get",
         "responses": {
           "200": {

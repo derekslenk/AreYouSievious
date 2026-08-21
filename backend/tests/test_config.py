@@ -121,18 +121,26 @@ def test_from_env_ignores_empty_cors_entries(monkeypatch):
 # ── The process-wide accessor ──
 
 
-def test_settings_accessor_is_cached():
-    assert settings() is settings()
+def test_settings_accessor_reads_the_environment_each_call(monkeypatch):
+    """No cache, so no `cache_clear` ritual (areyousievious-8fg.7).
 
-
-def test_settings_accessor_can_be_reset(monkeypatch):
-    """The seam that replaced `importlib.reload` for tests that must change the
-    environment."""
-    settings.cache_clear()
-    monkeypatch.setenv("AYS_ENV", "dev")
-    try:
-        assert settings().is_dev is True
-    finally:
-        monkeypatch.delenv("AYS_ENV", raising=False)
-        settings.cache_clear()
+    The cache this replaced held whatever vintage of the environment it was
+    first called with, while `mail_dial` kept a second cache that clearing
+    this one did not invalidate — two caches, two vintages, no relationship.
+    Reading fresh is affordable because exactly one caller reads it:
+    `create_app`, once, and the resulting Settings is what every dependency
+    below it receives.
+    """
     assert settings().is_dev is False
+    monkeypatch.setenv("AYS_ENV", "dev")
+    assert settings().is_dev is True
+    monkeypatch.delenv("AYS_ENV", raising=False)
+    assert settings().is_dev is False
+
+
+def test_two_reads_are_equal_and_interchangeable():
+    """Frozen and value-equal, which is what lets `build_tls_context` key its
+    cache on the configuration itself."""
+    a, b = settings(), settings()
+    assert a == b
+    assert hash(a) == hash(b)

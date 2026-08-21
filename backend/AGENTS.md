@@ -10,14 +10,14 @@ FastAPI application that serves the Svelte SPA as static files and provides a RE
 | File | Description |
 |------|-------------|
 | `app.py` | Composition root only — `create_app(config)` factory wiring exception handlers, middleware stack, and `include_router` calls, plus the CLI entry point. No business logic; routes live in `routers/` |
-| `config.py` | Every environment variable, read once into a frozen `Settings`. `settings()` is the process-wide cached instance; inside a request prefer `request.app.state.settings` |
-| `dependencies.py` | Shared per-request dependency: `get_session(request)` reads the `ays_session` cookie or Bearer header, raises 401 |
+| `config.py` | Every environment variable, read into a frozen `Settings`. `settings()` reads the environment fresh and is called exactly once, by `create_app`; everything below it receives that instance (`Depends(get_settings)`, or `request.app.state.settings`) |
+| `dependencies.py` | The per-request dependencies routers RECEIVE: `get_settings` (reads `request.app.state.settings`), `get_session` (cookie or Bearer, raises 401), and `get_script_store` / `get_folder_store`, which yield an open adapter and close it when the request ends |
 | `api_models.py` | Pydantic request/response DTOs. Every model is `extra="forbid"` with `max_length` caps; `EntryDTO` is a `kind`-discriminated `RuleDTO \| RawBlockDTO` |
 | `auth.py` | `SessionManager` holding credentials in process memory (plaintext, 30 min idle timeout). Never persisted |
 | `middleware.py` | `BodySizeLimitMiddleware` (Content-Length + streamed-byte cap) and `CSRFMiddleware` (double-submit cookie) |
 | `ssrf.py` | SSRF + DNS-rebinding guards. `validate_host` pins an IP at login; `assert_host_resolves_to` re-checks at every connect |
 | `protocol_names.py` | `validate_script_name` / `validate_folder_name` / `ProtocolNameError` — one rule for both ManageSieve and IMAP framing, rejected before any protocol call |
-| `mail_dial.py` | **The only way to open a mail-server connection.** `open_imap` / `open_sieve` apply the whole dialling policy: rebinding re-check, dial the pinned IP, TLS SNI on the hostname, timeouts |
+| `mail_dial.py` | **The only way to open a mail-server connection.** `open_imap` / `open_sieve` apply the whole dialling policy: rebinding re-check, dial the pinned IP, TLS SNI on the hostname, timeouts. Both take the caller's `Settings`; `build_tls_context` caches on it, so no dial can use a different vintage than its app |
 | `sieve_transform.py` | Core Sieve parser (`SieveParser`), generator (`SieveGenerator`), and data models (`Rule`, `Condition`, `Action`, `RawBlock`, `SieveScript`) |
 | `mail_stores.py` | The two mail-server seams as `Protocol`s: `ScriptStore` (list/get/put/activate/delete) and `FolderStore` (list/create). Kept separate — a single seven-operation store would be a union, not an abstraction |
 | `mail_errors.py` | The semantic vocabulary the seams fail in (`MailStoreError` + `ScriptNotFound`, `ScriptRejected`, `QuotaExceeded`, `FolderRejected`, `MailServerUnavailable`, `AuthFailed`). Protocol-free AND HTTP-free; `app.py` owns the status mapping |
@@ -31,7 +31,7 @@ FastAPI application that serves the Svelte SPA as static files and provides a RE
 | Directory | Purpose |
 |-----------|---------|
 | `routers/` | One module per URL area: `auth`, `scripts`, `folders`, `health`, `static`. Do NOT cross-import between routers — shared helpers belong in `dependencies.py` |
-| `tests/` | 21 pytest files plus a shared conftest.py, mostly regression locks tied to a bead id in the module docstring |
+| `tests/` | 22 pytest files plus a shared conftest.py, mostly regression locks tied to a bead id in the module docstring |
 | `test_scripts/` | Sample Sieve scripts used as round-trip fixtures (see `test_scripts/AGENTS.md`) |
 
 ## For AI Agents
@@ -40,8 +40,9 @@ FastAPI application that serves the Svelte SPA as static files and provides a RE
 - Router registration order matters: the static router ends with a catch-all `GET /{full_path:path}`, so every real route must be included before it or the SPA fallback swallows it.
 - Endpoints use sync `def` (not `async def`) by convention; `import_script` is sync so a slow ManageSieve PUT runs in the threadpool instead of blocking the event loop (see `tests/test_import_event_loop.py`). `auth_status` is the only intentionally-async handler.
 - Outbound IMAP TLS is verified by default. `AYS_IMAP_INSECURE=1` (or `true` / `yes`) skips chain + hostname verification for self-signed test setups and logs a warning — never set this in production (CWE-295).
-- Auth: `get_session(request)` from `dependencies.py` extracts/validates the session, raises HTTP 401
-- ManageSieve/IMAP ops use context managers: `with SieveClient(session) as client:`
+- Auth: `get_session` from `dependencies.py`, as a `Depends` — routers receive the session, they do not fetch it
+- ManageSieve/IMAP ops arrive as an injected seam: `store: ScriptStore = Depends(get_script_store)`. The dependency owns the `with`, so handlers never construct an adapter — and a test substitutes with `app.dependency_overrides[get_script_store] = lambda: fake` rather than patching `SieveClient.__enter__`
+- **Never read `config.settings()` below `create_app`.** Take `cfg: Settings = Depends(get_settings)`, or receive it as an argument. `mail_dial` reading the process global is what made four of nine Settings fields inert when passed to `create_app` — the app honoured them and the connection did not (`tests/test_config_reaches_the_dial.py`)
 - **Never construct a connection directly.** Go through `mail_dial.open_imap` / `open_sieve`; a hand-built `imaplib.IMAP4_SSL(host, …)` re-resolves DNS after the rebinding guard and reopens a TOCTOU. `tests/test_mail_dial.py` greps the source tree to enforce this.
 - Request bodies use Pydantic `BaseModel` subclasses from `api_models.py`
 - All mutating endpoints return `{"ok": True, ...}`
@@ -55,7 +56,7 @@ FastAPI application that serves the Svelte SPA as static files and provides a RE
 4. **Order**: `SieveScript.entries` is ONE ordered sequence of `Rule | RawBlock` — position IS the evaluation order. `.rules` and `.raw_blocks` are read-only filtered views. There is no separate `order` array; the parallel-array representation it replaced could drop a rule on save when the arrays disagreed.
 
 ### Testing Requirements
-- `cd backend && python -m pytest tests/ -v` — 21 files. Install with `pip install -r requirements.txt -r requirements-dev.txt`.
+- `cd backend && python -m pytest tests/ -v` — 22 files. Install with `pip install -r requirements.txt -r requirements-dev.txt`.
 - Lint/format: `ruff check backend/` and `ruff format --check backend/`. CI runs both.
 - Round-trip fidelity is asserted as a *fixed point* over every `test_scripts/*.sieve` fixture, in both text and AST. Counting rules is not sufficient — count-only assertions stayed green while action order silently changed.
 - Regression tests name the bead they lock in their module docstring; keep that convention when adding one.

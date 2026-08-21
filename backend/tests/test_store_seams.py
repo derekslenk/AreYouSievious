@@ -15,7 +15,7 @@ Two things are pinned here:
 
 from __future__ import annotations
 
-from unittest.mock import patch
+from unittest.mock import MagicMock
 
 import pytest
 from app import _MAIL_ERROR_STATUS, _status_for
@@ -123,27 +123,25 @@ def test_most_derived_mapping_wins():
 
 
 @pytest.mark.parametrize("error_type,status", ERROR_STATUS)
-def test_adapter_failure_reaches_the_client_as_its_status(
-    authed_client, sieve_client_passthrough, error_type, status
-):
-    """An adapter raises in domain terms; the client sees the right status.
+def test_adapter_failure_reaches_the_client_as_its_status(authed_client, error_type, status):
+    """A store raises in domain terms; the client sees the right status.
 
     GET /api/scripts carries no try/except, so this is the app-level handler
     doing the whole job. If a router grows one, the status stops coming from
     the table and this says so.
 
+    The store is SUBSTITUTED, not patched: `.7` made the seam a dependency,
+    so a test hands the router a different object rather than reaching into
+    SieveClient's internals.
+
     Note this pins propagation, not the absence of try/except — `auth.py`
-    still hand-maps `imaplib.IMAP4.error` to 401 and bare `Exception` to 502,
-    which is `AuthFailed` and `MailServerUnavailable` spelled out in a router.
-    Retiring that is adapter work (`.6`/`.7`).
+    still hand-maps `imaplib.IMAP4.error` to 401 and bare `Exception` to 502.
+    Retiring that is `.26`.
     """
-    with patch.object(
-        sieve_client_passthrough.SieveClient,
-        "list_scripts",
-        lambda self: (_ for _ in ()).throw(error_type("upstream said no")),
-    ):
-        with authed_client() as http:
-            r = http.get("/api/scripts")
+    store = MagicMock()
+    store.list_scripts.side_effect = error_type("upstream said no")
+    with authed_client(script_store=store) as http:
+        r = http.get("/api/scripts")
     assert r.status_code == status, r.text
     assert r.json()["detail"] == "upstream said no"
 

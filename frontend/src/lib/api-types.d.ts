@@ -48,7 +48,13 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Auth Status */
+        /**
+         * Auth Status
+         * @description Report whether this request carries a live session.
+         *
+         *     Never 401s — an unauthenticated caller is the answer, not an error, which
+         *     is why this takes `get_optional_session` rather than `get_session`.
+         */
         get: operations["auth_status_api_auth_status_get"];
         put?: never;
         post?: never;

@@ -16,6 +16,7 @@ from config import Settings, settings
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from mail_dial import build_tls_context
 from mail_errors import (
     AuthFailed,
     FolderRejected,
@@ -114,6 +115,12 @@ def create_app(config: Settings | None = None) -> FastAPI:
     # reads the configuration its app was built with — not whatever the
     # environment happens to say at that moment.
     app.state.settings = cfg
+
+    # Build the outbound TLS context now, so a missing or broken system CA
+    # store fails while the app is being constructed rather than on a user's
+    # first login. Keyed on cfg, so this is the context every dial for THIS
+    # app will get.
+    build_tls_context(cfg)
 
     app.add_exception_handler(HostValidationError, _host_validation_handler)
     app.add_exception_handler(ProtocolNameError, _protocol_name_handler)
