@@ -16,24 +16,23 @@ Reusable UI components used within the rule editor for building filter condition
 ## For AI Agents
 
 ### Working In This Directory
-- Components use `bind:` for two-way data flow with parent (`RuleEditor`)
-- Events dispatched: `change` (data modified), `pickfolder` (folder picker requested), plus `select` / `created` / `close` from `FolderPicker`
+- The builders are one-way: props down, `update` events up — no `bind:` (only `FolderPicker` still two-way binds its own local inputs)
+- Events dispatched: `update` (a fresh conditions/actions array — the builders never mutate their prop), `pickfolder` (folder picker requested), plus `select` / `created` / `close` from `FolderPicker`
 - Keyed `{#each}` blocks key on `cond.key` / `action.key`. Those keys are **view state minted by `lib/scriptDocument.js`** (`newCondition()` / `newAction()`) and stripped by `toWire` before saving. Never construct a bare condition or action literal here, and never let a key reach the backend — the DTOs are `extra="forbid"` and will 422 (see `docs/adr/0001-identity-is-view-state.md`)
 - Drag-and-drop via `use:sortable` action from `lib/sortable.js`; arrow buttons as keyboard fallback
-- `ConditionBuilder` auto-sets `address_test` based on header type (`from`/`to`/`cc`/`reply-to` are address tests)
+- `ConditionBuilder` defaults `address_test` via `deriveAddressTest` from `lib/scriptDocument.js`, applied to the edited condition ONLY — siblings keep what the parser recorded (`header :contains "from"` is legal Sieve)
 - `FolderPicker` must actually call `api.createFolder` before selecting a new name — selecting without creating pointed rules at folders that did not exist and delivery failed silently
 
 ### Common Patterns
 - `createEventDispatcher()` for parent communication
-- `arrayMove()` from `lib/utils.js` for reordering
+- `moveItem()` from `lib/scriptDocument.js` for reordering
 - Scoped CSS with `:global()` for SortableJS dynamic classes
 
 ## Dependencies
 
 ### Internal
-- `lib/scriptDocument.js` — `newCondition` / `newAction` factories
+- `lib/scriptDocument.js` — factories, vocabularies (`HEADERS`/`MATCH_TYPES`/`ACTION_TYPES`), `deriveAddressTest`, `moveItem`
 - `lib/sortable.js` — Drag-and-drop Svelte action
-- `lib/utils.js` — `arrayMove` utility
 - `lib/api.js` + `lib/stores.js` — `FolderPicker` only
 
 <!-- MANUAL: -->

@@ -30,6 +30,73 @@
  * @typedef {{requires: string[], entries: Entry[]}} ScriptDocument
  */
 
+// ── Vocabularies ──
+//
+// These lived inside the builder components, where nothing could test them
+// and where ConditionBuilder re-derived address_test from its own private
+// header list. The components render these; they do not define them.
+
+/** Headers offered by the Condition builder. */
+export const HEADERS = [
+  { value: 'from', label: 'From' },
+  { value: 'to', label: 'To' },
+  { value: 'cc', label: 'CC' },
+  { value: 'subject', label: 'Subject' },
+  { value: 'reply-to', label: 'Reply-To' },
+  { value: 'list-id', label: 'List-ID' },
+];
+
+/** Match types offered by the Condition builder. */
+export const MATCH_TYPES = [
+  { value: 'contains', label: 'contains' },
+  { value: 'is', label: 'is exactly' },
+  { value: 'matches', label: 'matches (glob)' },
+  { value: 'regex', label: 'regex' },
+];
+
+/** Actions offered by the Action builder. `hasArg` drives the argument
+ * input and `placeholder` is its hint text. */
+export const ACTION_TYPES = [
+  { value: 'fileinto', label: 'Move to folder', hasArg: true, placeholder: 'Folder name' },
+  { value: 'fileinto_copy', label: 'Copy to folder', hasArg: true, placeholder: 'Folder name' },
+  { value: 'redirect', label: 'Redirect to', hasArg: true, placeholder: 'email@example.com' },
+  { value: 'keep', label: 'Keep in INBOX', hasArg: false },
+  { value: 'discard', label: 'Delete', hasArg: false },
+  { value: 'stop', label: 'Stop processing', hasArg: false },
+  { value: 'addflag', label: 'Add flag', hasArg: true, placeholder: '\\Seen' },
+  { value: 'reject', label: 'Reject with message', hasArg: true, placeholder: 'value' },
+];
+
+/**
+ * The vocabulary entry for an action type. Interpreting ACTION_TYPES belongs
+ * here, next to the vocabulary, where it is testable.
+ * @param {string} type
+ * @returns {{value: string, label: string, hasArg: boolean, placeholder?: string} | undefined}
+ */
+export function actionSpec(type) {
+  return ACTION_TYPES.find((a) => a.value === type);
+}
+
+/** Headers whose natural test is `address` rather than `header`. */
+const ADDRESS_HEADERS = new Set(['from', 'to', 'cc', 'reply-to']);
+
+/**
+ * Default a Condition's address_test from its header.
+ *
+ * Apply this to the ONE condition whose header the user just picked — never
+ * to a whole rule. address_test is not derivable from a parsed Condition
+ * (`header :contains "from"` is legal Sieve; the parser records what the
+ * source said), so re-deriving siblings silently rewrites what their rule
+ * matches. That was the old component behaviour: one keystroke anywhere
+ * flipped every parsed header-test on from/to/cc/reply-to into an address
+ * test.
+ * @param {Condition} condition
+ * @returns {Condition}
+ */
+export function deriveAddressTest(condition) {
+  return { ...condition, address_test: ADDRESS_HEADERS.has(condition.header) };
+}
+
 let _keySeq = 0;
 
 /** Mint a render key. Unique within a session; never crosses the wire. */
@@ -294,4 +361,84 @@ export function moveRule(doc, from, to) {
   let n = 0;
   const entries = doc.entries.map((e) => (e.kind === 'rule' ? reordered[n++] : e));
   return { ...doc, entries };
+}
+
+
+/**
+ * Patch fields on the entry with render key `key`. Untouched entries keep
+ * their identity, so Svelte's keyed `{#each}` does not re-render them.
+ * @param {ScriptDocument} doc
+ * @param {string} key
+ * @param {object} patch
+ * @returns {ScriptDocument}
+ */
+export function updateEntry(doc, key, patch) {
+  return { ...doc, entries: doc.entries.map((e) => (e.key === key ? { ...e, ...patch } : e)) };
+}
+
+/**
+ * Replace a Rule's conditions wholesale. The builder computes the next array
+ * and hands it over; the document applies it as one mutation.
+ * @param {ScriptDocument} doc
+ * @param {string} key
+ * @param {Condition[]} conditions
+ * @returns {ScriptDocument}
+ */
+export function setConditions(doc, key, conditions) {
+  return updateEntry(doc, key, { conditions });
+}
+
+/**
+ * Replace a Rule's actions wholesale.
+ * @param {ScriptDocument} doc
+ * @param {string} key
+ * @param {Action[]} actions
+ * @returns {ScriptDocument}
+ */
+export function setActions(doc, key, actions) {
+  return updateEntry(doc, key, { actions });
+}
+
+/**
+ * Move one item within a list, returning a new list — or the SAME list when
+ * the move is a no-op, so callers can cheaply detect "nothing happened".
+ * Condition and action reordering is the same problem `moveRule` solves.
+ * @template T
+ * @param {T[]} list
+ * @param {number} from
+ * @param {number} to
+ * @returns {T[]}
+ */
+export function moveItem(list, from, to) {
+  if (from === to) return list;
+  if (from < 0 || from >= list.length) return list;
+  if (to < 0 || to >= list.length) return list;
+  const next = [...list];
+  const [moved] = next.splice(from, 1);
+  next.splice(to, 0, moved);
+  return next;
+}
+
+// ── Pristine copy ──
+
+/**
+ * A deep copy for keeping the as-loaded document. Dirty state is "the wire
+ * content diverged from this", and the verbatim re-emission work needs the
+ * untouched original to compare against.
+ * @param {ScriptDocument} doc
+ * @returns {ScriptDocument}
+ */
+export function snapshot(doc) {
+  return structuredClone(doc);
+}
+
+/**
+ * Wire-content equality: true when both documents would save identical
+ * payloads. Render keys never cross the wire, so they never affect this.
+ * @param {ScriptDocument} a
+ * @param {ScriptDocument} b
+ * @returns {boolean}
+ */
+export function sameWire(a, b) {
+  return JSON.stringify(toWire(a)) === JSON.stringify(toWire(b));
 }
