@@ -137,7 +137,13 @@ class FakeFolderStore(_Programmable):
 
     def list_folders(self) -> list[dict]:
         self._fail_if_armed()
-        return [{"name": n, "delimiter": "/", "flags": []} for n in self.folders]
+        # Case-insensitively sorted, as the adapter returns them
+        # (imap_client.py: `folders.sort(key=lambda f: f["name"].lower())`).
+        # Insertion order would let a test assert an arrangement no real
+        # server produces.
+        return [
+            {"name": n, "delimiter": "/", "flags": []} for n in sorted(self.folders, key=str.lower)
+        ]
 
     def create_folder(self, name: str) -> None:
         validate_folder_name(name)

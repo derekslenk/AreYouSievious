@@ -249,3 +249,14 @@ def test_creating_a_folder_that_exists_is_refused_not_silently_ok(authed_client)
         r = http.post("/api/folders", json={"name": "Lists"})
     assert r.status_code == 400, r.text
     assert store.folders == ["Lists"], "a refused create must not have added anything"
+
+
+def test_folders_are_listed_in_the_adapters_order(authed_client):
+    """Case-insensitively sorted, as IMAPClient returns them. A fake in
+    insertion order would let a test assert an arrangement no real server
+    produces — the same divergence the script store's active-first ordering
+    exists to avoid."""
+    store = FakeFolderStore(["zebra", "Archive", "inbox"])
+    with authed_client(folder_store=store) as http:
+        names = [f["name"] for f in http.get("/api/folders").json()]
+    assert names == ["Archive", "inbox", "zebra"]
