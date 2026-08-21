@@ -349,3 +349,22 @@ def test_authenticationfailed_on_list_answers_401_not_502(authed_client):
     with authed_client(folder_store=store) as http:
         response = http.get("/api/folders")
     assert response.status_code == 401
+
+
+@pytest.mark.parametrize(
+    "row",
+    [
+        pytest.param('(\\HasNoChildren) "." "n"', id="str-row"),
+        pytest.param(2024, id="int-row"),
+    ],
+)
+def test_an_unreadable_row_raises_whatever_shape_it_arrives_in(row):
+    """The docstring promises "An UNREADABLE row is the opposite and raises",
+    and a promise with an exception list behind it is only as good as the
+    list. imaplib hands back bytes or a (bytes, bytes) tuple, so neither
+    shape here is reachable today — but TypeError is the recurring failure of
+    this bead (the spec's own literal-tuple row, then the flags-int one), and
+    a guard that holds only for the shapes we thought of is how both got in.
+    """
+    with pytest.raises(MailServerUnavailable):
+        _store([row]).list_folders()

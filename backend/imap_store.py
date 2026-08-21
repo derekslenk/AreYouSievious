@@ -52,10 +52,11 @@ def _decode_name(atom) -> str:
 
     What it does NOT cover, because the codec does not fail there: a raw
     8-bit byte is read as latin-1 rather than rejected (`caf\xe9` -> `café`),
-    and a TRAILING lone `&` decodes to `+` (`Tom&` -> `Tom+`). Both are wrong
-    names arriving with no exception to catch — imapclient's reading of an
-    already-malformed encoding, and the price of adopting a grammar rather
-    than writing one.
+    a TRAILING lone `&` decodes to `+` (`Tom&` -> `Tom+`), and malformed
+    mUTF-7 partially decodes instead of failing (`&AOk*-` -> `é*-`). All
+    three are wrong names arriving with no exception to catch — imapclient's
+    reading of an already-malformed encoding, and the price of adopting a
+    grammar rather than writing one.
     """
     if isinstance(atom, bytes):
         try:
@@ -95,7 +96,14 @@ def _folder_from_list_row(row) -> dict | None:
     """
     try:
         parsed = parse_response([row])
-    except (ProtocolError, ValueError) as exc:
+    except (ProtocolError, ValueError, TypeError) as exc:
+        # TypeError belongs here on the strength of this bead's own history:
+        # it is what the old regex did to a literal tuple, and what the first
+        # shape guard did to an int in the flags field. Both were rows nobody
+        # expected, which is the only kind that gets through. imaplib hands
+        # back bytes or a (bytes, bytes) tuple and nothing else, so this
+        # catches nothing reachable today — it makes the docstring's promise
+        # below hold for any shape rather than for the ones we thought of.
         raise MailServerUnavailable() from exc
     if not parsed:
         return None
