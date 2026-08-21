@@ -13,9 +13,11 @@
   // The editable document. ScriptDocument owns its shape, its render keys and
   // its mutations; this component only renders and tracks selection.
   let script = null;
+  // The as-loaded document. Dirty is derived: "the wire content diverged from
+  // this". The verbatim re-emission work builds on the same pristine copy.
+  let pristine = null;
   let selectedIdx = 0;
   let saving = false;
-  let dirty = false;
   let folderList = [];
   let showFolderPicker = false;
   let folderPickerCallback = null;
@@ -27,10 +29,10 @@
   // rendered, but keep their position through every mutation.
   $: rules = script ? doc.ruleEntries(script) : [];
 
-  // Index of the selected rule within `script.entries`. Detail-panel binds go
-  // through this rather than through `rules`, so a two-way bind invalidates
-  // the document itself — binding into a `$:`-derived array would be
-  // overwritten on the next recompute and the preview would go stale.
+  // Index of the selected rule within `script.entries`. Detail-panel edits
+  // patch through this rather than through `rules`, so every mutation lands
+  // on the document itself — an edit into the `$:`-derived array would be
+  // overwritten on its next recompute.
   $: selectedEntryIdx = script ? script.entries.indexOf(rules[selectedIdx]) : -1;
 
   async function refreshFolders() {
@@ -42,8 +44,11 @@
 
   onMount(async () => {
     script = doc.fromWire($currentScript);
+    pristine = doc.snapshot(script);
     await refreshFolders();
   });
+
+  $: dirty = !!(script && pristine) && !doc.sameWire(script, pristine);
 
   // Preview generation lives in ScriptDocument — it must agree with the
   // backend generator, and it can only be tested outside a .svelte file.
@@ -54,7 +59,6 @@
   function addRule() {
     script = doc.addRule(script);
     selectedIdx = doc.ruleEntries(script).length - 1;
-    dirty = true;
   }
 
   function deleteRule(idx) {
@@ -63,7 +67,6 @@
     script = doc.deleteRule(script, idx);
     const remaining = doc.ruleEntries(script).length;
     if (selectedIdx >= remaining) selectedIdx = Math.max(0, remaining - 1);
-    dirty = true;
   }
 
   function moveRule(idx, dir) {
@@ -75,7 +78,6 @@
     if (next === script) return;
     script = next;
     selectedIdx = newIndex;
-    dirty = true;
   }
 
   async function save() {
@@ -83,7 +85,7 @@
     try {
       await api.saveScript($currentScriptName, doc.toWire(script));
       showToast('Script saved');
-      dirty = false;
+      pristine = doc.snapshot(script);
     } catch (e) {
       showToast(e.message, 'error');
     } finally {
@@ -107,7 +109,10 @@
     folderPickerCallback = null;
   }
 
-  function markDirty() { dirty = true; }
+  /** Patch the selected rule through the document, as one mutation. */
+  function patchSelected(fields) {
+    script = doc.updateEntry(script, script.entries[selectedEntryIdx].key, fields);
+  }
 </script>
 
 <div class="editor">
@@ -163,12 +168,12 @@
         {#if selectedEntryIdx >= 0}
           <div class="field">
             <label for="rule-name">Rule Name</label>
-            <input id="rule-name" type="text" bind:value={script.entries[selectedEntryIdx].name} on:input={markDirty} />
+            <input id="rule-name" type="text" value={script.entries[selectedEntryIdx].name} on:input={(e) => patchSelected({ name: e.currentTarget.value })} />
           </div>
 
           <div class="field-row">
             <label class="toggle">
-              <input type="checkbox" bind:checked={script.entries[selectedEntryIdx].enabled} on:change={markDirty} />
+              <input type="checkbox" checked={script.entries[selectedEntryIdx].enabled} on:change={(e) => patchSelected({ enabled: e.currentTarget.checked })} />
               Enabled
             </label>
             <!-- Only meaningful with 2+ conditions. A rule parsed from a bare
@@ -178,7 +183,7 @@
             {#if script.entries[selectedEntryIdx].conditions.length > 1}
               <div class="field">
                 <label for="rule-match">Match</label>
-                <select id="rule-match" bind:value={script.entries[selectedEntryIdx].match} on:change={markDirty}>
+                <select id="rule-match" value={script.entries[selectedEntryIdx].match} on:change={(e) => patchSelected({ match: e.currentTarget.value })}>
                   <option value="anyof">Any condition (OR)</option>
                   <option value="allof">All conditions (AND)</option>
                 </select>
@@ -188,14 +193,14 @@
 
           <h3>Conditions</h3>
           <ConditionBuilder
-            bind:conditions={script.entries[selectedEntryIdx].conditions}
-            on:change={markDirty}
+            conditions={script.entries[selectedEntryIdx].conditions}
+            on:update={(e) => { script = doc.setConditions(script, script.entries[selectedEntryIdx].key, e.detail); }}
           />
 
           <h3>Actions</h3>
           <ActionBuilder
-            bind:actions={script.entries[selectedEntryIdx].actions}
-            on:change={markDirty}
+            actions={script.entries[selectedEntryIdx].actions}
+            on:update={(e) => { script = doc.setActions(script, script.entries[selectedEntryIdx].key, e.detail); }}
             on:pickfolder={(e) => openFolderPicker(e.detail)}
           />
 

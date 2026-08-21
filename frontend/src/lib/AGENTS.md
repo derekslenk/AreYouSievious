@@ -12,8 +12,7 @@ Shared utilities, state management, and API client used across all frontend comp
 | `api.js` | HTTP client wrapping `fetch` for all backend endpoints; auto-dispatches `ays:logout` on 401 |
 | `stores.js` | Svelte writable stores: `user`, `scripts`, `currentScript`, `currentScriptName`, `folders`, `view`, `toast` |
 | `sortable.js` | Svelte action wrapping SortableJS; handles DOM revert so Svelte `{#each}` reconciles from data |
-| `scriptDocument.js` | Owns the editable Script: `fromWire`/`toWire`, `ruleEntries`, `addRule`/`deleteRule`/`moveRule`, `newCondition`/`newAction`. Mints render keys and strips them at the wire |
-| `utils.js` | `arrayMove(arr, oldIndex, newIndex)` utility for reordering arrays |
+| `scriptDocument.js` | Owns the editable Script: `fromWire`/`toWire`, `ruleEntries`, mutations (`addRule`/`deleteRule`/`moveRule`, `updateEntry`/`setConditions`/`setActions`, `moveItem`), the Condition/Action vocabularies, `deriveAddressTest`, and `snapshot`/`sameWire` for dirty tracking. Mints render keys and strips them at the wire |
 
 ## For AI Agents
 
@@ -30,7 +29,8 @@ Shared utilities, state management, and API client used across all frontend comp
 - Stores are plain Svelte `writable()` — no complex state library
 - API methods return parsed JSON or throw on error
 - `scriptDocument.js` mutations are pure: each returns a NEW document so Svelte reactivity
-  fires on reassignment. `previewRule` is a second implementation of the backend generator
+  fires on reassignment. The one carve-out: no-op moves (`moveRule`, `moveItem`) return the
+  SAME reference so callers can cheaply detect that nothing happened. `previewRule` is a second implementation of the backend generator
   and must stay byte-identical to it
 
 <!-- MANUAL: -->

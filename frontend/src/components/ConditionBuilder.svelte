@@ -1,55 +1,38 @@
 <script>
   import { createEventDispatcher } from 'svelte';
   import { sortable } from '../lib/sortable.js';
-  import { arrayMove } from '../lib/utils.js';
-  import { newCondition } from '../lib/scriptDocument.js';
+  import {
+    HEADERS, MATCH_TYPES, deriveAddressTest, moveItem, newCondition,
+  } from '../lib/scriptDocument.js';
   export let conditions = [];
   const dispatch = createEventDispatcher();
 
-  const HEADERS = [
-    { value: 'from', label: 'From' },
-    { value: 'to', label: 'To' },
-    { value: 'cc', label: 'CC' },
-    { value: 'subject', label: 'Subject' },
-    { value: 'reply-to', label: 'Reply-To' },
-    { value: 'list-id', label: 'List-ID' },
-  ];
+  // The builder never mutates `conditions` — every edit dispatches a fresh
+  // array upward and the document applies it as one mutation. Vocabularies
+  // live in scriptDocument; this component only renders them.
+  function emit(next) { dispatch('update', next); }
 
-  const MATCH_TYPES = [
-    { value: 'contains', label: 'contains' },
-    { value: 'is', label: 'is exactly' },
-    { value: 'matches', label: 'matches (glob)' },
-    { value: 'regex', label: 'regex' },
-  ];
+  function addCondition() { emit([...conditions, newCondition()]); }
 
-  function addCondition() {
-    conditions = [...conditions, newCondition()];
-    dispatch('change');
-  }
-
-  function removeCondition(idx) {
-    conditions = conditions.filter((_, i) => i !== idx);
-    dispatch('change');
-  }
+  function removeCondition(idx) { emit(conditions.filter((_, i) => i !== idx)); }
 
   function reorderCondition(oldIndex, newIndex) {
-    conditions = arrayMove(conditions, oldIndex, newIndex);
-    dispatch('change');
+    const next = moveItem(conditions, oldIndex, newIndex);
+    if (next !== conditions) emit(next);
   }
 
-  function moveCondition(idx, dir) {
-    const newIdx = idx + dir;
-    if (newIdx < 0 || newIdx >= conditions.length) return;
-    reorderCondition(idx, newIdx);
+  function moveCondition(idx, dir) { reorderCondition(idx, idx + dir); }
+
+  /** Patch one condition, leaving its siblings untouched. */
+  function patch(idx, fields) {
+    emit(conditions.map((c, i) => (i === idx ? { ...c, ...fields } : c)));
   }
 
-  function onChange() {
-    // Auto-set address_test based on header
-    conditions = conditions.map(c => ({
-      ...c,
-      address_test: ['from', 'to', 'cc', 'reply-to'].includes(c.header),
-    }));
-    dispatch('change');
+  /** A header pick re-derives address_test for the edited condition ONLY.
+      Siblings keep what the parser recorded — address_test is not derivable
+      from a parsed Condition (`header :contains "from"` is legal Sieve). */
+  function setHeader(idx, header) {
+    emit(conditions.map((c, i) => (i === idx ? deriveAddressTest({ ...c, header }) : c)));
   }
 </script>
 
@@ -58,22 +41,22 @@
     <div class="condition-row">
       <span class="drag-handle" aria-hidden="true" title="Drag to reorder">&#9776;</span>
 
-      <select bind:value={cond.header} on:change={onChange}>
+      <select value={cond.header} on:change={(e) => setHeader(i, e.currentTarget.value)}>
         {#each HEADERS as h}
           <option value={h.value}>{h.label}</option>
         {/each}
       </select>
 
-      <select bind:value={cond.match_type} on:change={onChange}>
+      <select value={cond.match_type} on:change={(e) => patch(i, { match_type: e.currentTarget.value })}>
         {#each MATCH_TYPES as mt}
           <option value={mt.value}>{mt.label}</option>
         {/each}
       </select>
 
-      <input type="text" bind:value={cond.value} on:input={onChange} placeholder="value" />
+      <input type="text" value={cond.value} on:input={(e) => patch(i, { value: e.currentTarget.value })} placeholder="value" />
 
       <label class="negate-toggle" title="Negate (NOT)">
-        <input type="checkbox" bind:checked={cond.negate} on:change={onChange} />
+        <input type="checkbox" checked={cond.negate} on:change={(e) => patch(i, { negate: e.currentTarget.checked })} />
         NOT
       </label>
 

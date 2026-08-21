@@ -21,12 +21,12 @@ Page-level view components, each representing a top-level screen in the app. Rou
 - `RuleEditor` renders and tracks selection only — the document and every mutation live in `lib/scriptDocument.js`. Do not reintroduce document logic here; it is untestable in a `.svelte` file (no jsdom, no `@testing-library/svelte`)
 - `Dashboard` buttons are always rendered but disabled for active scripts
 - Render keys are minted by `scriptDocument` and stripped at the wire. Never send them: the DTOs are `extra="forbid"` and will 422 (see `docs/adr/0001-identity-is-view-state.md`)
-- Bind detail-panel fields through `script.entries[selectedEntryIdx].…`, not through the `$:`-derived `rules` array — binding into a derived value gets overwritten on recompute and the preview goes stale
+- Detail-panel edits patch through `script.entries[selectedEntryIdx]` via scriptDocument setters (`value=` + handler, never `bind:`) — an edit into the `$:`-derived `rules` array would be overwritten on recompute
 - `RawEditor` works with raw Sieve text, bypassing the JSON transform pipeline
 
 ### Common Patterns
 - Views read from stores on mount and call `api.*` methods for backend operations
-- `markDirty()` pattern tracks unsaved changes with confirmation on navigation
+- Dirty is derived: `sameWire(script, pristine)` against the snapshot taken at load, refreshed on save; navigation confirms while it reports a divergence
 
 ## Dependencies
 
@@ -34,7 +34,6 @@ Page-level view components, each representing a top-level screen in the app. Rou
 - `lib/stores.js` — App state
 - `lib/api.js` — Backend calls
 - `lib/sortable.js` — Drag-and-drop (RuleEditor)
-- `lib/utils.js` — Array utilities (RuleEditor)
 - `components/` — ConditionBuilder, ActionBuilder, FolderPicker
 
 <!-- MANUAL: -->

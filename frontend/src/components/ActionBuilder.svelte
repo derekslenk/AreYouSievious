@@ -1,58 +1,34 @@
 <script>
   import { createEventDispatcher } from 'svelte';
   import { sortable } from '../lib/sortable.js';
-  import { arrayMove } from '../lib/utils.js';
-  import { newAction } from '../lib/scriptDocument.js';
+  import { ACTION_TYPES, actionSpec, moveItem, newAction } from '../lib/scriptDocument.js';
   export let actions = [];
   const dispatch = createEventDispatcher();
 
-  const ACTION_TYPES = [
-    { value: 'fileinto', label: 'Move to folder', hasArg: true },
-    { value: 'fileinto_copy', label: 'Copy to folder', hasArg: true },
-    { value: 'redirect', label: 'Redirect to', hasArg: true },
-    { value: 'keep', label: 'Keep in INBOX', hasArg: false },
-    { value: 'discard', label: 'Delete', hasArg: false },
-    { value: 'stop', label: 'Stop processing', hasArg: false },
-    { value: 'addflag', label: 'Add flag', hasArg: true },
-    { value: 'reject', label: 'Reject with message', hasArg: true },
-  ];
+  // Never mutates `actions` — every edit dispatches a fresh array upward.
+  function emit(next) { dispatch('update', next); }
 
-  function addAction() {
-    actions = [...actions, newAction()];
-    dispatch('change');
-  }
+  function addAction() { emit([...actions, newAction()]); }
 
-  function removeAction(idx) {
-    actions = actions.filter((_, i) => i !== idx);
-    dispatch('change');
-  }
+  function removeAction(idx) { emit(actions.filter((_, i) => i !== idx)); }
 
   function reorderAction(oldIndex, newIndex) {
-    actions = arrayMove(actions, oldIndex, newIndex);
-    dispatch('change');
+    const next = moveItem(actions, oldIndex, newIndex);
+    if (next !== actions) emit(next);
   }
 
-  function moveAction(idx, dir) {
-    const newIdx = idx + dir;
-    if (newIdx < 0 || newIdx >= actions.length) return;
-    reorderAction(idx, newIdx);
-  }
+  function moveAction(idx, dir) { reorderAction(idx, idx + dir); }
 
-  function onChange() { dispatch('change'); }
+  /** Patch one action, leaving the rest untouched. */
+  function patch(idx, fields) {
+    emit(actions.map((a, i) => (i === idx ? { ...a, ...fields } : a)));
+  }
 
   function pickFolder(actionKey) {
+    // The picker is modal, so `actions` cannot change before the callback.
     dispatch('pickfolder', (folder) => {
-      const target = actions.find(a => a.key === actionKey);
-      if (target) {
-        target.argument = folder;
-        actions = [...actions];
-        dispatch('change');
-      }
+      emit(actions.map((a) => (a.key === actionKey ? { ...a, argument: folder } : a)));
     });
-  }
-
-  function needsArg(type) {
-    return ACTION_TYPES.find(a => a.value === type)?.hasArg ?? false;
   }
 </script>
 
@@ -61,18 +37,14 @@
     <div class="action-row">
       <span class="drag-handle" aria-hidden="true" title="Drag to reorder">&#9776;</span>
 
-      <select bind:value={action.type} on:change={onChange}>
+      <select value={action.type} on:change={(e) => patch(i, { type: e.currentTarget.value })}>
         {#each ACTION_TYPES as at}
           <option value={at.value}>{at.label}</option>
         {/each}
       </select>
 
-      {#if needsArg(action.type)}
-        <input type="text" bind:value={action.argument} on:input={onChange} placeholder={
-          action.type.startsWith('fileinto') ? 'Folder name' :
-          action.type === 'redirect' ? 'email@example.com' :
-          action.type === 'addflag' ? '\\Seen' : 'value'
-        } />
+      {#if actionSpec(action.type)?.hasArg}
+        <input type="text" value={action.argument} on:input={(e) => patch(i, { argument: e.currentTarget.value })} placeholder={actionSpec(action.type)?.placeholder ?? 'value'} />
         {#if action.type.startsWith('fileinto')}
           <button class="btn-xs" on:click={() => pickFolder(action.key)} title="Browse folders">&#128193;</button>
         {/if}

@@ -19,6 +19,17 @@ import {
   newCondition,
   newAction,
   previewRule,
+  HEADERS,
+  MATCH_TYPES,
+  ACTION_TYPES,
+  actionSpec,
+  deriveAddressTest,
+  updateEntry,
+  setConditions,
+  setActions,
+  moveItem,
+  snapshot,
+  sameWire,
   __resetKeys,
 } from './scriptDocument.js';
 
@@ -294,5 +305,131 @@ describe('REGRESSION: no entry can be orphaned', () => {
       doc = step(doc);
       expect(toWire(doc).entries).toHaveLength(doc.entries.length);
     }
+  });
+});
+
+// ── areyousievious-8fg.16: semantics extracted from the components ──
+
+describe('deriveAddressTest', () => {
+  it('derives true for address-bearing headers and false otherwise', () => {
+    for (const header of ['from', 'to', 'cc', 'reply-to']) {
+      expect(deriveAddressTest({ ...newCondition(), header }).address_test).toBe(true);
+    }
+    for (const header of ['subject', 'list-id']) {
+      expect(deriveAddressTest({ ...newCondition(), header }).address_test).toBe(false);
+    }
+  });
+
+  it('returns a new object and touches nothing but address_test', () => {
+    const cond = { ...newCondition(), header: 'subject', address_part: 'domain', value: 'x' };
+    const derived = deriveAddressTest(cond);
+    expect(derived).not.toBe(cond);
+    expect(derived).toEqual({ ...cond, address_test: false });
+  });
+
+  it('is per-condition: a parsed header-test on "from" is untouched by edits to siblings', () => {
+    // The old component re-derived EVERY condition on EVERY keystroke, so a
+    // parsed `header :contains "from"` flipped to an address test the moment
+    // the user typed anywhere in the rule. address_test is not derivable from
+    // a parsed Condition — only a user's header pick may set the default.
+    const script = fromWire(WIRE);
+    const rule = ruleEntries(script)[0];
+    const edited = rule.conditions.map((c, i) => (i === 1 ? { ...c, value: 'Newsletter' } : c));
+    const next = setConditions(script, rule.key, edited);
+    expect(ruleEntries(next)[0].conditions[0].address_test).toBe(
+      rule.conditions[0].address_test
+    );
+  });
+});
+
+describe('updateEntry / setConditions / setActions', () => {
+  it('patches only the keyed entry and returns a new document', () => {
+    const script = fromWire(WIRE);
+    const rule = ruleEntries(script)[0];
+    const next = updateEntry(script, rule.key, { name: 'Renamed', enabled: false });
+    expect(next).not.toBe(script);
+    expect(ruleEntries(next)[0].name).toBe('Renamed');
+    expect(ruleEntries(next)[0].enabled).toBe(false);
+    // untouched entries keep their identity — Svelte's keyed each relies on it
+    expect(next.entries.filter((e) => e.key !== rule.key)).toEqual(
+      script.entries.filter((e) => e.key !== rule.key)
+    );
+    // the original document is unchanged
+    expect(ruleEntries(script)[0].name).toBe('A');
+  });
+
+  it('setConditions and setActions replace the arrays wholesale', () => {
+    const script = fromWire(WIRE);
+    const rule = ruleEntries(script)[0];
+    const conds = [newCondition()];
+    const acts = [newAction()];
+    const next = setActions(setConditions(script, rule.key, conds), rule.key, acts);
+    expect(ruleEntries(next)[0].conditions).toBe(conds);
+    expect(ruleEntries(next)[0].actions).toBe(acts);
+  });
+
+  it('an unknown key is a no-op on the entries', () => {
+    const script = fromWire(WIRE);
+    const next = updateEntry(script, 'nope', { name: 'X' });
+    expect(next.entries).toEqual(script.entries);
+  });
+});
+
+describe('moveItem', () => {
+  const list = ['a', 'b', 'c'];
+
+  it('moves an item and returns a new list', () => {
+    expect(moveItem(list, 0, 2)).toEqual(['b', 'c', 'a']);
+    expect(moveItem(list, 2, 0)).toEqual(['c', 'a', 'b']);
+    expect(list).toEqual(['a', 'b', 'c']);
+  });
+
+  it('is a no-op (same reference) for same-slot or out-of-bounds moves', () => {
+    expect(moveItem(list, 1, 1)).toBe(list);
+    expect(moveItem(list, -1, 0)).toBe(list);
+    expect(moveItem(list, 0, 3)).toBe(list);
+  });
+});
+
+describe('snapshot / sameWire', () => {
+  it('snapshot is a deep copy — later edits cannot reach it', () => {
+    const script = fromWire(WIRE);
+    const pristine = snapshot(script);
+    ruleEntries(script)[0].conditions[0].value = 'mutated';
+    expect(ruleEntries(pristine)[0].conditions[0].value).toBe('a@x.com');
+  });
+
+  it('sameWire ignores render keys and compares wire content', () => {
+    const a = fromWire(WIRE);
+    const b = fromWire(WIRE); // fresh keys
+    expect(sameWire(a, b)).toBe(true);
+    const edited = updateEntry(a, ruleEntries(a)[0].key, { name: 'Changed' });
+    expect(sameWire(edited, b)).toBe(false);
+  });
+});
+
+describe('vocabularies', () => {
+  it('exports the closed Condition and Action vocabularies', () => {
+    expect(HEADERS.map((h) => h.value)).toEqual([
+      'from', 'to', 'cc', 'subject', 'reply-to', 'list-id',
+    ]);
+    expect(MATCH_TYPES.map((m) => m.value)).toEqual(['contains', 'is', 'matches', 'regex']);
+    expect(ACTION_TYPES.map((a) => a.value)).toEqual([
+      'fileinto', 'fileinto_copy', 'redirect', 'keep', 'discard', 'stop', 'addflag', 'reject',
+    ]);
+    // hasArg drives whether the builder renders an argument input
+    expect(ACTION_TYPES.filter((a) => a.hasArg).map((a) => a.value)).toEqual([
+      'fileinto', 'fileinto_copy', 'redirect', 'addflag', 'reject',
+    ]);
+    // every arg-bearing action carries the hint text its input shows
+    expect(ACTION_TYPES.filter((a) => a.hasArg).every((a) => a.placeholder)).toBe(true);
+  });
+
+  it('actionSpec resolves a type to its vocabulary entry', () => {
+    expect(actionSpec('redirect')).toEqual({
+      value: 'redirect', label: 'Redirect to', hasArg: true, placeholder: 'email@example.com',
+    });
+    expect(actionSpec('keep')?.hasArg).toBe(false);
+    expect(actionSpec('nonsense')).toBeUndefined();
   });
 });
