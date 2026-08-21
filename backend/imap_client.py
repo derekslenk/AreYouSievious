@@ -9,6 +9,7 @@ import re
 
 from auth import Session
 from mail_dial import open_imap
+from mail_errors import FolderRejected, relayed, server_text
 from protocol_names import validate_folder_name
 
 
@@ -61,14 +62,27 @@ class IMAPClient:
         folders.sort(key=lambda f: f["name"].lower())
         return folders
 
-    def create_folder(self, name: str) -> bool:
-        """Create a new IMAP folder.
+    def create_folder(self, name: str) -> None:
+        """Create a new IMAP folder, and subscribe it.
+
+        Returns nothing: failure raises, per the FolderStore seam. The bool
+        this replaced made the router ask "did that work?" and answer 400 for
+        every cause alike, so an unreachable server and a refused name were
+        indistinguishable.
+
+        Both statuses are checked. Subscribing was previously fire-and-forget
+        while create's status was checked two lines above, so a refused
+        subscribe still reported success — for a folder most mail clients
+        will not display, which is indistinguishable from the folder never
+        having been created.
 
         The framing guard lives in `protocol_names`, shared with the
         ManageSieve script-name sink — same hazard, same rule, one place.
         """
         validate_folder_name(name)
-        status, _ = self._conn.create(f'"{name}"')
-        if status == "OK":
-            self._conn.subscribe(f'"{name}"')
-        return status == "OK"
+        status, detail = self._conn.create(f'"{name}"')
+        if status != "OK":
+            raise relayed(FolderRejected, server_text(detail))
+        status, detail = self._conn.subscribe(f'"{name}"')
+        if status != "OK":
+            raise relayed(FolderRejected, server_text(detail))

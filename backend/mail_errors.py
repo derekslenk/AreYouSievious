@@ -15,6 +15,13 @@ reason `protocol_names.py` was written to remove. One vocabulary, one table.
 only user-safe text in these — never a raw upstream banner, which can carry
 software versions and internal hostnames. Each type has a safe default for
 the case where there is nothing worth relaying.
+
+Which types may carry server text is not the adapter's judgement call:
+`RELAYS_SERVER_TEXT` below names them. They are the failures that are a
+decision ABOUT THE REQUEST — a compiler diagnostic, a quota, a refused
+folder — where the server is telling the user something they can act on. A
+failure to connect or authenticate says nothing actionable and is exactly
+where a banner would leak, so those keep their defaults.
 """
 
 from __future__ import annotations
@@ -31,6 +38,10 @@ class MailStoreError(Exception):
 
     def __init__(self, detail: str | None = None):
         super().__init__(detail or self.default_detail)
+        # Normalised, so `.reason` and `str(exc)` can never disagree: an empty
+        # detail means the server gave us nothing worth relaying, and both
+        # readings should say exactly that.
+        self.reason = detail or None
 
 
 class ScriptNotFound(MailStoreError):
@@ -40,23 +51,18 @@ class ScriptNotFound(MailStoreError):
 
 
 class ScriptRejected(MailStoreError):
-    """The server refused the script's CONTENT.
+    """The server refused what was asked of this script.
+
+    Usually its CONTENT — a well-framed script the Sieve compiler would not
+    accept, where `reason` carries the compiler's own diagnostic. Also covers
+    the server refusing the OPERATION on grounds the caller can act on: RFC
+    5804 `ALREADYEXISTS`, or `ACTIVE` for deleting the script in use.
 
     Distinct from a name rejection, which never reaches the wire —
-    `ProtocolNameError` covers that before any protocol call is made. This is
-    the server having parsed a well-framed script and said no, so the reason
-    it gave is worth relaying to the user who wrote it.
+    `ProtocolNameError` covers that before any protocol call is made.
     """
 
     default_detail = "The mail server rejected the script."
-
-    def __init__(self, reason: str | None = None):
-        super().__init__(reason)
-        # Normalised to None, so `.reason` and `str(exc)` can never disagree:
-        # an empty reason means the server gave us nothing worth relaying, and
-        # both readings should say so. `.6` feeds this sievelib's errmsg,
-        # which is exactly the source an empty string would come from.
-        self.reason = reason or None
 
 
 class QuotaExceeded(MailStoreError):
@@ -85,3 +91,52 @@ class AuthFailed(MailStoreError):
     """
 
     default_detail = "The mail server rejected the stored credentials."
+
+
+class FolderRejected(MailStoreError):
+    """The server refused to create or subscribe the folder.
+
+    The folder counterpart to `ScriptRejected`, and separate for the same
+    reason the two seams are separate: a caller handling folder failures has
+    no interest in script ones.
+
+    Added with the adapters (`.6`) because the FolderStore seam says failure
+    raises, and there was no folder-shaped error to raise. The status it maps
+    to is the 400 `routers/folders.py` already returned by hand; what changed
+    is that a refused SUBSCRIBE now reaches it at all, and that the server's
+    own words come with it.
+    """
+
+    default_detail = "The mail server refused the folder."
+
+
+# The errors whose message may be the server's own words. Everything absent
+# from this set answers with its default_detail, however much the server said.
+def server_text(value) -> str | None:
+    """Whatever the server said, as text safe to hand onward — or None.
+
+    Adapters receive this in whatever type their library favours: sievelib's
+    `errmsg` is bytes almost everywhere but a str in at least one path, and
+    imaplib hands back a list of bytes. A server may also send bytes that are
+    not UTF-8; losing the wording is acceptable, raising UnicodeDecodeError
+    out of an error path is not.
+    """
+    if isinstance(value, (list, tuple)):
+        value = value[0] if value else None
+    if isinstance(value, bytes):
+        value = value.decode("utf-8", "replace")
+    return str(value).strip() or None if value is not None else None
+
+
+RELAYS_SERVER_TEXT: frozenset[type[MailStoreError]] = frozenset(
+    {ScriptNotFound, ScriptRejected, QuotaExceeded, FolderRejected}
+)
+
+
+def relayed(error: type[MailStoreError], reason: str | None) -> MailStoreError:
+    """Build `error`, carrying `reason` only if that type may relay it.
+
+    One place, so no adapter has to remember the rule — and adding an error
+    type means deciding, once, whether the server's text is safe to repeat.
+    """
+    return error(reason if error in RELAYS_SERVER_TEXT else None)

@@ -28,6 +28,7 @@ import threading
 from functools import lru_cache
 
 from config import Settings, settings
+from mail_errors import AuthFailed, MailServerUnavailable
 from sievelib.managesieve import Client
 from ssrf import assert_host_resolves_to
 
@@ -162,9 +163,25 @@ def open_sieve(host: str, host_ip: str, port: int, username: str, password: str)
             # verification on the name the user typed. sievelib supports the
             # split natively, so no monkey-patch is needed.
             client = Client(host_ip, port, srvhostname=host)
-            client.connect(username, password, starttls=True)
+            connected = client.connect(username, password, starttls=True)
         finally:
             socket.setdefaulttimeout(previous_default)
+
+    if not connected:
+        # sievelib returns False rather than raising for BOTH a refused
+        # STARTTLS and a failed SASL, and this used to be discarded — so the
+        # function handed back an unauthenticated client while promising a
+        # "connected, authenticated, policy-checked" one, and the failure
+        # surfaced later as something unrelated.
+        #
+        # The two causes need different answers, and the socket tells them
+        # apart: sievelib wraps it in TLS only once STARTTLS has succeeded, so
+        # a bare socket here means the transport was refused. Calling that an
+        # auth failure would send the user round a re-login loop that cannot
+        # succeed.
+        if isinstance(client.sock, ssl.SSLSocket):
+            raise AuthFailed()
+        raise MailServerUnavailable("The mail server refused to start TLS.")
 
     if client.sock is not None:
         client.sock.settimeout(settings().sieve_io_timeout)

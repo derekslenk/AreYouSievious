@@ -196,10 +196,10 @@ def test_seams_stay_separate():
 
 
 def test_neither_seam_is_runtime_checkable():
-    """isinstance against a Protocol compares method NAMES only, so it would
-    call IMAPClient a FolderStore today — `create_folder` still returns bool
-    where the seam says it raises. A check blind to the one mismatch that
-    matters would license exactly the wrong refactor."""
+    """isinstance against a Protocol compares method NAMES only. It cannot
+    see a return type, and it cannot see whether an operation raises on
+    failure or swallows it — which is the entire substance of this contract.
+    A green check that proves none of it would license the wrong refactor."""
     assert not getattr(ScriptStore, "_is_runtime_protocol", False)
     assert not getattr(FolderStore, "_is_runtime_protocol", False)
 
@@ -216,9 +216,8 @@ def test_the_shipped_adapter_has_every_operation(seam, adapter_module, adapter_n
     """The seam describes what already exists, so `.7` can inject it and `.8`
     can substitute a fake without either changing the routers.
 
-    Method presence only. `IMAPClient.create_folder` still returns `bool`
-    where FolderStore says it raises — bringing the adapters onto the error
-    contract is `.6`, and this asserts the shape that task starts from.
+    Method presence only — that both adapters RAISE rather than return a
+    falsy value is pinned in tests/test_adapter_failures.py (`.6`).
     """
     adapter = getattr(__import__(adapter_module), adapter_name)
     for op in _operations(seam):
