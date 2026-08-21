@@ -19,6 +19,8 @@ FastAPI application that serves the Svelte SPA as static files and provides a RE
 | `protocol_names.py` | `validate_script_name` / `validate_folder_name` / `ProtocolNameError` — one rule for both ManageSieve and IMAP framing, rejected before any protocol call |
 | `mail_dial.py` | **The only way to open a mail-server connection.** `open_imap` / `open_sieve` apply the whole dialling policy: rebinding re-check, dial the pinned IP, TLS SNI on the hostname, timeouts |
 | `sieve_transform.py` | Core Sieve parser (`SieveParser`), generator (`SieveGenerator`), and data models (`Rule`, `Condition`, `Action`, `RawBlock`, `SieveScript`) |
+| `mail_stores.py` | The two mail-server seams as `Protocol`s: `ScriptStore` (list/get/put/activate/delete) and `FolderStore` (list/create). Kept separate — a single seven-operation store would be a union, not an abstraction |
+| `mail_errors.py` | The semantic vocabulary the seams fail in (`MailStoreError` + `ScriptNotFound`, `ScriptRejected`, `QuotaExceeded`, `MailServerUnavailable`, `AuthFailed`). Protocol-free AND HTTP-free; `app.py` owns the status mapping |
 | `managesieve_client.py` | `SieveClient` context manager for ManageSieve (port 4190). Owns the script operations; dialling policy lives in `mail_dial` |
 | `imap_client.py` | `IMAPClient` context manager for IMAP (port 993). Owns what to say once connected; dialling policy lives in `mail_dial` |
 | `fetch_grak_script.py` | Standalone utility to pull scripts off a real server into `test_scripts/`. Not imported by the app |
@@ -29,7 +31,7 @@ FastAPI application that serves the Svelte SPA as static files and provides a RE
 | Directory | Purpose |
 |-----------|---------|
 | `routers/` | One module per URL area: `auth`, `scripts`, `folders`, `health`, `static`. Do NOT cross-import between routers — shared helpers belong in `dependencies.py` |
-| `tests/` | 19 pytest files plus a shared conftest.py, mostly regression locks tied to a bead id in the module docstring |
+| `tests/` | 20 pytest files plus a shared conftest.py, mostly regression locks tied to a bead id in the module docstring |
 | `test_scripts/` | Sample Sieve scripts used as round-trip fixtures (see `test_scripts/AGENTS.md`) |
 
 ## For AI Agents
@@ -43,7 +45,8 @@ FastAPI application that serves the Svelte SPA as static files and provides a RE
 - **Never construct a connection directly.** Go through `mail_dial.open_imap` / `open_sieve`; a hand-built `imaplib.IMAP4_SSL(host, …)` re-resolves DNS after the rebinding guard and reopens a TOCTOU. `tests/test_mail_dial.py` greps the source tree to enforce this.
 - Request bodies use Pydantic `BaseModel` subclasses from `api_models.py`
 - All mutating endpoints return `{"ok": True, ...}`
-- Domain errors map to 4xx, never 5xx: `HostValidationError` and `ProtocolNameError` have app-level handlers covering every sink. Do NOT add a local `except ValueError` in a router — it would turn unrelated `ValueError`s into user-input errors.
+- Errors caused by the REQUEST map to 4xx, never 5xx: `HostValidationError` and `ProtocolNameError` have app-level handlers covering every sink. Do NOT add a local `except ValueError` in a router — it would turn unrelated `ValueError`s into user-input errors. Failures originating UPSTREAM keep a 5xx that says so (`MailServerUnavailable` → 502, `QuotaExceeded` → 507); what must never happen is an upstream failure surfacing as a bare 500 that reads like our own bug.
+- Mail-server failures raise from `mail_errors.py`; `app.py`'s `_MAIL_ERROR_STATUS` table maps each to its status, registered once on the `MailStoreError` base. Routers keep no `try/except` — add the status to the table, not a handler to the router.
 
 ### Sieve Transform Pipeline
 1. **Parse**: `SieveParser` walks Sieve text line-by-line, producing `Rule` objects
@@ -52,7 +55,7 @@ FastAPI application that serves the Svelte SPA as static files and provides a RE
 4. **Order**: `SieveScript.entries` is ONE ordered sequence of `Rule | RawBlock` — position IS the evaluation order. `.rules` and `.raw_blocks` are read-only filtered views. There is no separate `order` array; the parallel-array representation it replaced could drop a rule on save when the arrays disagreed.
 
 ### Testing Requirements
-- `cd backend && python -m pytest tests/ -v` — 19 files. Install with `pip install -r requirements.txt -r requirements-dev.txt`.
+- `cd backend && python -m pytest tests/ -v` — 20 files. Install with `pip install -r requirements.txt -r requirements-dev.txt`.
 - Lint/format: `ruff check backend/` and `ruff format --check backend/`. CI runs both.
 - Round-trip fidelity is asserted as a *fixed point* over every `test_scripts/*.sieve` fixture, in both text and AST. Counting rules is not sufficient — count-only assertions stayed green while action order silently changed.
 - Regression tests name the bead they lock in their module docstring; keep that convention when adding one.
