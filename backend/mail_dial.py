@@ -25,14 +25,78 @@ import logging
 import socket
 import ssl
 import threading
+from contextlib import contextmanager
 from functools import lru_cache
 
 from config import Settings
-from mail_errors import AuthFailed, MailServerUnavailable
+from mail_errors import AuthFailed, MailServerUnavailable, MailStoreError
 from sievelib.managesieve import Client
-from ssrf import assert_host_resolves_to
+from sievelib.managesieve import Error as SievelibError
+from ssrf import HostValidationError, assert_host_resolves_to
 
 _log = logging.getLogger("ays.dial")
+
+
+# ── Transport failures ──
+#
+# The transport raises; `.6` only taught the adapters about failures sievelib
+# REPORTED BY RETURN. Everything below escaped every handler in app.py, so a
+# mail server that was merely down read as a bug in this app.
+#
+# The wording is ours, never the exception's. `MailServerUnavailable` is
+# absent from `mail_errors.RELAYS_SERVER_TEXT`, so interpolating a transport
+# error here would route upstream text past that policy by the back door.
+# Most-specific first: SSLCertVerificationError subclasses SSLError, and all
+# of these subclass OSError.
+_TRANSPORT_CAUSES: tuple[tuple[type[BaseException], str], ...] = (
+    (ssl.SSLCertVerificationError, "The mail server's TLS certificate could not be verified."),
+    (ssl.SSLError, "TLS negotiation with the mail server failed."),
+    (socket.gaierror, "The mail server's hostname could not be resolved."),
+    (ConnectionRefusedError, "The mail server refused the connection."),
+    (TimeoutError, "The mail server did not respond in time."),
+)
+_TRANSPORT_DEFAULT = "The mail server could not be reached."
+
+
+@contextmanager
+def _transport_failures_are_semantic():
+    """Translate whatever the transport raises into the mail vocabulary.
+
+    Deliberately lets `MailStoreError` and `HostValidationError` through
+    untouched: the first is already semantic, and the second is a 400 whose
+    explicit message must survive — reporting a rebinding attempt as an
+    ordinary outage is the exact confusion `routers/auth.py`'s ladder ordered
+    its excepts to avoid.
+    """
+    try:
+        yield
+    except (MailStoreError, HostValidationError):
+        # Nothing below catches these today — they are neither OSError nor a
+        # library error — so this is belt-and-braces against the net ever
+        # being widened. It matters because both carry meaning this function
+        # would destroy: the first is already semantic, and the second is a
+        # 400 whose explicit message must survive. Reporting a rebinding
+        # attempt as an ordinary outage is the confusion `routers/auth.py`
+        # ordered its excepts to avoid.
+        raise
+    except OSError as exc:
+        for cause, message in _TRANSPORT_CAUSES:
+            if isinstance(exc, cause):
+                raise MailServerUnavailable(message) from exc
+        raise MailServerUnavailable(_TRANSPORT_DEFAULT) from exc
+    except imaplib.IMAP4.abort as exc:
+        # MUST precede IMAP4.error, which it subclasses.
+        raise MailServerUnavailable("The connection to the mail server was lost.") from exc
+    except imaplib.IMAP4.error as exc:
+        # Not an OSError — `IMAP4_SSL.__init__` reads the server greeting, so a
+        # server that accepts TCP and TLS and then says BYE arrives here. No
+        # credentials have been sent at this point, so this is the server
+        # refusing to talk, not a rejected password.
+        raise MailServerUnavailable(_TRANSPORT_DEFAULT) from exc
+    except SievelibError as exc:
+        # sievelib raises its own Error for a failed socket or an unreadable
+        # capability banner; not an OSError, and just as fatal.
+        raise MailServerUnavailable(_TRANSPORT_DEFAULT) from exc
 
 
 # ── TLS ──
@@ -120,13 +184,18 @@ def open_imap(host: str, host_ip: str, port: int, *, cfg: Settings, timeout: flo
     when passed to `create_app`: the app honoured them and the dial did not.
     """
     assert_host_resolves_to(host, host_ip)
-    return _PinnedIMAP4_SSL(
-        host,
-        host_ip,
-        port,
-        ssl_context=build_tls_context(cfg),
-        timeout=cfg.imap_timeout if timeout is None else timeout,
-    )
+    # Built OUTSIDE the net: a broken system CA store raises ssl.SSLError too,
+    # and calling that "TLS negotiation with the mail server failed" would
+    # blame the server for a fault on this machine.
+    tls = build_tls_context(cfg)
+    with _transport_failures_are_semantic():
+        return _PinnedIMAP4_SSL(
+            host,
+            host_ip,
+            port,
+            ssl_context=tls,
+            timeout=cfg.imap_timeout if timeout is None else timeout,
+        )
 
 
 # ── ManageSieve ──
@@ -167,7 +236,8 @@ def open_sieve(
             # verification on the name the user typed. sievelib supports the
             # split natively, so no monkey-patch is needed.
             client = Client(host_ip, port, srvhostname=host)
-            connected = client.connect(username, password, starttls=True)
+            with _transport_failures_are_semantic():
+                connected = client.connect(username, password, starttls=True)
         finally:
             socket.setdefaulttimeout(previous_default)
 
@@ -185,6 +255,14 @@ def open_sieve(
         # succeed.
         if isinstance(client.sock, ssl.SSLSocket):
             raise AuthFailed()
+        if client.sock is None:
+            # Unreachable with sievelib as installed: connect() assigns the
+            # socket before any path that can return False, and a socket that
+            # never opened arrives as sievelib's own Error, already mapped
+            # above. Kept as a forward guard — if a future sievelib returns
+            # False before wrapping, the branch below would claim STARTTLS was
+            # refused for a server that was never reached.
+            raise MailServerUnavailable(_TRANSPORT_DEFAULT)
         raise MailServerUnavailable("The mail server refused to start TLS.")
 
     if client.sock is not None:
