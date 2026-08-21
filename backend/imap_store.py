@@ -47,7 +47,15 @@ def _decode_name(atom) -> str:
     to remove, so it is answered the way `mail_errors.server_text` already
     answers it: losing fidelity is acceptable, raising out is not. Refusing
     the whole listing over one odd name would be worse than the mojibake the
-    regex produced.
+    regex produced. `AT&T` and `R&D` hit this too — ordinary names, not
+    exotica.
+
+    What it does NOT cover, because the codec does not fail there: a raw
+    8-bit byte is read as latin-1 rather than rejected (`caf\xe9` -> `café`),
+    and a TRAILING lone `&` decodes to `+` (`Tom&` -> `Tom+`). Both are wrong
+    names arriving with no exception to catch — imapclient's reading of an
+    already-malformed encoding, and the price of adopting a grammar rather
+    than writing one.
     """
     if isinstance(atom, bytes):
         try:
@@ -94,6 +102,16 @@ def _folder_from_list_row(row) -> dict | None:
     if len(parsed) < 3:
         raise MailServerUnavailable()
     flags, delimiter, name = parsed[:3]
+    # ARITY is not SHAPE, and checking only the first let the grammar's own
+    # typing rules walk through a row already declared readable. A bare
+    # numeric atom becomes an int, so `2024 "." "n"` made `for f in flags`
+    # raise TypeError — the same `TypeError -> 500` this bead exists to
+    # remove, one field over. NIL becomes None, so a nameless row yielded
+    # `str(None)`: a folder called `None`, offered by FolderPicker and filed
+    # into by a Rule that matches nothing. A wrong name is worse than a
+    # missing one.
+    if not isinstance(flags, tuple) or name is None:
+        raise MailServerUnavailable()
     return {
         "name": _decode_name(name),
         # NIL, and therefore None, for a server with a flat namespace. The
@@ -123,8 +141,10 @@ def _refusal(detail) -> MailStoreError:
     be a guess.
     """
     text = server_text(detail) or ""
+    # No RFC 5530 code is refined with a slash, so this is a plain lookup —
+    # unlike ManageSieve's, where QUOTA/MAXSCRIPTS forces a split.
     code = text[1 : text.index("]")].upper() if text.startswith("[") and "]" in text else ""
-    return relayed(_LIST_REFUSALS.get(code.split("/", 1)[0], MailServerUnavailable), text)
+    return relayed(_LIST_REFUSALS.get(code, MailServerUnavailable), text)
 
 
 def _login(conn, username: str, password: str, *, rejected: str | None = None) -> None:
@@ -228,11 +248,9 @@ class ImapFolderStore:
         A refused LIST raises. It used to `return folders` — the empty list
         built two lines above — so a server that would not answer was
         indistinguishable from an account with no folders, and the user was
-        invited to create folders they already had. `MailServerUnavailable`
-        because an unexplained NO after a successful LOGIN is not evidence the
-        caller did anything wrong, and it does not relay the server's banner
-        (see mail_errors.RELAYS_SERVER_TEXT) — nothing in an IMAP NO is
-        actionable, and it is exactly where a version string would leak.
+        invited to create folders they already had. Which failure it raises is
+        `_refusal`'s decision, and neither of the two relays the server's
+        banner (see mail_errors.RELAYS_SERVER_TEXT).
         """
         status, data = self._conn.list()
         if status != "OK":

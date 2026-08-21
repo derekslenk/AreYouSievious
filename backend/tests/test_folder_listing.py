@@ -293,3 +293,59 @@ def test_an_auth_failure_on_list_does_not_repeat_the_servers_banner():
     with pytest.raises(AuthFailed) as caught:
         store.list_folders()
     assert "dovecot" not in str(caught.value)
+
+
+def test_a_correctly_escaped_ampersand_beats_the_fallback():
+    r"""The boundary the fallback must not cannibalise.
+
+    RFC 3501 spells a literal `&` as `&-`, and that decodes without ever
+    reaching the fallback. Only a server that omitted the escape gets the
+    lossy path — so the fallback answers a case the codec has already
+    definitively failed, rather than competing with it.
+
+    `Q&AOk-A` is deliberately absent: it decodes to `QéA`, which is CORRECT.
+    A server meaning the literal text must send `Q&-AOk-A`. That ambiguity
+    belongs to the protocol and no parser can resolve it.
+    """
+    assert _one(rb'(\HasNoChildren) "." "Q&-A"')["name"] == "Q&A"
+
+
+# ── Row SHAPE, not just row arity ──
+#
+# Found in verification of this bead's own fix. `len(parsed) < 3` checked how
+# many fields arrived and nothing about what they were, so the grammar's own
+# typing rules — a bare numeric atom becomes an int, NIL becomes None — walked
+# straight through a guard that had already declared the row readable.
+
+
+def test_a_row_whose_flags_are_not_a_list_raises_rather_than_500ing():
+    """`2024 "." "n"` types the first field as an int, and `for f in flags`
+    then raised TypeError — the spec's own `literal (tuple) -> TypeError ->
+    500` row surviving one field over, in the code written to remove it."""
+    with pytest.raises(MailServerUnavailable):
+        _store([rb'2024 "." "n"']).list_folders()
+
+
+def test_a_nil_name_raises_rather_than_offering_a_folder_called_none():
+    """NIL where the name belongs produced `str(None)` — a folder literally
+    named `None`, offered by FolderPicker, filed into by a Rule, and matching
+    nothing on the server. A wrong name is worse than a missing one, which is
+    the whole reason this bead exists."""
+    with pytest.raises(MailServerUnavailable):
+        _store([rb'(\HasNoChildren) "." NIL']).list_folders()
+    with pytest.raises(MailServerUnavailable):
+        _store([rb"NIL NIL NIL"]).list_folders()
+
+
+# ── The user-visible half of the AUTHENTICATIONFAILED fix ──
+
+
+def test_authenticationfailed_on_list_answers_401_not_502(authed_client):
+    """The unit test above pins the exception; this pins what the user gets.
+    The finding was never about the type — it was that stale credentials read
+    as "the mail server is unavailable", sending someone to check a server
+    that is fine instead of re-authenticating."""
+    store = _store([b"[AUTHENTICATIONFAILED] Authentication failed."], status="NO")
+    with authed_client(folder_store=store) as http:
+        response = http.get("/api/folders")
+    assert response.status_code == 401
