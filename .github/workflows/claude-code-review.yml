@@ -38,11 +38,52 @@ jobs:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           plugin_marketplaces: 'https://github.com/anthropics/claude-code.git'
           plugins: 'code-review@claude-code-plugins'
-          prompt: '/code-review:code-review ${{ github.repository }}/pull/${{ github.event.pull_request.number }}'
+          prompt: |
+            /code-review:code-review ${{ github.repository }}/pull/${{ github.event.pull_request.number }}
+
+            Do not end your turn until the findings are POSTED. If you
+            dispatched sub-agents, wait for every one of them and publish
+            what they found — a review that stops with its todo list
+            unfinished reports success to CI while having reviewed nothing,
+            which is worse than no review at all.
           # Post a tracking comment on the PR and tick items off as the review
           # works, so a ten-minute run shows progress instead of silence.
           # Applies to exactly the pull_request event types this workflow fires on.
           track_progress: true
           # See https://github.com/anthropics/claude-code-action/blob/main/docs/usage.md
           # or https://code.claude.com/docs/en/cli-reference for available options
+
+      # The action reports success when the review ENDS, not when it FINISHES.
+      # Observed repeatedly: it exits `"subtype": "success", "is_error": false`
+      # having stopped with `- [ ] Post findings` still unticked, because it
+      # ended its turn while sub-agents were still running. The check goes
+      # green and the findings never exist. Three real defects reached main
+      # that way before this step was written.
+      #
+      # Matched on this run's id, which the action embeds in its comment as
+      # `runs/<id>`, so a stale comment from an earlier run cannot satisfy it.
+      - name: Fail if the review did not finish
+        if: always() && steps.claude-review.outcome == 'success'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          body=$(gh api "repos/$REPO/issues/$PR/comments" --paginate \
+                   --jq "[.[] | select(.body | contains(\"runs/$RUN_ID\"))] | last | .body // \"\"")
+
+          if [ -z "$body" ]; then
+            echo "::error::The review posted no comment for this run. Its findings, if any, do not exist."
+            exit 1
+          fi
+
+          if printf '%s' "$body" | grep -q '^- \[ \]'; then
+            echo "::error::The review stopped before posting its findings — this check is not evidence the code was reviewed. Re-run it."
+            echo "Unfinished:"
+            printf '%s\n' "$body" | grep '^- \[ \]'
+            exit 1
+          fi
+
+          echo "Review completed and posted its findings."
 
