@@ -73,6 +73,18 @@ jobs:
           body=$(gh api "repos/$REPO/issues/$PR/comments" --paginate \
                    --jq "[.[] | select(.body | contains(\"runs/$RUN_ID\"))] | last | .body // \"\"")
 
+          # A PR that touches this workflow is skipped by the action itself:
+          # it refuses to run unless the file matches the default branch, a
+          # guard against PRs that rewrite the workflow to steal secrets. It
+          # posts no comment, so there is nothing here to verify and failing
+          # would only block the PR. Such PRs get NO automated review at all
+          # and need a human to read them — including this one.
+          if gh api "repos/$REPO/pulls/$PR/files" --paginate --jq '.[].filename' \
+               | grep -qx '.github/workflows/claude-code-review.yml'; then
+            echo "::notice::This PR modifies the review workflow, so the action skips itself by design. No automated review ran — read it yourself."
+            exit 0
+          fi
+
           if [ -z "$body" ]; then
             echo "::error::The review posted no comment for this run. Its findings, if any, do not exist."
             exit 1
