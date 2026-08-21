@@ -23,7 +23,7 @@ from config import Settings
 from dependencies import SESSION_COOKIE, get_optional_session
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from mail_dial import open_imap
-from mail_errors import MailStoreError
+from mail_errors import MailServerUnavailable, MailStoreError
 from middleware import CSRF_COOKIE, generate_csrf_token
 from ssrf import HostValidationError, validate_host
 
@@ -173,6 +173,13 @@ def login(req: LoginRequest, request: Request, response: Response):
         # connect to mail server", which is what this ladder did before the
         # dial could tell them apart.
         raise
+    except imaplib.IMAP4.abort as exc:
+        # MUST precede IMAP4.error, which it subclasses. A socket dropped
+        # mid-LOGIN is not a rejected password, and saying so sends the user
+        # to reset a credential that works. This is the same distinction the
+        # adapters draw; login calls imaplib directly, so it has to draw it
+        # too until `.9` retires this ladder.
+        raise MailServerUnavailable("The connection to the mail server was lost.") from exc
     except imaplib.IMAP4.error:
         raise HTTPException(401, "Authentication failed")  # noqa: B904
     except Exception:

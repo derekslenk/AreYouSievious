@@ -265,3 +265,61 @@ def test_a_real_dial_failure_reaches_the_client_as_502(authed_client):
 def test_sieve_client_still_constructs_normally():
     """Guard against the net swallowing construction itself."""
     assert SieveClient(_session(), Settings()).cfg == Settings()
+
+
+# ── The login route draws the same distinction ──
+
+
+@pytest.mark.parametrize(
+    "failure,status",
+    [
+        (imaplib.IMAP4.abort("connection closed"), 502),
+        (imaplib.IMAP4.error("AUTHENTICATIONFAILED"), 401),
+    ],
+    ids=["dropped-socket", "bad-password"],
+)
+def test_login_tells_a_dropped_socket_from_a_bad_password(make_app, failure, status):
+    """`login` calls imaplib directly rather than through IMAPClient, so the
+    adapter's abort/error split does not cover it. Without its own, a network
+    blip during login answered 401 "Authentication failed" — identical to a
+    genuinely wrong password, sending the user to reset a working credential.
+
+    `.9` retires this ladder entirely; until then it has to draw the same
+    distinction the adapters draw.
+    """
+    from fastapi.testclient import TestClient
+
+    conn = MagicMock()
+    conn.login.side_effect = failure
+    with (
+        patch("routers.auth.validate_host", return_value="93.184.216.34"),
+        patch("routers.auth.open_imap", return_value=conn),
+    ):
+        with TestClient(make_app()) as http:
+            r = http.post(
+                "/api/auth/login",
+                json={"host": "mail.example.com", "username": "u", "password": "p"},
+            )
+    assert r.status_code == status, r.text
+
+
+def test_sievelibs_own_error_is_translated_too():
+    """sievelib raises its own Error — not an OSError — when the socket fails
+    or the capability banner is unreadable. Covered here because the
+    OSError-kin cases above cannot reach that branch."""
+    from sievelib.managesieve import Error as SievelibError
+
+    class _Client:
+        def __init__(self, *a, **kw):
+            self.sock = None
+
+        def connect(self, *a, **kw):
+            raise SievelibError("Connection to server failed: [Errno 61] refused")
+
+    with (
+        patch.object(mail_dial, "assert_host_resolves_to", lambda *a, **kw: None),
+        patch.object(mail_dial, "Client", _Client),
+    ):
+        with pytest.raises(MailServerUnavailable) as caught:
+            mail_dial.open_sieve("m.example.com", "93.184.216.34", 4190, "u", "p", cfg=Settings())
+    assert "Errno 61" not in str(caught.value), "sievelib's text must not be relayed"
