@@ -193,7 +193,12 @@ _MAY_IMPORT: dict[str, set[str]] = {
 }
 
 _ALLOWED_TO_DIAL = {"mail_dial.py"}
-_RAW_DIAL_CALLS = {"IMAP4_SSL", "Client", "create_connection"}
+# `IMAPClient` is here because `.12` let imap_store.py import imapclient for
+# its parser, and the package it opened the door to also DIALS — with its own
+# TLS handling, which means none of ours: no pinned connect, no rebinding
+# re-check. Widening the import allowlist has to be paid for here, or the
+# grant meant to admit a parser quietly admits a second client.
+_RAW_DIAL_CALLS = {"IMAP4_SSL", "IMAPClient", "Client", "create_connection"}
 
 
 def _dialling_calls(path: Path) -> set[str]:
@@ -284,6 +289,27 @@ def test_no_module_outside_mail_dial_opens_its_own_connection(path: Path) -> Non
         f"{path.relative_to(BACKEND)} opens its own connection ({sorted(offenders)}). "
         f"Use mail_dial.open_imap / open_sieve instead."
     )
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        pytest.param("from imapclient import IMAPClient\nIMAPClient(host, ssl=True)\n", id="bare"),
+        pytest.param("import imapclient\nimapclient.IMAPClient(host)\n", id="attribute"),
+    ],
+)
+def test_the_dialling_lock_bites_on_imapclients_own_client(source: str, tmp_path: Path) -> None:
+    """The lock above is an enumeration, so a name absent from it is a hole.
+
+    `.12` opened exactly that hole: imap_store.py may now import imapclient
+    for its LIST parser, and the same package DIALS — with its own TLS
+    handling, so none of `mail_dial`'s policy applies. `IMAPClient` was not in
+    `_RAW_DIAL_CALLS` when the import grant was written, and this asserts it
+    is now, in both spellings the AST walk distinguishes.
+    """
+    module = tmp_path / "would_be_offender.py"
+    module.write_text(source)
+    assert _dialling_calls(module) == {"IMAPClient"}
 
 
 # ── The login path, specifically ──
