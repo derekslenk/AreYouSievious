@@ -18,6 +18,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from mail_errors import (
     AuthFailed,
+    FolderRejected,
     MailServerUnavailable,
     MailStoreError,
     QuotaExceeded,
@@ -52,6 +53,7 @@ async def _host_validation_handler(_request: Request, exc: Exception):
 _MAIL_ERROR_STATUS: dict[type[MailStoreError], int] = {
     ScriptNotFound: 404,
     ScriptRejected: 400,
+    FolderRejected: 400,
     QuotaExceeded: 507,
     MailServerUnavailable: 502,
     AuthFailed: 401,
