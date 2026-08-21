@@ -43,10 +43,6 @@ jobs:
           # works, so a ten-minute run shows progress instead of silence.
           # Applies to exactly the pull_request event types this workflow fires on.
           track_progress: true
-          # Emits every Claude message, tool call and tool RESULT into the job log.
-          # This repository is public, so those logs are world-readable — keep
-          # anything secret out of the review job's reach while this is on.
-          show_full_output: true
           # See https://github.com/anthropics/claude-code-action/blob/main/docs/usage.md
           # or https://code.claude.com/docs/en/cli-reference for available options
 
