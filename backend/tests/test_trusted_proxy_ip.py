@@ -17,12 +17,7 @@ Run from the backend/ directory:
 
 from __future__ import annotations
 
-import sys
-from pathlib import Path
 from unittest.mock import MagicMock
-
-BACKEND = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(BACKEND))
 
 from config import Settings, _parse_networks
 from routers.auth import _get_client_ip

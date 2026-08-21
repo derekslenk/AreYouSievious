@@ -15,20 +15,17 @@ from __future__ import annotations
 
 import ast
 import socket
-import sys
 import threading
 import time
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import mail_dial
 import pytest
+import ssrf
 from fastapi.testclient import TestClient
 
 BACKEND = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(BACKEND))
-
-import mail_dial
-import ssrf
 
 
 def _addrinfo(*ips: str):
@@ -215,19 +212,17 @@ def _reset_login_limiter():
     auth_mod._login_limiter._attempts.clear()
 
 
-def test_login_goes_through_the_pinned_dial():
+def test_login_goes_through_the_pinned_dial(make_app):
     """REGRESSION (the candidate-04 gap): login used to build a stock
     imaplib.IMAP4_SSL(host, …), which re-resolves the hostname AFTER the
     rebinding guard ran — a live TOCTOU on the first connection the app makes,
     while IMAPClient and SieveClient were both already pinned."""
-    import app as app_mod
-
     with (
         patch.object(ssrf.socket, "getaddrinfo", return_value=_addrinfo("93.184.216.34")),
         patch.object(mail_dial, "_PinnedIMAP4_SSL") as mock_pinned,
     ):
         mock_pinned.return_value = MagicMock()
-        with TestClient(app_mod.app) as client:
+        with TestClient(make_app()) as client:
             r = client.post(
                 "/api/auth/login",
                 json={"host": "mail.example.com", "username": "u", "password": "p"},
@@ -238,16 +233,14 @@ def test_login_goes_through_the_pinned_dial():
     assert mock_pinned.call_args.args[:3] == ("mail.example.com", "93.184.216.34", 993)
 
 
-def test_login_aborts_on_rebinding_without_connecting():
+def test_login_aborts_on_rebinding_without_connecting(make_app):
     """DNS flips to a private address between validation and connect."""
-    import app as app_mod
-
     answers = iter([_addrinfo("93.184.216.34"), _addrinfo("10.0.0.5")])
     with (
         patch.object(ssrf.socket, "getaddrinfo", side_effect=lambda *a, **kw: next(answers)),
         patch.object(mail_dial, "_PinnedIMAP4_SSL") as mock_pinned,
     ):
-        with TestClient(app_mod.app) as client:
+        with TestClient(make_app()) as client:
             r = client.post(
                 "/api/auth/login",
                 json={"host": "attacker.example", "username": "u", "password": "p"},

@@ -31,17 +31,12 @@ Run from the backend/ directory:
 
 from __future__ import annotations
 
-import sys
 from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-
-BACKEND = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(BACKEND))
-
 from routers import static as static_router_mod
 from routers.static import router as static_router
 

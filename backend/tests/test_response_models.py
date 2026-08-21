@@ -15,16 +15,8 @@ Run from the backend/ directory:
 
 from __future__ import annotations
 
-import sys
-from pathlib import Path
-
 import httpx
 import pytest
-from pydantic import ValidationError
-
-BACKEND = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(BACKEND))
-
 from api_models import (
     ActionDTO,
     ConditionDTO,
@@ -35,6 +27,7 @@ from api_models import (
     SaveRawRequest,
     SaveScriptRequest,
 )
+from pydantic import ValidationError
 
 # ── ConfigDict(extra="forbid") — unknown fields rejected on every DTO ──
 

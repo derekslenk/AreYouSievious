@@ -14,14 +14,8 @@ from __future__ import annotations
 
 import dataclasses
 import ipaddress
-import sys
-from pathlib import Path
 
 import pytest
-
-BACKEND = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(BACKEND))
-
 from config import DEFAULT_CORS_ORIGINS, Settings, _parse_networks, settings
 
 # ── Defaults are the production posture ──

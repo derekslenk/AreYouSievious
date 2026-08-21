@@ -15,16 +15,8 @@ Run from the backend/ directory:
 
 from __future__ import annotations
 
-import sys
-from pathlib import Path
-
-import httpx
 import pytest
 from fastapi import FastAPI
-
-BACKEND = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(BACKEND))
-
 from middleware import BodySizeLimitMiddleware
 
 CAP = 1024
@@ -42,22 +34,15 @@ def stub_app() -> FastAPI:
     return app
 
 
-async def _client(app: FastAPI) -> httpx.AsyncClient:
-    return httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app),
-        base_url="http://test",
-    )
-
-
 # ── Content-Length declared too large ──
 
 
 @pytest.mark.asyncio
-async def test_oversized_content_length_returns_413(stub_app):
+async def test_oversized_content_length_returns_413(stub_app, asgi_client_for):
     """A request that declares a body larger than the cap MUST be
     rejected before the route handler sees it."""
     payload = '{"payload":"' + "a" * (CAP * 2) + '"}'
-    async with await _client(stub_app) as client:
+    async with asgi_client_for(stub_app) as client:
         r = await client.post(
             "/echo",
             content=payload,
@@ -67,12 +52,12 @@ async def test_oversized_content_length_returns_413(stub_app):
 
 
 @pytest.mark.asyncio
-async def test_at_cap_passes(stub_app):
+async def test_at_cap_passes(stub_app, asgi_client_for):
     """Exact-cap requests succeed (the middleware uses strict-greater)."""
     inner_len = CAP - len('{"payload":""}')
     payload = '{"payload":"' + "a" * inner_len + '"}'
     assert len(payload) == CAP
-    async with await _client(stub_app) as client:
+    async with asgi_client_for(stub_app) as client:
         r = await client.post(
             "/echo",
             content=payload,
@@ -82,9 +67,9 @@ async def test_at_cap_passes(stub_app):
 
 
 @pytest.mark.asyncio
-async def test_under_cap_passes(stub_app):
+async def test_under_cap_passes(stub_app, asgi_client_for):
     payload = '{"payload":"hello"}'
-    async with await _client(stub_app) as client:
+    async with asgi_client_for(stub_app) as client:
         r = await client.post(
             "/echo",
             content=payload,

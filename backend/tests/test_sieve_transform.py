@@ -14,16 +14,13 @@ Run from the backend/ directory:
 
 from __future__ import annotations
 
-import sys
 import time
 from pathlib import Path
 
 import pytest
+import sieve_transform as st
 
 BACKEND = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(BACKEND))
-
-import sieve_transform as st
 
 # ── Round-trip stability ──
 
