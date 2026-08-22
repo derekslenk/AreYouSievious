@@ -193,15 +193,25 @@ def test_folder_name_is_not_length_capped_by_the_guard():
 
 
 def test_benign_names_reach_the_protocol_unchanged():
-    """The guard rejects; it must never rewrite."""
+    """The guard rejects; it must never rewrite.
+
+    The IMAP name arrives as BYTES since `.rc9`, which encodes it at the
+    outbound boundary — imaplib would otherwise encode it itself as ascii and
+    raise UnicodeEncodeError on anything else. That is a change of
+    REPRESENTATION, not of the name — for THIS name. mUTF-7 does not leave
+    all of ASCII alone: `&` is ASCII and is the one character it must escape,
+    so `Q&A` goes out as `Q&-A`. `Archive/2026` contains no `&`, which is why
+    the assertion below can still be byte-for-byte what the caller passed.
+    `test_outbound_name_encoding.py` covers the escaping case.
+    """
     sieve = _sieve_client()
     sieve.put_script("primary", "keep;\n")
     sieve._client.putscript.assert_called_once_with("primary", "keep;\n")
 
     imap = _imap_client()
     imap.create_folder("Archive/2026")
-    imap._conn.create.assert_called_once_with('"Archive/2026"')
-    imap._conn.subscribe.assert_called_once_with('"Archive/2026"')
+    imap._conn.create.assert_called_once_with(b'"Archive/2026"')
+    imap._conn.subscribe.assert_called_once_with(b'"Archive/2026"')
 
 
 # ── One HTTP mapping, every sink ──

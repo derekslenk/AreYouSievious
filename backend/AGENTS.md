@@ -22,7 +22,7 @@ FastAPI application that serves the Svelte SPA as static files and provides a RE
 | `mail_stores.py` | The two mail-server seams as `Protocol`s: `ScriptStore` (list/get/put/activate/delete) and `FolderStore` (list/create). Kept separate — a single seven-operation store would be a union, not an abstraction |
 | `mail_errors.py` | The semantic vocabulary the seams fail in (`MailStoreError` + `ScriptNotFound`, `ScriptRejected`, `QuotaExceeded`, `FolderRejected`, `MailServerUnavailable`, `AuthFailed`). Protocol-free AND HTTP-free; `app.py` owns the status mapping |
 | `managesieve_client.py` | `SieveClient` context manager for ManageSieve (port 4190) — the ScriptStore adapter. Owns the script operations and translates sievelib's falsy returns + `errcode`/`errmsg` into `mail_errors`; all five carry `@speaks_to_mail_server` (`.66i`), so a socket dying mid-operation is a 502; dialling policy lives in `mail_dial` |
-| `imap_store.py` | `ImapFolderStore` context manager for IMAP (port 993) — the FolderStore adapter. Owns what to say once connected; maps `imaplib.IMAP4.abort`/`error` on LOGIN to `MailServerUnavailable`/`AuthFailed` (abort first — it subclasses error), exposes `verify_credentials` for the login route (which has no session, so no store), and `create_folder` raises `FolderRejected` (it returned a bool the router had to interpret) and checks the SUBSCRIBE status as well as CREATE; dialling policy lives in `mail_dial`. Reads LIST with `imapclient`'s grammar and mUTF-7 codec, never a regex (`.12`) — the regex dropped NIL-delimiter rows, truncated names at an escaped quote, and raised TypeError on a literal — and a refused LIST raises rather than returning an empty listing (`AUTHENTICATIONFAILED` -> `AuthFailed`, anything else -> `MailServerUnavailable`). Both operations carry `@speaks_to_mail_server` (`.66i`). Named for the seam, not the protocol |
+| `imap_store.py` | `ImapFolderStore` context manager for IMAP (port 993) — the FolderStore adapter. Owns what to say once connected; maps `imaplib.IMAP4.abort`/`error` on LOGIN to `MailServerUnavailable`/`AuthFailed` (abort first — it subclasses error), exposes `verify_credentials` for the login route (which has no session, so no store), and `create_folder` raises `FolderRejected` (it returned a bool the router had to interpret) and checks the SUBSCRIBE status as well as CREATE; dialling policy lives in `mail_dial`. Reads LIST with `imapclient`'s grammar and mUTF-7 codec, never a regex (`.12`) — the regex dropped NIL-delimiter rows, truncated names at an escaped quote, and raised TypeError on a literal — and a refused LIST raises rather than returning an empty listing (`AUTHENTICATIONFAILED` -> `AuthFailed`, anything else -> `MailServerUnavailable`). Both operations carry `@speaks_to_mail_server` (`.66i`), and `create_folder` ENCODES the name with `_encode_name` before sending it (`.rc9`) — imaplib encodes arguments as ascii, so a non-ASCII folder was a UnicodeEncodeError; the guard still runs on the caller's name, before any encoding. Named for the seam, not the protocol |
 | `fetch_grak_script.py` | Standalone utility to pull scripts off a real server into `test_scripts/`. Not imported by the app |
 | `requirements.txt` | Runtime dependencies: fastapi, uvicorn, sievelib, imapclient, python-multipart |
 | `requirements-dev.txt` | pytest, pytest-asyncio, httpx, ruff, basedpyright, pre-commit |
@@ -31,7 +31,7 @@ FastAPI application that serves the Svelte SPA as static files and provides a RE
 | Directory | Purpose |
 |-----------|---------|
 | `routers/` | One module per URL area: `auth`, `scripts`, `folders`, `health`, `static`. Do NOT cross-import between routers — shared helpers belong in `dependencies.py` |
-| `tests/` | 27 pytest files plus a shared conftest.py and `fakes.py` (in-memory ScriptStore/FolderStore), mostly regression locks tied to a bead id in the module docstring |
+| `tests/` | 28 pytest files plus a shared conftest.py and `fakes.py` (in-memory ScriptStore/FolderStore), mostly regression locks tied to a bead id in the module docstring |
 | `test_scripts/` | Sample Sieve scripts used as round-trip fixtures (see `test_scripts/AGENTS.md`) |
 
 ## For AI Agents
@@ -58,7 +58,7 @@ FastAPI application that serves the Svelte SPA as static files and provides a RE
 4. **Order**: `SieveScript.entries` is ONE ordered sequence of `Rule | RawBlock` — position IS the evaluation order. `.rules` and `.raw_blocks` are read-only filtered views. There is no separate `order` array; the parallel-array representation it replaced could drop a rule on save when the arrays disagreed.
 
 ### Testing Requirements
-- `cd backend && python -m pytest tests/ -v` — 27 files. Install with `pip install -r requirements.txt -r requirements-dev.txt`.
+- `cd backend && python -m pytest tests/ -v` — 28 files. Install with `pip install -r requirements.txt -r requirements-dev.txt`.
 - Lint/format: `ruff check backend/` and `ruff format --check backend/`. CI runs both.
 - Round-trip fidelity is asserted as a *fixed point* over every `test_scripts/*.sieve` fixture, in both text and AST. Counting rules is not sufficient — count-only assertions stayed green while action order silently changed.
 - Regression tests name the bead they lock in their module docstring; keep that convention when adding one.

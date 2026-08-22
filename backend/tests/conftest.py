@@ -100,3 +100,107 @@ def authed_client(authed_session):
         return client
 
     return _make
+
+
+# ── A real IMAP server on a real socket ──
+
+
+@pytest.fixture
+def imap_server():
+    """Factory: a loopback IMAP listener, and the lines the client sent it.
+
+    Some behaviour cannot be observed through a MagicMock, because the thing
+    under test is what the LIBRARY does with what we hand it. `imaplib`
+    encodes command arguments itself (`bytes(arg, self._encoding)`, ascii by
+    default), so a mock conn accepts a folder name that the real one refuses —
+    the exact shape of a passing test that means nothing.
+
+    Returns `(connect, sent)`: call `connect(handle=None)` for a real
+    `imaplib.IMAP4` already logged in, and read `sent` afterwards for the raw
+    bytes that arrived.
+
+    `handle(conn, stream, tag, line)` may answer a command itself. Return
+    TRUTHY to say "I replied to this one" — the loop then writes nothing and
+    keeps serving. Return None to fall through to a tagged OK.
+
+    A handler that wants the session to end must close `stream` BEFORE
+    `conn`, in that order. `makefile` holds its own reference to the
+    descriptor, so closing only the socket does not release it: the client
+    sees nothing until this side's `readline` hits the timeout below, and the
+    disconnect that should be instant costs the full five seconds. Measured —
+    5.00s socket-only versus 0.00s stream-first.
+
+    That return value is load-bearing, not a style choice. A handler that
+    wrote its own reply and returned None got a SECOND tagged OK appended,
+    which imaplib reads as `unexpected tagged response` and turns into an
+    abort on the NEXT command — a corrupted session presenting as a
+    `MailServerUnavailable` several lines from the cause.
+
+    No TLS and no network: 127.0.0.1 on an ephemeral port, a daemon thread,
+    and a timeout on every read so nothing here can hang CI.
+    """
+    import imaplib
+    import socket
+    import threading
+
+    timeout = 5.0
+    connections: list = []
+
+    def _make(handle=None):
+        sent: list[bytes] = []
+        listener = socket.socket()
+        listener.bind(("127.0.0.1", 0))
+        listener.listen(1)
+        listener.settimeout(timeout)
+        port = listener.getsockname()[1]
+
+        def run() -> None:
+            try:
+                conn, _ = listener.accept()
+            except OSError:
+                listener.close()
+                return
+            conn.settimeout(timeout)
+            stream = conn.makefile("rwb")
+            stream.write(b"* OK [CAPABILITY IMAP4REV1 AUTH=PLAIN] ready\r\n")
+            stream.flush()
+            try:
+                while True:
+                    line = stream.readline()
+                    if not line:
+                        break
+                    sent.append(line)
+                    tag = line.split(b" ", 1)[0]
+                    if handle is not None and handle(conn, stream, tag, line):
+                        continue
+                    if b"CAPABILITY" in line.upper():
+                        stream.write(b"* CAPABILITY IMAP4REV1\r\n" + tag + b" OK done\r\n")
+                    else:
+                        stream.write(tag + b" OK done\r\n")
+                    stream.flush()
+            except (OSError, ValueError):
+                # ValueError: a handler that ended the session closed the
+                # stream, and the readline above is reading a closed file.
+                # That is the documented way out, not an error.
+                pass
+            finally:
+                for closeable in (stream, conn, listener):
+                    try:
+                        closeable.close()
+                    except OSError:
+                        pass
+
+        threading.Thread(target=run, daemon=True).start()
+        client = imaplib.IMAP4("127.0.0.1", port, timeout=timeout)
+        # Registered BEFORE login: a failed login would otherwise leave the
+        # socket and its thread behind, unreachable by the teardown below.
+        connections.append(client)
+        client.login("user", "pass")
+        return client, sent
+
+    yield _make
+    for client in connections:
+        try:
+            client.shutdown()
+        except Exception:
+            pass
