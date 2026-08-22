@@ -333,14 +333,19 @@ def test_the_dials_last_line_is_inside_its_own_net():
     ],
 )
 def test_narrowing_the_net_did_not_drop_a_real_read_failure(failure):
-    """The audit behind `protocol_error_is_refusal`, pinned.
+    """The net's half of the audit behind `protocol_error_is_refusal`.
 
     Letting `IMAP4.error` through during an operation is only safe because
-    imaplib raises `abort` — not `error` — for every genuine read failure:
-    `_get_line` for EOF and for an unterminated line, `_get_response` for a
-    response it cannot parse. These are the three, in imaplib's own wording.
-    If a future imaplib demotes one of them to `error`, a real outage becomes
-    a 500 and this is where that shows up.
+    imaplib raises `abort` — not `error` — for every genuine read failure.
+    That is two claims, and this test can only carry one: these aborts, in
+    imaplib's own wording, still come out as outages.
+
+    It does NOT observe imaplib's CLASSIFICATION — the exception is
+    hand-built and fed to a MagicMock, so imaplib never runs. An earlier
+    version of this docstring claimed a future imaplib demoting an abort to
+    an error would show up here; it would not, and the test stayed green in
+    exactly that experiment. `test_imaplib_classifies_read_failures.py`
+    drives a real imaplib over a real socket and carries that half.
     """
     with pytest.raises(MailServerUnavailable):
         _imap(**{"list.side_effect": failure}).list_folders()

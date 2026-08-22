@@ -26,7 +26,7 @@ Self-hosted Sieve email filter management UI. Single-process FastAPI backend ser
 ## For AI Agents
 
 ### Working In This Directory
-- Tests: `cd backend && python -m pytest tests/ -v` (26 files) and `cd frontend && npm test` (vitest)
+- Tests: `cd backend && python -m pytest tests/ -v` (27 files) and `cd frontend && npm test` (vitest)
 - Lint/format: `ruff check backend/` and `ruff format --check backend/`
 - `pre-commit install` wires three hooks: ruff-format, ruff --fix, and `tools/regen-wire-types.sh`
   (the last regenerates the SPA's wire types when a schema-bearing backend file is staged, so a stale
