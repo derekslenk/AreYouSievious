@@ -39,18 +39,33 @@
   const PREVIEW_DEBOUNCE_MS = 200;
   let previewSeq = 0;
   let previewTimer;
+  // The wire payload the preview on screen was rendered from. The trigger
+  // below fires on ANY document mutation — `rules` is rebuilt whenever
+  // `script` is reassigned, so adding, deleting or reordering some OTHER rule
+  // reschedules the selected one too. Comparing payloads rather than array
+  // references means those cost nothing, and so does a keystroke that leaves
+  // the wire content unchanged.
+  let previewedWire = '';
 
   function schedulePreview(rule) {
-    clearTimeout(previewTimer);
-    const wanted = (previewSeq += 1);
     if (!rule) {
+      clearTimeout(previewTimer);
+      previewSeq += 1;
       preview = '';
       previewError = '';
+      previewedWire = '';
       return;
     }
+    const payload = doc.entryToWire(rule);
+    const identity = JSON.stringify(payload);
+    if (identity === previewedWire) return;
+    previewedWire = identity;
+
+    clearTimeout(previewTimer);
+    const wanted = (previewSeq += 1);
     previewTimer = setTimeout(async () => {
       try {
-        const { sieve } = await api.previewRule(doc.entryToWire(rule));
+        const { sieve } = await api.previewRule(payload);
         if (wanted !== previewSeq) return;
         preview = sieve;
         previewError = '';
@@ -61,6 +76,9 @@
         // in a different shape.
         preview = '';
         previewError = e?.message || 'Preview unavailable';
+        // Forget what we asked for, so the next trigger retries instead of
+        // matching `identity` and leaving the error up forever.
+        previewedWire = '';
       }
     }, PREVIEW_DEBOUNCE_MS);
   }
@@ -92,8 +110,9 @@
 
   $: dirty = !!(script && pristine) && !doc.sameWire(script, pristine);
 
-  // Every document mutation makes a fresh `rules`, so this fires on each
-  // keystroke and the debounce inside does the rest.
+  // Fires on every document mutation, including ones to other rules — see
+  // `schedulePreview`, which is what decides whether the selected rule
+  // actually changed.
   $: schedulePreview(rules[selectedIdx]);
 
   function addRule() {
