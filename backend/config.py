@@ -23,6 +23,8 @@ import ipaddress
 import os
 from dataclasses import dataclass, field
 
+from auth import SESSION_IDLE_TIMEOUT, SESSION_MAX_LIFETIME
+
 DEFAULT_MAX_BODY_BYTES = 1 * 1024 * 1024  # 1 MiB
 DEFAULT_CORS_ORIGINS = "https://areyousievious.com"
 
@@ -88,6 +90,15 @@ class Settings:
     )
     secure_cookies: bool = False
 
+    # ── Sessions ──
+    # The store holds a plaintext password per session, so both of these are
+    # security settings rather than tuning. `idle` is what the `ays_session`
+    # cookie's max_age advertises; `max_lifetime` is counted from login and
+    # NOT refreshed by use, which is the half that did not exist — a client
+    # polling /api/auth/status kept a password resident indefinitely.
+    session_idle_timeout: float = float(SESSION_IDLE_TIMEOUT)
+    session_max_lifetime: float = float(SESSION_MAX_LIFETIME)
+
     # ── Outbound transport ──
     imap_insecure: bool = False
     imap_timeout: float = 10.0
@@ -113,6 +124,12 @@ class Settings:
             ),
             trusted_proxies=_parse_networks(os.environ.get("AYS_TRUSTED_PROXIES", "")),
             secure_cookies=_env_bool("AYS_SECURE_COOKIES"),
+            session_idle_timeout=_env_float(
+                "AYS_SESSION_IDLE_TIMEOUT", float(SESSION_IDLE_TIMEOUT)
+            ),
+            session_max_lifetime=_env_float(
+                "AYS_SESSION_MAX_LIFETIME", float(SESSION_MAX_LIFETIME)
+            ),
             imap_insecure=_env_bool("AYS_IMAP_INSECURE"),
             imap_timeout=_env_float("AYS_IMAP_TIMEOUT", 10.0),
             sieve_connect_timeout=_env_float("AYS_SIEVE_CONNECT_TIMEOUT", 10.0),

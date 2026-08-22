@@ -41,7 +41,7 @@ class _SlowScriptStore:
 
 
 @pytest.mark.asyncio
-async def test_import_script_does_not_block_event_loop(authed_session, make_app, asgi_client_for):
+async def test_import_script_does_not_block_event_loop(seed_session, make_app, asgi_client_for):
     """A slow upload MUST NOT serialize other requests on the event loop.
 
     Revert `import_script` to `async def` with sync `client.put_script` inside
@@ -52,9 +52,10 @@ async def test_import_script_does_not_block_event_loop(authed_session, make_app,
       - The async /api/auth/status calls fired during the uploads can't
         be scheduled and their latency explodes past SLOW_SECONDS.
     """
-    _token, csrf_token, cookies = authed_session
-
     app = make_app()
+    # Seeded on THIS app's store: the session lives on `app.state` now, so it
+    # has to exist before the cookies that name it are handed to a client.
+    _token, csrf_token, cookies = seed_session(app)
     app.dependency_overrides[get_script_store] = _SlowScriptStore
     async with asgi_client_for(app, cookies=cookies) as client:
 

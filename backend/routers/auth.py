@@ -17,9 +17,9 @@ import time
 from collections import defaultdict
 
 from api_models import AuthStatusResponse, LoginRequest, OkResponse
-from auth import Session, sessions
+from auth import Session, SessionManager
 from config import Settings
-from dependencies import SESSION_COOKIE, get_optional_session, get_settings
+from dependencies import SESSION_COOKIE, get_optional_session, get_sessions, get_settings
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from imap_store import verify_credentials
 from middleware import CSRF_COOKIE, generate_csrf_token
@@ -142,6 +142,7 @@ def login(
     request: Request,
     response: Response,
     cfg: Settings = Depends(get_settings),
+    store: SessionManager = Depends(get_sessions),
 ):
     """Authenticate with IMAP credentials."""
     client_ip = _get_client_ip(request, cfg)
@@ -159,7 +160,7 @@ def login(
     # HostValidationError to 400 — the same statuses, decided in one place.
     verify_credentials(req.host, host_ip, req.port_imap, req.username, req.password, cfg=cfg)
 
-    token = sessions.create(
+    token = store.create(
         host=req.host,
         host_ip=host_ip,
         username=req.username,
@@ -168,12 +169,18 @@ def login(
         port_sieve=req.port_sieve,
     )
     secure = _is_secure(request, cfg)
+    # `max_age` follows the store's idle timeout rather than repeating 1800.
+    # The cookie is a HINT the browser may honour; the store is what actually
+    # enforces expiry, and two numbers that mean the same thing drift apart —
+    # a cookie outliving its session logs the user out mid-action, and one
+    # dying early throws away a session the server still holds.
+    cookie_max_age = int(cfg.session_idle_timeout)
     response.set_cookie(
         SESSION_COOKIE,
         token,
         httponly=True,
         samesite="strict",
-        max_age=1800,
+        max_age=cookie_max_age,
         secure=secure,
     )
     response.set_cookie(
@@ -181,17 +188,21 @@ def login(
         generate_csrf_token(),
         httponly=False,
         samesite="strict",
-        max_age=1800,
+        max_age=cookie_max_age,
         secure=secure,
     )
     return {"ok": True, "username": req.username}
 
 
 @router.post("/logout", response_model=OkResponse, response_model_exclude_none=True)
-def logout(request: Request, response: Response):
+def logout(
+    request: Request,
+    response: Response,
+    store: SessionManager = Depends(get_sessions),
+):
     token = request.cookies.get(SESSION_COOKIE)
     if token:
-        sessions.destroy(token)
+        store.destroy(token)
     response.delete_cookie(SESSION_COOKIE)
     response.delete_cookie(CSRF_COOKIE)
     return {"ok": True}

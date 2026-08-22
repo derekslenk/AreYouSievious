@@ -59,6 +59,8 @@ Open `http://localhost:8091` and log in with your IMAP credentials.
 | `AYS_MAX_BODY_BYTES` | `1048576` (1 MiB) | Maximum accepted request body size. Larger requests get HTTP 413 from middleware before reaching any route (CWE-770). Both `Content-Length` and the actual streamed body are checked. |
 | `AYS_CORS_ORIGINS` | `https://areyousievious.com` | Comma-separated allowed origins |
 | `AYS_SECURE_COOKIES` | _(unset)_ | Set to `true` when behind HTTPS reverse proxy |
+| `AYS_SESSION_IDLE_TIMEOUT` | `1800` (30 min) | Seconds of inactivity before a session is dropped and its credentials leave memory. Also the `max_age` on the session and CSRF cookies, so the browser hint and the server's enforcement cannot drift apart. |
+| `AYS_SESSION_MAX_LIFETIME` | `28800` (8 h) | Absolute cap counted from login and NOT refreshed by use. Without it the timeout was idle-only, so a client polling `/api/auth/status` kept a plaintext password resident for as long as it cared to poll. |
 | `AYS_IMAP_INSECURE` | _(unset)_ | ⚠️ **Testing only.** `1` / `true` / `yes` disables outbound IMAP TLS chain + hostname verification (for self-signed mail servers). Leaving this unset is mandatory in production — without it, an on-path attacker can MITM the IMAP login and steal credentials (CWE-295). |
 | `AYS_TRUSTED_PROXIES` | _(unset)_ | CSV of CIDRs that may set `X-Forwarded-For` / `X-Real-IP` (e.g. `127.0.0.1/32,10.0.0.0/8`). When unset, those headers are ignored and the rate limiter uses the direct peer — required when the app is exposed without a reverse proxy or any caller can spoof the headers to bypass throttling (CWE-348). |
 | `AYS_IMAP_TIMEOUT` | `10` | Seconds before an outbound IMAP connect or read aborts. |
