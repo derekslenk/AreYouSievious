@@ -45,3 +45,5 @@ _Avoid_: effect, command, operation
 Whether a Rule fires when any of its Conditions hold, or only when all of them do. A Rule
 with a single Condition may have none, in which case the script states the test directly.
 _Avoid_: combinator, operator, join
+
+<!-- temporary probe for areyousievious-8su; branch deleted after verification -->
