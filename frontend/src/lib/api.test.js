@@ -218,6 +218,28 @@ describe('the message is the server\'s sentence, not its JSON', () => {
     expect(error.message).toBe('422: {"detail":[{"nope":1}]}');
   });
 
+  it('shows a plain-text body as-is — our own middleware sends those', async () => {
+    // The THIRD shape, and not an exotic one. `middleware.py` answers
+    // text/plain with a bare sentence and no JSON envelope; a stale CSRF
+    // cookie is a routine 403. Verified against the running app:
+    // POST /api/scripts/x/activate with no CSRF header returns
+    // `403 text/plain 'CSRF token missing'`.
+    respond({ status: 403, body: 'CSRF token missing' });
+    const error = await api.activateScript('x').catch((e) => e);
+    expect(error.message).toBe('403: CSRF token missing');
+    expect(error.status).toBe(403);
+  });
+
+  it('a null body is not mistaken for a message', async () => {
+    // `const { detail } = null` throws, so this reaches the catch rather
+    // than the returns above. It used to be steered around by a `?? {}`
+    // that produced the identical answer and so could not be tested —
+    // removed rather than left looking like a guard.
+    respond({ status: 400, body: 'null' });
+    const error = await api.listScripts().catch((e) => e);
+    expect(error.message).toBe('400: null');
+  });
+
   it('falls back to the raw body when it is not the shape we send', async () => {
     // A proxy or gateway can answer with HTML this app never generated.
     // Losing the wording would be worse than showing it.

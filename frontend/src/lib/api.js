@@ -39,29 +39,35 @@ export class ApiError extends Error {
 /**
  * The server's own words, or the raw body if it did not send any we can read.
  *
- * Errors reaching this client put their explanation under `detail`, and it
- * arrives in TWO shapes — verified against the running app, not assumed:
+ * An error reaching this client arrives in one of THREE shapes — each probed
+ * against the running app, not assumed:
  *
- *   string  the app's own failures (`app.py` has three JSONResponse handlers)
- *           and Starlette's rendering of an HTTPException, e.g. the login
- *           rate limiter: `{"detail":"Too many login attempts..."}`
- *   list    FastAPI's RequestValidationError, one object per bad field:
- *           `[{"loc":["body","port_imap"],"msg":"Value error, Invalid port
- *           number", ...}]` — reachable from the login form, whose Advanced
- *           section exposes both port fields
+ *   detail  string   the app's own failures (`app.py` has three JSONResponse
+ *                    handlers) and Starlette's rendering of an HTTPException,
+ *                    e.g. the login rate limiter:
+ *                    `{"detail":"Too many login attempts..."}`
+ *   detail  list     FastAPI's RequestValidationError, one object per bad
+ *                    field: `[{"loc":["body","port_imap"],"msg":"Value error,
+ *                    Invalid port number", ...}]` — reachable from the login
+ *                    form, whose Advanced section exposes both port fields
+ *   no JSON at all   `middleware.py` answers `text/plain` with a bare
+ *                    sentence and no envelope: `CSRF token missing`,
+ *                    `CSRF token mismatch`, `Request body too large`
  *
- * Interpolating the body verbatim put literal JSON in front of the user in
- * both cases. Handling only the string half left the 422 exactly as broken,
- * in the same box.
+ * Interpolating the body verbatim put literal JSON in front of the user for
+ * the first two. Handling only the string half left the 422 exactly as
+ * broken, in the same box.
  *
- * Falls back to the raw text rather than throwing, because a proxy or gateway
- * can answer with HTML this app never generated, and losing the wording is
- * better than losing the error.
+ * The third shape is why the fallback returns the raw text rather than
+ * throwing, and it is NOT an exotic case: a stale CSRF cookie is a routine
+ * 403 and its plain sentence is already the best thing to show. A proxy
+ * answering with HTML this app never generated lands here too, and losing
+ * the wording would be worse than losing the error.
  */
 async function detailFrom(res) {
   const text = await res.text();
   try {
-    const { detail } = JSON.parse(text) ?? {};
+    const { detail } = JSON.parse(text);
     if (typeof detail === 'string') return detail;
     if (Array.isArray(detail)) {
       // `loc` starts with the section ("body", "query"); the rest is the
@@ -75,7 +81,10 @@ async function detailFrom(res) {
       if (lines.length) return lines.join('; ');
     }
   } catch {
-    // Not JSON, or not an object. The body is the best we have.
+    // The body is not JSON at all — `middleware.py`'s plain-text 403s and
+    // 413, or something upstream. It is also where a `null` body lands,
+    // since destructuring it throws; every other primitive destructures
+    // without complaint and falls through to the same return below.
   }
   return text;
 }
