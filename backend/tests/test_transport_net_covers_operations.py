@@ -298,8 +298,6 @@ def test_a_lost_connection_during_an_operation_is_still_an_outage():
 def test_the_dial_still_reads_a_refused_greeting_as_an_outage():
     """The other side of the same net, pinned here so narrowing the operation
     case cannot silently regress `.28`."""
-    with mail_dial.transport_failures_are_semantic():
-        pass
     with pytest.raises(MailServerUnavailable):
         with mail_dial.transport_failures_are_semantic():
             raise imaplib.IMAP4.error("BYE server unavailable")
