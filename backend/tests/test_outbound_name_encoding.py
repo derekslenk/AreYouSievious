@@ -25,6 +25,8 @@ encodes script names with UTF-8 (`getscript`/`deletescript` call
 
 from __future__ import annotations
 
+import base64
+
 import pytest
 from auth import Session
 from config import Settings
@@ -173,3 +175,58 @@ def test_the_server_fixture_leaves_the_session_usable_after_a_handled_command(im
     assert [f["name"] for f in store.list_folders()] == ["Inbox"]
     # The command AFTER the handled one is where the duplicate OK landed.
     store.create_folder("Archive")
+
+
+# ── An independent oracle for the corpus ──
+
+
+def _rfc3501_encode(name: str) -> bytes:
+    """Modified UTF-7, written from RFC 3501 §5.1.3 rather than from imapclient.
+
+    The corpus above states its expected bytes as literals, and those literals
+    have to come from somewhere. Deriving them by running `imap_utf7.encode`
+    would make every assertion above a tautology — it would pin whatever
+    imapclient does, including a bug, which is the same closed loop
+    `tests/fakes.py` refuses when it validates generated Sieve with sievelib
+    instead of with our own parser.
+
+    So this is a second implementation, from the spec text:
+
+      * printable US-ASCII other than `&` represents itself;
+      * `&` is represented by `&-`;
+      * anything else is modified BASE64 of UTF-16BE, introduced by `&` and
+        terminated by `-`, where the BASE64 alphabet uses `,` in place of `/`.
+
+    Small enough to read in one sitting, which is the only reason a second
+    implementation is worth having.
+    """
+    out = bytearray()
+    pending: list[str] = []
+
+    def flush() -> None:
+        if not pending:
+            return
+        encoded = base64.b64encode("".join(pending).encode("utf-16-be"))
+        out.extend(b"&" + encoded.rstrip(b"=").replace(b"/", b",") + b"-")
+        pending.clear()
+
+    for char in name:
+        if char == "&":
+            flush()
+            out.extend(b"&-")
+        elif 0x20 <= ord(char) <= 0x7E:
+            flush()
+            out.extend(char.encode("ascii"))
+        else:
+            pending.append(char)
+    flush()
+    return bytes(out)
+
+
+@pytest.mark.parametrize("name,encoded", ENCODED)
+def test_the_expected_bytes_are_the_spec_not_just_the_library(name, encoded):
+    """Both readings of the corpus must agree: what the spec says, and what
+    the library we adopted actually emits. If they ever diverge, the literal
+    above is wrong or imapclient is — and either way this fails first."""
+    assert _rfc3501_encode(name) == encoded
+    assert imap_utf7.encode(name) == encoded
