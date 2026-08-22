@@ -37,6 +37,7 @@ change:
 
 from __future__ import annotations
 
+import re
 import sys
 import threading
 import time
@@ -142,53 +143,46 @@ def test_concurrent_get_and_destroy_of_one_token_do_not_raise():
 
 
 def test_removing_a_session_twice_is_not_an_error():
-    """Idempotent removal, pinned directly rather than through a race.
+    """`destroy` must tolerate a token that is already gone.
 
-    The original `get` used `del self._sessions[token]`, so two callers that
-    both saw the same expired session raced to raise KeyError on the second
-    delete. `pop` closes that by construction, and this asserts the property
-    instead of trying to lose the race on purpose.
+    A double logout is a race, not a mistake, which is why `destroy` alone
+    keeps `pop(..., None)` — the other removals use `del`, because the lock
+    guarantees the key is there. Mutating this one to `del` fails three
+    tests.
+
+    An earlier version of this test also claimed to prove that two sweeps
+    over the same expired token cannot fight. It proved nothing: instrumented
+    through that block, the key was present at BOTH deletes, so `del` never
+    raised, and `del`->`pop` in the sweep left the whole suite green. The
+    claim was written from reasoning about the old code and never checked
+    against the new.
     """
     store = _store(idle_timeout=1000, sweep_interval=3600)
     token = store.create(**CREDS)
     store.destroy(token)
     store.destroy(token)
     assert store.get(token) is None
-
-    # Removal reached through the SWEEP, which is where both historical
-    # failures actually came from. Two sweeps over the same expired token
-    # must not fight: with `del` the second raises KeyError. Asserting this
-    # through `get` alone proved nothing — the second call short-circuits on
-    # a token already gone and never reaches the removal at all.
-    #
-    # -1, not 0: `now - last_used > 0` is FALSE when both land in the same
-    # clock tick, so a 0 timeout made an earlier version pass alone and fail
-    # inside the suite.
-    store._idle_timeout = -1
-    doomed = store.create(**CREDS)
-    expired = [(token, session) for token, session in store._sessions.items()]
-    store._sweep_interval = 0
-    store._sweep(time.time())
-    # Put it back and sweep again: the second pass walks a token the first
-    # already removed.
-    for token, session in expired:
-        store._sessions[token] = session
-    store._sweep(time.time())
-    assert store.get(doomed) is None
     assert store.count() == 0
 
 
 def test_a_session_dies_at_its_absolute_lifetime_however_busy():
     """`created_at` now means something. Constant use refreshes `last_used`
     and must NOT buy more time: a client polling `/api/auth/status` kept a
-    plaintext password resident for as long as it cared to poll."""
-    store = _store(idle_timeout=1000, max_lifetime=0.5)
-    token = store.create(**CREDS)
-    for _ in range(4):
-        time.sleep(0.05)
-        assert store.get(token) is not None, "constant use must not end it early"
-    time.sleep(0.4)
-    assert store.get(token) is None, "absolute lifetime did not fire"
+    plaintext password resident for as long as it cared to poll.
+
+    Driven by a patched clock rather than by sleeping. The wall-clock version
+    left ~0.3s of slack, which is the first thing to go on a starved CI box —
+    and this file already had to stop sleeping once for that reason.
+    """
+    clock = {"now": 1000.0}
+    with patch("auth.time.time", lambda: clock["now"]):
+        store = _store(idle_timeout=1000, max_lifetime=100, sweep_interval=99999)
+        token = store.create(**CREDS)
+        for _ in range(9):
+            clock["now"] += 10
+            assert store.get(token) is not None, "constant use must not end it early"
+        clock["now"] += 20  # now 110s past creation
+        assert store.get(token) is None, "absolute lifetime did not fire"
 
 
 def test_use_refreshes_the_idle_clock():
@@ -196,18 +190,21 @@ def test_use_refreshes_the_idle_clock():
 
     Nothing pinned it: deleting `session.last_used = now` left all 693 tests
     green, and that mutation logs every user out a fixed time after LOGIN
-    however hard they are working. The absolute-lifetime test cannot catch it
-    because it runs with a huge idle timeout on purpose.
+    however hard they are working.
+
+    Each step advances the clock to just INSIDE the idle window, so only the
+    refresh carries the session across the next one. Without it the second
+    step is already 18s idle against a 10s limit and this fails.
     """
-    store = _store(idle_timeout=0.3, max_lifetime=1000, sweep_interval=3600)
-    token = store.create(**CREDS)
-    for _ in range(6):
-        time.sleep(0.1)
-        assert store.get(token) is not None, "steady use must keep it alive"
-    # Total elapsed is now well past the idle timeout; only the refresh saved
-    # it. Stop touching it and it dies.
-    time.sleep(0.4)
-    assert store.get(token) is None
+    clock = {"now": 1000.0}
+    with patch("auth.time.time", lambda: clock["now"]):
+        store = _store(idle_timeout=10, max_lifetime=99999, sweep_interval=99999)
+        token = store.create(**CREDS)
+        for _ in range(6):
+            clock["now"] += 9
+            assert store.get(token) is not None, "steady use must keep it alive"
+        clock["now"] += 11
+        assert store.get(token) is None
 
 
 def test_an_idle_session_still_dies_of_idleness():
@@ -320,8 +317,12 @@ def test_a_sub_second_timeout_still_yields_a_usable_cookie(make_app):
             )
     assert response.status_code == 200, response.text
     for header in response.headers.get_list("set-cookie"):
-        assert "Max-Age=0" not in header, header
-        assert "Max-Age=1" in header, header
+        value = re.search(r"Max-Age=(\d+)", header)
+        assert value, header
+        # Parsed, not matched as a substring: `"Max-Age=1" in header` is also
+        # true of `Max-Age=100` and `Max-Age=1800`, so a mutation to
+        # `max(100, ...)` slipped straight through it.
+        assert int(value.group(1)) == 1, header
 
 
 def test_the_session_cookie_expires_with_the_store_not_a_literal(make_app):
