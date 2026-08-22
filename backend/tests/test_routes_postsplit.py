@@ -38,6 +38,9 @@ EXPECTED_ROUTES: frozenset[tuple[str, str]] = frozenset(
         ("GET", "/api/scripts/{name}/raw"),
         ("GET", "/api/scripts/{name}/export"),
         ("POST", "/api/scripts/import"),
+        # Declared before the /{name} routes so `preview` is read as a literal
+        # segment rather than as a script named "preview" (areyousievious-8fg.17).
+        ("POST", "/api/scripts/preview"),
         ("PUT", "/api/scripts/{name}"),
         ("PUT", "/api/scripts/{name}/raw"),
         ("POST", "/api/scripts/{name}/activate"),
@@ -138,6 +141,7 @@ async def test_get_route_status(path: str, expected: int, app, asgi_client_for):
     [
         ("POST", "/api/auth/logout"),
         ("POST", "/api/scripts/import"),
+        ("POST", "/api/scripts/preview"),
         ("PUT", "/api/scripts/whatever"),
         ("PUT", "/api/scripts/whatever/raw"),
         ("POST", "/api/scripts/whatever/activate"),

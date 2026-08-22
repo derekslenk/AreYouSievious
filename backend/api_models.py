@@ -179,6 +179,19 @@ class CreateFolderRequest(BaseModel):
     name: str = Field(min_length=1, max_length=200)
 
 
+class PreviewRequest(BaseModel):
+    """One Rule to render as Sieve (areyousievious-8fg.18 vocabularies apply).
+
+    Deliberately one Rule and not a whole script: the editor previews the rule
+    the user is looking at, and asking for a script would make the endpoint
+    need `requires`, which is a property of the script rather than of any Rule.
+    """
+
+    model_config = _STRICT
+
+    rule: RuleDTO
+
+
 # ── Response models ──
 
 
@@ -224,3 +237,10 @@ class ScriptResponse(BaseModel):
 class ScriptRawResponse(BaseModel):
     name: str
     content: str
+
+
+class PreviewResponse(BaseModel):
+    """POST /api/scripts/preview — the exact bytes a save would write for this
+    Rule, minus the script-level `require` line."""
+
+    sieve: str

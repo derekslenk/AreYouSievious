@@ -301,6 +301,34 @@
         "title": "OkResponse",
         "type": "object"
       },
+      "PreviewRequest": {
+        "additionalProperties": false,
+        "description": "One Rule to render as Sieve (areyousievious-8fg.18 vocabularies apply).\n\nDeliberately one Rule and not a whole script: the editor previews the rule\nthe user is looking at, and asking for a script would make the endpoint\nneed `requires`, which is a property of the script rather than of any Rule.",
+        "properties": {
+          "rule": {
+            "$ref": "#/components/schemas/RuleDTO"
+          }
+        },
+        "required": [
+          "rule"
+        ],
+        "title": "PreviewRequest",
+        "type": "object"
+      },
+      "PreviewResponse": {
+        "description": "POST /api/scripts/preview \u2014 the exact bytes a save would write for this\nRule, minus the script-level `require` line.",
+        "properties": {
+          "sieve": {
+            "title": "Sieve",
+            "type": "string"
+          }
+        },
+        "required": [
+          "sieve"
+        ],
+        "title": "PreviewResponse",
+        "type": "object"
+      },
       "RawBlockDTO": {
         "additionalProperties": false,
         "description": "A Raw Block entry on the wire \u2014 Sieve the parser didn't recognise.",
@@ -745,6 +773,45 @@
           }
         },
         "summary": "Import Script"
+      }
+    },
+    "/api/scripts/preview": {
+      "post": {
+        "description": "Render one Rule as the Sieve a save would write.\n\nNO MAIL-SERVER DIAL. It depends on `get_session` and not on\n`get_script_store`, so it authenticates without opening a ManageSieve\nconnection \u2014 this runs on every keystroke behind a debounce, and a\nconnection per keystroke would be a self-inflicted denial of service\nagainst the user's own mail server.\n\nIt replaces `previewRule` in the SPA, which was a second implementation of\n`SieveGenerator` that had already diverged five ways. Declared BEFORE the\n`/{name}` routes so `preview` is read as a literal path segment.",
+        "operationId": "preview_rule_api_scripts_preview_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PreviewRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PreviewResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Preview Rule"
       }
     },
     "/api/scripts/{name}": {

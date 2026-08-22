@@ -19,6 +19,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `POST /api/scripts/preview` renders one Rule through the backend generator, and the SPA's duplicate generator (`previewRule`) is deleted. The preview is now the bytes a save writes, asserted as such; the duplicate had diverged five ways, including showing nothing for a Rule whose last Condition was deleted while a save wrote invalid Sieve (areyousievious-8fg.17)
+
 - GitHub Actions CI workflow (`.github/workflows/ci.yml`): runs pytest and frontend build on every push and pull request (P1)
 - Sieve parser regression test suite (`backend/tests/`) covering round-trip stability, else/elsif handling, address-part/`:comparator` parsing, and ReDoS budget (Phase CP1)
 - Sieve fixture corpus (`backend/test_scripts/`): twelve hand-written one-construct fixtures plus sievelib's parser corpus vendored under MIT in `vendor/`, with a per-fixture recognition census and a pinned recogniser-reach total (areyousievious-8fg.3)

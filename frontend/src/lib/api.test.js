@@ -35,15 +35,17 @@ import { api, ApiError } from './api.js';
 let dispatched = [];
 
 function respond({ status, body = '', json = {} }) {
-  vi.stubGlobal(
-    'fetch',
-    vi.fn().mockResolvedValue({
-      status,
-      ok: status >= 200 && status < 300,
-      text: async () => body,
-      json: async () => json,
-    }),
-  );
+  const mock = vi.fn().mockResolvedValue({
+    status,
+    ok: status >= 200 && status < 300,
+    text: async () => body,
+    json: async () => json,
+  });
+  vi.stubGlobal('fetch', mock);
+  // Returned so a caller can inspect what was SENT. Reading `fetch.mock`
+  // instead is a svelte-check error — the stubbed global is typed as the real
+  // `fetch`, which has no `.mock`.
+  return mock;
 }
 
 function logouts() {
@@ -262,5 +264,34 @@ describe('a successful request is unaffected', () => {
       username: 'u',
     });
     expect(logouts()).toBe(0);
+  });
+});
+
+
+describe('previewRule (areyousievious-8fg.17)', () => {
+  it('POSTs the rule to the preview endpoint and returns the generated Sieve', async () => {
+    const sent = respond({ status: 200, json: { sieve: 'if anyof (\n) {\n}' } });
+    const rule = { kind: 'rule', name: 'N', enabled: true, match: 'anyof', conditions: [], actions: [] };
+
+    const out = await api.previewRule(rule);
+
+    expect(out.sieve).toBe('if anyof (\n) {\n}');
+    const [url, opts] = sent.mock.calls[0];
+    expect(url).toBe('/api/scripts/preview');
+    expect(opts.method).toBe('POST');
+    // Wrapped in `rule`, because PreviewRequest takes one Rule and not a
+    // Script — a bare rule body is a 422.
+    expect(JSON.parse(opts.body)).toEqual({ rule });
+    // A mutating request, so it carries CSRF like every other one.
+    expect(opts.headers['X-CSRF-Token']).toBe('tok');
+  });
+
+  it('is not exempt from the session-expiry handling every other call gets', async () => {
+    // Preview runs on a keystroke timer, so it is a likely FIRST request to
+    // notice an expired session. It must behave like the others: /auth/login
+    // is the only pre-auth path.
+    respond({ status: 401, body: '', json: {} });
+    await expect(api.previewRule({})).rejects.toBeInstanceOf(ApiError);
+    expect(logouts()).toBe(1);
   });
 });
