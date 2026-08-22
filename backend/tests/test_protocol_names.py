@@ -198,9 +198,11 @@ def test_benign_names_reach_the_protocol_unchanged():
     The IMAP name arrives as BYTES since `.rc9`, which encodes it at the
     outbound boundary — imaplib would otherwise encode it itself as ascii and
     raise UnicodeEncodeError on anything else. That is a change of
-    REPRESENTATION, not of the name: mUTF-7 leaves ASCII exactly as it found
-    it, so these are the same characters the caller passed, and this test
-    still says what it always said.
+    REPRESENTATION, not of the name — for THIS name. mUTF-7 does not leave
+    all of ASCII alone: `&` is ASCII and is the one character it must escape,
+    so `Q&A` goes out as `Q&-A`. `Archive/2026` contains no `&`, which is why
+    the assertion below can still be byte-for-byte what the caller passed.
+    `test_outbound_name_encoding.py` covers the escaping case.
     """
     sieve = _sieve_client()
     sieve.put_script("primary", "keep;\n")

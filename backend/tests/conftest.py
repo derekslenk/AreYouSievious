@@ -117,8 +117,18 @@ def imap_server():
 
     Returns `(connect, sent)`: call `connect(handle=None)` for a real
     `imaplib.IMAP4` already logged in, and read `sent` afterwards for the raw
-    bytes that arrived. `handle(conn, stream, tag, line)` may take over a
-    command to misbehave; returning None falls through to a tagged OK.
+    bytes that arrived.
+
+    `handle(conn, stream, tag, line)` may answer a command itself. Return
+    TRUTHY to say "I replied to this one" — the loop then writes nothing and
+    keeps serving. Return None to fall through to a tagged OK. A handler that
+    wants the session to end closes `conn`; the next read sees EOF.
+
+    That return value is load-bearing, not a style choice. A handler that
+    wrote its own reply and returned None got a SECOND tagged OK appended,
+    which imaplib reads as `unexpected tagged response` and turns into an
+    abort on the NEXT command — a corrupted session presenting as a
+    `MailServerUnavailable` several lines from the cause.
 
     No TLS and no network: 127.0.0.1 on an ephemeral port, a daemon thread,
     and a timeout on every read so nothing here can hang CI.
@@ -156,7 +166,7 @@ def imap_server():
                     sent.append(line)
                     tag = line.split(b" ", 1)[0]
                     if handle is not None and handle(conn, stream, tag, line):
-                        break
+                        continue
                     if b"CAPABILITY" in line.upper():
                         stream.write(b"* CAPABILITY IMAP4REV1\r\n" + tag + b" OK done\r\n")
                     else:
@@ -173,8 +183,10 @@ def imap_server():
 
         threading.Thread(target=run, daemon=True).start()
         client = imaplib.IMAP4("127.0.0.1", port, timeout=timeout)
-        client.login("user", "pass")
+        # Registered BEFORE login: a failed login would otherwise leave the
+        # socket and its thread behind, unreachable by the teardown below.
         connections.append(client)
+        client.login("user", "pass")
         return client, sent
 
     yield _make

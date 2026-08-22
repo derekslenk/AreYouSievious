@@ -316,11 +316,21 @@ class ImapFolderStore:
         # not own.
         validate_folder_name(name)
         quoted = b'"' + _encode_name(name) + b'"'
-        status, detail = self._conn.create(quoted)
+        # Rule-scoped ignore on both verbs, not a cast and not a bare
+        # `type: ignore`: imaplib's stubs type `mailbox` as `str`, and bytes is
+        # the RUNTIME-correct argument — `_command` converts only `str`, so a
+        # str here would be re-encoded as ascii and raise, which is the bug
+        # being fixed. The stub is narrower than the function.
+        #
+        # Scoped because a bare ignore silences the whole LINE, which would
+        # also hide the pre-existing `self._conn` optional-access finding these
+        # two calls carry. Suppressing a known finding while adding an
+        # unrelated one is how a baseline stops meaning anything.
+        status, detail = self._conn.create(quoted)  # pyright: ignore[reportArgumentType]
         if status != "OK":
             raise relayed(FolderRejected, server_text(detail))
         # Both verbs, or the folder is created under one spelling and
         # subscribed under another.
-        status, detail = self._conn.subscribe(quoted)
+        status, detail = self._conn.subscribe(quoted)  # pyright: ignore[reportArgumentType]
         if status != "OK":
             raise relayed(FolderRejected, server_text(detail))

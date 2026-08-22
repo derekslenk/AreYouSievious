@@ -53,15 +53,27 @@ def _store_over(conn) -> ImapFolderStore:
     return store
 
 
-NON_ASCII = [
+# Names whose wire form differs from the caller's spelling.
+ENCODED = [
     pytest.param("Été", b"&AMk-t&AOk-", id="accented"),
     pytest.param("Ärchiv", b"&AMQ-rchiv", id="umlaut"),
     pytest.param("収納", b"&U859DQ-", id="cjk"),
     pytest.param("Ω", b"&A6k-", id="greek"),
+    # `&` is ASCII and is the ONE character mUTF-7 must escape, which makes
+    # these the names most likely to disagree between the two directions —
+    # `.12` documented that `imap_utf7.decode` REFUSES a lone `&` and falls
+    # back to a lossy read (`AT&T`, `R&D`, `Q&A` all raise UnicodeDecodeError
+    # there). Escaping on the way out is what keeps that fallback off our own
+    # output: a name we wrote is always decodable.
+    pytest.param("Q&A", b"Q&-A", id="ampersand"),
+    pytest.param("AT&T", b"AT&-T", id="ampersand-mid"),
+    pytest.param("&", b"&-", id="ampersand-alone"),
+    pytest.param("R&D & Ops", b"R&-D &- Ops", id="ampersand-several"),
+    pytest.param("Été & Q&A", b"&AMk-t&AOk- &- Q&-A", id="ampersand-and-accents"),
 ]
 
 
-@pytest.mark.parametrize("name,encoded", NON_ASCII)
+@pytest.mark.parametrize("name,encoded", ENCODED)
 def test_a_non_ascii_folder_can_be_created(imap_server, name, encoded):
     """The bug, in the terms the user meets it: this raised
     UnicodeEncodeError and answered 500 for a perfectly ordinary name."""
@@ -72,7 +84,7 @@ def test_a_non_ascii_folder_can_be_created(imap_server, name, encoded):
     assert encoded in created[0]
 
 
-@pytest.mark.parametrize("name,encoded", NON_ASCII)
+@pytest.mark.parametrize("name,encoded", ENCODED)
 def test_the_subscribe_leg_is_encoded_too(imap_server, name, encoded):
     """Both verbs or neither. SUBSCRIBE takes the same name and would have
     failed the same way — and it runs second, so CREATE succeeding first is
@@ -85,12 +97,13 @@ def test_the_subscribe_leg_is_encoded_too(imap_server, name, encoded):
 
 
 def test_an_ascii_name_goes_out_unchanged():
-    """mUTF-7 leaves ASCII alone, so the common case must not gain a wrapper
-    that changes what a working server already sees."""
+    """The common case must not gain a wrapper that changes what a working
+    server already sees — ALMOST all of ASCII passes through untouched."""
     assert imap_utf7.encode("Archive") == b"Archive"
+    assert imap_utf7.encode("Archive/2026") == b"Archive/2026"
 
 
-@pytest.mark.parametrize("name,encoded", NON_ASCII)
+@pytest.mark.parametrize("name,encoded", ENCODED)
 def test_a_created_name_round_trips_through_the_listing(imap_server, name, encoded):
     """The asymmetry, closed. What `create_folder` puts on the wire is what
     `list_folders` reads back — the same spelling the user typed, not the
@@ -102,7 +115,7 @@ def test_a_created_name_round_trips_through_the_listing(imap_server, name, encod
         stream.write(b'* LIST (\\HasNoChildren) "." "' + encoded + b'"\r\n')
         stream.write(tag + b" OK done\r\n")
         stream.flush()
-        return None
+        return True
 
     conn, _sent = imap_server(handle=answer_list)
     store = _store_over(conn)
@@ -135,3 +148,28 @@ def test_framing_is_still_rejected_before_anything_is_encoded(imap_server, name)
     with pytest.raises(ProtocolNameError):
         _store_over(conn).create_folder(name)
     assert len(sent) == before, f"a rejected name still reached the wire: {sent[before:]!r}"
+
+
+def test_the_server_fixture_leaves_the_session_usable_after_a_handled_command(imap_server):
+    """The fixture's own contract, pinned because it was wrong once.
+
+    A handler that wrote its own reply and returned None got a SECOND tagged
+    OK appended by the loop. imaplib reads that as `unexpected tagged
+    response` and aborts the NEXT command — a corrupted session surfacing as
+    a `MailServerUnavailable` several lines from its cause. It was harmless
+    only because the one handler in the suite answered the last command.
+    """
+
+    def answer_list(conn, stream, tag, line):
+        if b"LIST" not in line.upper():
+            return None
+        stream.write(b'* LIST (\\HasNoChildren) "." "Inbox"\r\n')
+        stream.write(tag + b" OK done\r\n")
+        stream.flush()
+        return True
+
+    conn, _sent = imap_server(handle=answer_list)
+    store = _store_over(conn)
+    assert [f["name"] for f in store.list_folders()] == ["Inbox"]
+    # The command AFTER the handled one is where the duplicate OK landed.
+    store.create_folder("Archive")
