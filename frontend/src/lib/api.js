@@ -37,36 +37,56 @@ export class ApiError extends Error {
 }
 
 /**
+ * The server's own words, or the raw body if it did not send any we can read.
+ *
+ * Errors reaching this client put their explanation under `detail`, and it
+ * arrives in TWO shapes — verified against the running app, not assumed:
+ *
+ *   string  the app's own failures (`app.py` has three JSONResponse handlers)
+ *           and Starlette's rendering of an HTTPException, e.g. the login
+ *           rate limiter: `{"detail":"Too many login attempts..."}`
+ *   list    FastAPI's RequestValidationError, one object per bad field:
+ *           `[{"loc":["body","port_imap"],"msg":"Value error, Invalid port
+ *           number", ...}]` — reachable from the login form, whose Advanced
+ *           section exposes both port fields
+ *
+ * Interpolating the body verbatim put literal JSON in front of the user in
+ * both cases. Handling only the string half left the 422 exactly as broken,
+ * in the same box.
+ *
+ * Falls back to the raw text rather than throwing, because a proxy or gateway
+ * can answer with HTML this app never generated, and losing the wording is
+ * better than losing the error.
+ */
+async function detailFrom(res) {
+  const text = await res.text();
+  try {
+    const { detail } = JSON.parse(text) ?? {};
+    if (typeof detail === 'string') return detail;
+    if (Array.isArray(detail)) {
+      // `loc` starts with the section ("body", "query"); the rest is the
+      // field path, which is the half a person can act on.
+      const lines = detail
+        .filter((item) => item && typeof item.msg === 'string')
+        .map(({ loc, msg }) => {
+          const field = Array.isArray(loc) ? loc.slice(1).join('.') : '';
+          return field ? `${field}: ${msg}` : msg;
+        });
+      if (lines.length) return lines.join('; ');
+    }
+  } catch {
+    // Not JSON, or not an object. The body is the best we have.
+  }
+  return text;
+}
+
+/**
  * Turn a failed response into an ApiError, and end the session if it ended.
  *
  * One place, because two request paths need it: `request` and the multipart
  * `importScript`, which builds its own fetch and used to carry a hand-copied
  * version of this. Two copies of "what does a 401 mean" is how they drift.
  */
-/**
- * The server's own sentence, or the raw body if it did not send one.
- *
- * Every error this backend raises answers `{"detail": "..."}` — `app.py`
- * builds them all through one JSONResponse — so interpolating the body
- * verbatim put literal JSON in front of the user. The rate limiter makes that
- * easy to hit: five mistyped passwords and the login form read
- * `429: {"detail":"Too many login attempts. Try again in 5 minutes."}`.
- *
- * Falls back to the raw text rather than throwing, because a proxy or a
- * gateway can answer with HTML this app never generated, and losing the
- * wording is better than losing the error.
- */
-async function detailFrom(res) {
-  const text = await res.text();
-  try {
-    const parsed = JSON.parse(text);
-    if (parsed && typeof parsed.detail === 'string') return parsed.detail;
-  } catch {
-    // Not JSON. The body is the best we have.
-  }
-  return text;
-}
-
 async function failureFor(res, path) {
   const preAuth = PRE_AUTH_PATHS.has(path);
   if (res.status === 401 && !preAuth) {

@@ -113,9 +113,11 @@ doesn't understand.
 
 ### Frontend routing
 
-`App.svelte` uses a `view` store (`login` | `dashboard` | `editor` | `raw`) for client-side
+`App.svelte` uses a `view` store (`login` | `dashboard` | `editor` | `raw` | `privacy`) for client-side
 routing — no router library. The `api.js` client auto-dispatches `ays:logout` custom events
-on 401 responses.
+on 401 responses — except for `PRE_AUTH_PATHS` (`/auth/login`), where a 401 means the
+credentials were refused rather than a session ending (`.21`). Failures are `ApiError`s
+carrying `.status` and `.preAuth`, so no caller reads a status out of a message.
 
 ### Backend endpoint conventions
 

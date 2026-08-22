@@ -146,6 +146,61 @@ describe('the message is the server\'s sentence, not its JSON', () => {
     expect(error.message).not.toContain('{');
   });
 
+  it('renders a validation error, which arrives as a LIST not a string', async () => {
+    // FastAPI's RequestValidationError puts one object per bad field under
+    // `detail`. Verified against the running app: POST /api/auth/login with
+    // port_imap 99999 answers exactly this. The login form's Advanced section
+    // exposes both port fields, so it is one keystroke away — and handling
+    // only the string shape left it showing raw JSON.
+    respond({
+      status: 422,
+      body: JSON.stringify({
+        detail: [
+          {
+            type: 'value_error',
+            loc: ['body', 'port_imap'],
+            msg: 'Value error, Invalid port number',
+            input: 99999,
+          },
+        ],
+      }),
+    });
+    const error = await api.login({ host: 'h', username: 'u', password: 'p' }).catch((e) => e);
+    expect(error.message).toBe('422: port_imap: Value error, Invalid port number');
+    expect(error.message).not.toContain('{');
+  });
+
+  it('joins several bad fields rather than showing the first', async () => {
+    respond({
+      status: 422,
+      body: JSON.stringify({
+        detail: [
+          { loc: ['body', 'password'], msg: 'Field required' },
+          { loc: ['body', 'port_sieve'], msg: 'Value error, Invalid port number' },
+        ],
+      }),
+    });
+    const error = await api.login({ host: 'h', username: 'u' }).catch((e) => e);
+    expect(error.message).toBe(
+      '422: password: Field required; port_sieve: Value error, Invalid port number',
+    );
+  });
+
+  it('a non-string, non-list detail falls back rather than stringifying', async () => {
+    // THE GUARD. Mutating `typeof detail === 'string'` to `detail !== undefined`
+    // left every other test green, so nothing stood between a structured
+    // detail and the user. This is what fails if that guard is loosened.
+    respond({ status: 400, body: '{"detail":123}' });
+    const error = await api.listScripts().catch((e) => e);
+    expect(error.message).toBe('400: {"detail":123}');
+  });
+
+  it('a list of entries we cannot read falls back to the body', async () => {
+    respond({ status: 422, body: '{"detail":[{"nope":1}]}' });
+    const error = await api.listScripts().catch((e) => e);
+    expect(error.message).toBe('422: {"detail":[{"nope":1}]}');
+  });
+
   it('falls back to the raw body when it is not the shape we send', async () => {
     // A proxy or gateway can answer with HTML this app never generated.
     // Losing the wording would be worse than showing it.
