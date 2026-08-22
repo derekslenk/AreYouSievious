@@ -10,6 +10,7 @@ ASGI middleware lives in backend/middleware.py.
 """
 
 import argparse
+import logging
 from pathlib import Path
 
 from auth import SessionManager
@@ -94,6 +95,35 @@ async def _protocol_name_handler(_request: Request, exc: Exception):
 # ── App construction ──
 
 
+log = logging.getLogger("app")
+
+
+def _warn_if_no_trusted_proxies(cfg: Settings) -> None:
+    """Say what an empty AYS_TRUSTED_PROXIES means BEHIND A PROXY.
+
+    Unset is the right default and is not changed here: trusting
+    `X-Forwarded-For` from any caller is the hole the F-2 fix closed
+    (CWE-290/348). But `_get_client_ip` then falls back to the direct peer,
+    and behind a reverse proxy the direct peer is the PROXY, for every
+    request — so the login limiter's 5-per-5-minutes bucket is shared by
+    everyone on the instance and five failed logins lock all of them out.
+
+    Nothing about that is visible from outside. The app starts, serves, and
+    throttles; the symptom arrives minutes later as "nobody can log in". A
+    deploy that puts this behind Traefik, nginx or Caddy needs the CIDR set,
+    and this is where it gets told. See docs/DEPLOY.md.
+    """
+    if cfg.trusted_proxies:
+        return
+    log.warning(
+        "AYS_TRUSTED_PROXIES is empty, so X-Forwarded-For is ignored and the "
+        "login rate limit is keyed on the direct peer. Correct when this app "
+        "faces clients directly; behind a reverse proxy it means EVERY client "
+        "shares one rate limit bucket and five failed logins lock out all "
+        "users. See docs/DEPLOY.md."
+    )
+
+
 def create_app(config: Settings | None = None) -> FastAPI:
     """Build an app from an explicit configuration.
 
@@ -103,6 +133,7 @@ def create_app(config: Settings | None = None) -> FastAPI:
     this, instead of mutating os.environ and reloading the module.
     """
     cfg = config or settings()
+    _warn_if_no_trusted_proxies(cfg)
 
     app = FastAPI(
         title="AreYouSievious",

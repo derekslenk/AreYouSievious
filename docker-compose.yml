@@ -1,3 +1,11 @@
+# LOCAL DEVELOPMENT ONLY.
+#
+# This publishes to 127.0.0.1, which a platform's reverse proxy (Coolify's
+# Traefik, for one) cannot reach — pointing a deploy at this file gets a
+# container nothing can talk to. Deployments build the Dockerfile directly;
+# see docs/DEPLOY.md, which also lists the variables that matter in
+# production and are deliberately absent here.
+
 services:
   areyousievious:
     build: .

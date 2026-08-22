@@ -19,6 +19,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `docs/DEPLOY.md`: Coolify deployment runbook (Dockerfile build pack, the environment variables that matter in production, and the two behaviours that surprise operators — in-memory sessions, and the SSRF guard refusing a private mail server). The app now warns at startup when `AYS_TRUSTED_PROXIES` is empty, which behind a reverse proxy means every client shares one login rate-limit bucket
+
 - `POST /api/scripts/preview` renders one Rule through the backend generator, and the SPA's duplicate generator (`previewRule`) is deleted. The preview is now the bytes a save writes, asserted as such; the duplicate had diverged five ways, including showing nothing for a Rule whose last Condition was deleted while a save wrote invalid Sieve (areyousievious-8fg.17)
 
 - GitHub Actions CI workflow (`.github/workflows/ci.yml`): runs pytest and frontend build on every push and pull request (P1)

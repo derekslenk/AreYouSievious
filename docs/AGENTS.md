@@ -10,6 +10,7 @@ Project documentation: architecture notes, decision records, agent-skill configu
 | File | Description |
 |------|-------------|
 | `ARCHITECTURE.md` | Long-form architecture write-up. **Partly stale** — tracked by `bd:areyousievious-8au` (dead file references, a `/api/test` endpoint that was never built, and a rule shape carrying an `id` that ADR-0001 removed) |
+| `DEPLOY.md` | The deployment runbook: Coolify via the repo's Dockerfile, the environment variables that matter in production, and the two behaviours that surprise operators (in-memory sessions, and the SSRF guard refusing a private mail server). Anything asserted there is checked against the running app before it is written down |
 
 ## Subdirectories
 | Directory | Purpose |
