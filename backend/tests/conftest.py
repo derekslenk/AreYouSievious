@@ -100,3 +100,86 @@ def authed_client(authed_session):
         return client
 
     return _make
+
+
+# ── A real IMAP server on a real socket ──
+
+
+@pytest.fixture
+def imap_server():
+    """Factory: a loopback IMAP listener, and the lines the client sent it.
+
+    Some behaviour cannot be observed through a MagicMock, because the thing
+    under test is what the LIBRARY does with what we hand it. `imaplib`
+    encodes command arguments itself (`bytes(arg, self._encoding)`, ascii by
+    default), so a mock conn accepts a folder name that the real one refuses —
+    the exact shape of a passing test that means nothing.
+
+    Returns `(connect, sent)`: call `connect(handle=None)` for a real
+    `imaplib.IMAP4` already logged in, and read `sent` afterwards for the raw
+    bytes that arrived. `handle(conn, stream, tag, line)` may take over a
+    command to misbehave; returning None falls through to a tagged OK.
+
+    No TLS and no network: 127.0.0.1 on an ephemeral port, a daemon thread,
+    and a timeout on every read so nothing here can hang CI.
+    """
+    import imaplib
+    import socket
+    import threading
+
+    timeout = 5.0
+    connections: list = []
+
+    def _make(handle=None):
+        sent: list[bytes] = []
+        listener = socket.socket()
+        listener.bind(("127.0.0.1", 0))
+        listener.listen(1)
+        listener.settimeout(timeout)
+        port = listener.getsockname()[1]
+
+        def run() -> None:
+            try:
+                conn, _ = listener.accept()
+            except OSError:
+                listener.close()
+                return
+            conn.settimeout(timeout)
+            stream = conn.makefile("rwb")
+            stream.write(b"* OK [CAPABILITY IMAP4REV1 AUTH=PLAIN] ready\r\n")
+            stream.flush()
+            try:
+                while True:
+                    line = stream.readline()
+                    if not line:
+                        break
+                    sent.append(line)
+                    tag = line.split(b" ", 1)[0]
+                    if handle is not None and handle(conn, stream, tag, line):
+                        break
+                    if b"CAPABILITY" in line.upper():
+                        stream.write(b"* CAPABILITY IMAP4REV1\r\n" + tag + b" OK done\r\n")
+                    else:
+                        stream.write(tag + b" OK done\r\n")
+                    stream.flush()
+            except OSError:
+                pass
+            finally:
+                for closeable in (conn, listener):
+                    try:
+                        closeable.close()
+                    except OSError:
+                        pass
+
+        threading.Thread(target=run, daemon=True).start()
+        client = imaplib.IMAP4("127.0.0.1", port, timeout=timeout)
+        client.login("user", "pass")
+        connections.append(client)
+        return client, sent
+
+    yield _make
+    for client in connections:
+        try:
+            client.shutdown()
+        except Exception:
+            pass

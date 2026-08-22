@@ -66,6 +66,28 @@ def _decode_name(atom) -> str:
     return str(atom)
 
 
+def _encode_name(name: str) -> bytes:
+    """A mailbox name as the bytes IMAP wants on the wire.
+
+    The outbound mirror of `_decode_name`, and it lives beside it on purpose:
+    `.12` taught this module to READ modified UTF-7 and left writing it
+    undone, so the UI began spelling `Été` correctly for the first time while
+    `create_folder("Été")` raised UnicodeEncodeError — imaplib encodes command
+    arguments itself with `bytes(arg, self._encoding)`, and `_encoding` is
+    ascii unless `enable("UTF8=ACCEPT")` has run, which we never call.
+
+    Bytes rather than str because that is what stops imaplib re-encoding:
+    `_command` converts only `str` arguments and passes bytes through
+    untouched. Handing it a str of mUTF-7 would work by accident for ASCII
+    and be wrong the moment it was not.
+
+    Not `enable("UTF8=ACCEPT")`, deliberately: that needs a capability check
+    and changes the encoding of everything on the connection, to solve what
+    one codec call at the boundary already solves.
+    """
+    return imap_utf7.encode(name)
+
+
 def _decode_flag(atom) -> str:
     """One LIST flag, which is an ATOM and never modified UTF-7.
 
@@ -287,10 +309,18 @@ class ImapFolderStore:
         The framing guard lives in `protocol_names`, shared with the
         ManageSieve script-name sink — same hazard, same rule, one place.
         """
+        # Order is load-bearing. `validate_folder_name` guards command framing
+        # — CR, LF, NUL, quote — and it must inspect the name the CALLER gave,
+        # not an encoded form of it. mUTF-7 happens to leave those characters
+        # alone, but a guard that depends on that is checking a value it does
+        # not own.
         validate_folder_name(name)
-        status, detail = self._conn.create(f'"{name}"')
+        quoted = b'"' + _encode_name(name) + b'"'
+        status, detail = self._conn.create(quoted)
         if status != "OK":
             raise relayed(FolderRejected, server_text(detail))
-        status, detail = self._conn.subscribe(f'"{name}"')
+        # Both verbs, or the folder is created under one spelling and
+        # subscribed under another.
+        status, detail = self._conn.subscribe(quoted)
         if status != "OK":
             raise relayed(FolderRejected, server_text(detail))
