@@ -21,6 +21,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - GitHub Actions CI workflow (`.github/workflows/ci.yml`): runs pytest and frontend build on every push and pull request (P1)
 - Sieve parser regression test suite (`backend/tests/`) covering round-trip stability, else/elsif handling, address-part/`:comparator` parsing, and ReDoS budget (Phase CP1)
+- Sieve fixture corpus (`backend/test_scripts/`): twelve hand-written one-construct fixtures plus sievelib's parser corpus vendored under MIT in `vendor/`, with a per-fixture recognition census and a pinned recogniser-reach total (areyousievious-8fg.3)
 - Frontend `rebuildOrder` unit test covering delete-after-reorder desync scenario
 - Footer with GitHub link and privacy policy page
 - Browser back/forward navigation between views
