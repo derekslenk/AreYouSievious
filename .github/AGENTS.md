@@ -20,7 +20,7 @@ GitHub configuration: issue/PR templates and CI workflows.
 ## Workflows
 | Workflow | Trigger | What it gates |
 |----------|---------|---------------|
-| `ci.yml` | push + PR to `main` | Three jobs: **backend** (ruff check, ruff format --check, pytest), **frontend** (vitest, svelte-check, vite build), **contract** (regenerates wire types and fails if the committed artifacts are stale) |
+| `ci.yml` | push to `main`, **and every PR whatever its base** (`.8su` — a base filter left stacked PRs ungated, their checks reading green because none ran) | Three jobs: **backend** (ruff check, ruff format --check, pytest), **frontend** (vitest, svelte-check, vite build), **contract** (regenerates wire types and fails if the committed artifacts are stale) |
 | `release.yml` | tags matching `v*` | Multi-arch image build, push to GHCR, cosign signature |
 | `claude.yml` | `@claude` mention in issues/PR comments/reviews | Claude Code action |
 | `claude-code-review.yml` | PR opened/synchronized/reopened | Automated PR review |

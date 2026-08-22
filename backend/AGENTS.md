@@ -31,7 +31,7 @@ FastAPI application that serves the Svelte SPA as static files and provides a RE
 | Directory | Purpose |
 |-----------|---------|
 | `routers/` | One module per URL area: `auth`, `scripts`, `folders`, `health`, `static`. Do NOT cross-import between routers — shared helpers belong in `dependencies.py` |
-| `tests/` | 25 pytest files plus a shared conftest.py and `fakes.py` (in-memory ScriptStore/FolderStore), mostly regression locks tied to a bead id in the module docstring |
+| `tests/` | 26 pytest files plus a shared conftest.py and `fakes.py` (in-memory ScriptStore/FolderStore), mostly regression locks tied to a bead id in the module docstring |
 | `test_scripts/` | Sample Sieve scripts used as round-trip fixtures (see `test_scripts/AGENTS.md`) |
 
 ## For AI Agents
@@ -58,7 +58,7 @@ FastAPI application that serves the Svelte SPA as static files and provides a RE
 4. **Order**: `SieveScript.entries` is ONE ordered sequence of `Rule | RawBlock` — position IS the evaluation order. `.rules` and `.raw_blocks` are read-only filtered views. There is no separate `order` array; the parallel-array representation it replaced could drop a rule on save when the arrays disagreed.
 
 ### Testing Requirements
-- `cd backend && python -m pytest tests/ -v` — 25 files. Install with `pip install -r requirements.txt -r requirements-dev.txt`.
+- `cd backend && python -m pytest tests/ -v` — 26 files. Install with `pip install -r requirements.txt -r requirements-dev.txt`.
 - Lint/format: `ruff check backend/` and `ruff format --check backend/`. CI runs both.
 - Round-trip fidelity is asserted as a *fixed point* over every `test_scripts/*.sieve` fixture, in both text and AST. Counting rules is not sufficient — count-only assertions stayed green while action order silently changed.
 - Regression tests name the bead they lock in their module docstring; keep that convention when adding one.

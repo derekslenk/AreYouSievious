@@ -3,8 +3,16 @@ name: CI
 on:
   push:
     branches: [main]
+  # Deliberately NO `branches` filter. This was `branches: [main]`, which
+  # matched only PRs based on main — so a STACKED pull request, the way this
+  # repo lands dependent work, ran none of the jobs below. Its checks then
+  # read as green because they never ran, which looks exactly like green
+  # because they passed (areyousievious-8su; observed on PR #54).
+  #
+  # Not double work: a pull_request run tests the MERGE of head into base, so
+  # the stacked PR tests itself against its parent and the parent later tests
+  # itself against main. Different trees.
   pull_request:
-    branches: [main]
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
