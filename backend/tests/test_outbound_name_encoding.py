@@ -26,6 +26,8 @@ encodes script names with UTF-8 (`getscript`/`deletescript` call
 from __future__ import annotations
 
 import base64
+import imaplib
+import time
 
 import pytest
 from auth import Session
@@ -230,3 +232,29 @@ def test_the_expected_bytes_are_the_spec_not_just_the_library(name, encoded):
     above is wrong or imapclient is — and either way this fails first."""
     assert _rfc3501_encode(name) == encoded
     assert imap_utf7.encode(name) == encoded
+
+
+def test_the_server_fixture_disconnects_promptly(imap_server):
+    """The fixture's documented close idiom, timed because it was wrong once.
+
+    `makefile` holds its own reference to the descriptor, so a handler that
+    closed only `conn` released nothing: the client saw no EOF until the
+    server's own `readline` hit its five-second timeout. The docstring
+    promised "the next read sees EOF" and meant it literally; it was five
+    seconds late in a suite that otherwise finishes in two.
+    """
+
+    def hang_up(conn, stream, tag, line):
+        if b"CREATE" not in line.upper():
+            return None
+        stream.close()
+        conn.close()
+        return True
+
+    conn, _sent = imap_server(handle=hang_up)
+    started = time.monotonic()
+    with pytest.raises(imaplib.IMAP4.abort):
+        conn.create(b'"X"')
+    # The failing path took 5s; anything under a second is the closed socket
+    # being seen immediately rather than a timeout being waited out.
+    assert time.monotonic() - started < 1.0

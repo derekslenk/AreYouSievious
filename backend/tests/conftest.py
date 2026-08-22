@@ -121,8 +121,14 @@ def imap_server():
 
     `handle(conn, stream, tag, line)` may answer a command itself. Return
     TRUTHY to say "I replied to this one" — the loop then writes nothing and
-    keeps serving. Return None to fall through to a tagged OK. A handler that
-    wants the session to end closes `conn`; the next read sees EOF.
+    keeps serving. Return None to fall through to a tagged OK.
+
+    A handler that wants the session to end must close `stream` BEFORE
+    `conn`, in that order. `makefile` holds its own reference to the
+    descriptor, so closing only the socket does not release it: the client
+    sees nothing until this side's `readline` hits the timeout below, and the
+    disconnect that should be instant costs the full five seconds. Measured —
+    5.00s socket-only versus 0.00s stream-first.
 
     That return value is load-bearing, not a style choice. A handler that
     wrote its own reply and returned None got a SECOND tagged OK appended,
@@ -172,10 +178,13 @@ def imap_server():
                     else:
                         stream.write(tag + b" OK done\r\n")
                     stream.flush()
-            except OSError:
+            except (OSError, ValueError):
+                # ValueError: a handler that ended the session closed the
+                # stream, and the readline above is reading a closed file.
+                # That is the documented way out, not an error.
                 pass
             finally:
-                for closeable in (conn, listener):
+                for closeable in (stream, conn, listener):
                     try:
                         closeable.close()
                     except OSError:
