@@ -21,7 +21,7 @@ from auth import Session, sessions
 from config import Settings
 from dependencies import SESSION_COOKIE, get_optional_session, get_settings
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
-from imap_client import verify_credentials
+from imap_store import verify_credentials
 from middleware import CSRF_COOKIE, generate_csrf_token
 from ssrf import validate_host
 

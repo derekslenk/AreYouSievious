@@ -34,7 +34,7 @@ import mail_dial
 import pytest
 from auth import Session
 from config import Settings
-from imap_client import ImapFolderStore
+from imap_store import ImapFolderStore
 from mail_errors import AuthFailed, MailServerUnavailable, MailStoreError
 from managesieve_client import SieveClient
 
@@ -209,7 +209,7 @@ def test_an_expired_password_is_an_auth_failure_not_a_server_error():
     no longer does gave HTTP 500 on GET /api/folders."""
     conn = MagicMock()
     conn.login.side_effect = imaplib.IMAP4.error("AUTHENTICATIONFAILED")
-    with patch("imap_client.open_imap", return_value=conn):
+    with patch("imap_store.open_imap", return_value=conn):
         with pytest.raises(AuthFailed):
             with ImapFolderStore(_session(), Settings()):
                 pass
@@ -221,7 +221,7 @@ def test_a_dropped_connection_during_login_is_not_an_auth_failure():
     working password."""
     conn = MagicMock()
     conn.login.side_effect = imaplib.IMAP4.abort("connection closed")
-    with patch("imap_client.open_imap", return_value=conn):
+    with patch("imap_store.open_imap", return_value=conn):
         with pytest.raises(MailServerUnavailable):
             with ImapFolderStore(_session(), Settings()):
                 pass
@@ -297,7 +297,7 @@ def test_login_tells_a_dropped_socket_from_a_bad_password(make_app, failure, sta
         patch("routers.auth.validate_host", return_value="93.184.216.34"),
         # The dial lives in the adapter now: the router no longer imports
         # imaplib or open_imap, which is the point of `.9`.
-        patch("imap_client.open_imap", return_value=conn),
+        patch("imap_store.open_imap", return_value=conn),
     ):
         with TestClient(make_app()) as http:
             r = http.post(
@@ -320,7 +320,7 @@ def test_a_socket_that_dies_mid_login_is_not_our_bug(failure):
     """
     conn = MagicMock()
     conn.login.side_effect = failure
-    with patch("imap_client.open_imap", return_value=conn):
+    with patch("imap_store.open_imap", return_value=conn):
         with pytest.raises(MailServerUnavailable):
             with ImapFolderStore(_session(), Settings()):
                 pass
@@ -347,7 +347,7 @@ def test_login_survives_a_transport_failure_mid_conversation(make_app, failure):
     conn.login.side_effect = failure
     with (
         patch("routers.auth.validate_host", return_value="93.184.216.34"),
-        patch("imap_client.open_imap", return_value=conn),
+        patch("imap_store.open_imap", return_value=conn),
     ):
         with TestClient(make_app(), raise_server_exceptions=False) as http:
             r = http.post(
@@ -368,7 +368,7 @@ def test_a_failed_login_does_not_leak_the_connection(failure):
     credentials plus a polling client turns into a steady drip."""
     conn = MagicMock()
     conn.login.side_effect = failure
-    with patch("imap_client.open_imap", return_value=conn):
+    with patch("imap_store.open_imap", return_value=conn):
         with pytest.raises(MailStoreError):
             with ImapFolderStore(_session(), Settings()):
                 pass

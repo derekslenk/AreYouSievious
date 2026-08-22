@@ -319,7 +319,7 @@ export interface components {
         /** FolderListItem */
         FolderListItem: {
             /** Delimiter */
-            delimiter: string;
+            delimiter?: string | null;
             /** Flags */
             flags?: string[];
             /** Name */

@@ -75,7 +75,7 @@ def transport_failures_are_semantic():
     try:
         yield
     except (MailStoreError, HostValidationError):
-        # Load-bearing, not defensive. `imap_client._login` raises AuthFailed
+        # Load-bearing, not defensive. `imap_store._login` raises AuthFailed
         # from INSIDE this net — the protocol's own errors have to be read
         # before the net sees them, because an IMAP4.error means "would not
         # talk to us" at the dial and "refused these credentials" during

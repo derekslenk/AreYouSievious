@@ -37,7 +37,7 @@ ManageSieve    IMAP
 | Editor | Monaco Editor | Sieve syntax highlighting, familiar to devs |
 | Backend | Python + FastAPI | sievelib already works, async-friendly |
 | ManageSieve | sievelib | Proven — we already use it for the grak script |
-| IMAP | imaplib (stdlib) | Folder listing only, no heavy deps |
+| IMAP | imaplib (stdlib) + imapclient | Folder listing only; imaplib transports, imapclient parses LIST and decodes mUTF-7. No heavy deps — imapclient has no runtime dependencies of its own, and `imapclient.IMAPClient` is not used |
 | Auth | Session cookies + IMAP creds | No stored passwords, authenticate each session |
 
 ## Auth Flow
@@ -219,7 +219,7 @@ areyousievious/
 │   ├── auth.py                 # Session management
 │   ├── sieve_transform.py      # Sieve <-> JSON
 │   ├── managesieve_client.py   # ManageSieve wrapper
-│   ├── imap_client.py          # IMAP folder ops
+│   ├── imap_store.py           # IMAP folder ops
 │   ├── test_engine.py          # Rule test runner
 │   └── requirements.txt
 ├── docs/
