@@ -37,12 +37,16 @@ One construct family per file, so "what does the parser do with X" has a single 
 | `raw-unparseable-if.sieve` | An `envelope` test and a `size` test wrapping a nested `if` — must land in `RawBlock` without the nested body being half-eaten |
 | `disabled-rules.sieve` | A `##`-commented rule. **Red on arrival** — see below |
 | `multiple-requires.sieve` | Repeated `require` statements and a multi-line one. **Red on arrival** — see below |
+| `lexical-brace-in-a-string.sieve` | `fileinto "Weird{Folder";` — the brace that used to hold the block open and swallow the rule after it (`.10`) |
+| `lexical-nested-if.sieve` | A nested block, which must reach `RawBlock` whole rather than have its inner condition dropped (`.10`) |
+| `lexical-commented-action.sieve` | A commented-out action inside a live block, which must stay commented out (`.10`) |
 
 ## For AI Agents
 
 ### Working In This Directory
 - Adding a `.sieve` file here automatically extends the parametrized suite. It must survive `parse -> generate` as a fixed point in both text and AST, AND be added to `RECOGNITION_CENSUS` in `../tests/test_sieve_transform.py` — an uncensused fixture fails on purpose
 - Empty files are skipped (the collector filters on `st_size > 0`)
+- Every fixture here must be LEXABLE — `tests/test_lexical_map.py::test_every_fixture_is_lexable` says so. The parser falls back to character counting for text sievelib's Lexer refuses, and a fixture on that path is silently exempt from the defects `.10` closes
 - When you hit a Sieve construct the parser mishandles, add the smallest fixture that reproduces it, then fix the parser — **do not adjust a fixture to match current behaviour**
 - If the fix belongs to a bead you are not working, the fixture still lands truthful: register it in the `_corpus({...})` call of the tests it fails, with a reason naming the owning bead. Those pins are `xfail(strict=True)`, so the day the fix lands the XPASS fails the suite and the pin has to go. A pin cannot outlive its defect
 - These files contain real addresses and folder names from the maintainer's mail. Do not add new fixtures carrying anyone else's PII; `tools/check-no-pii.sh` guards the fetch script but not this directory

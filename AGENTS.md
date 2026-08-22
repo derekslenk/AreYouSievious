@@ -41,7 +41,8 @@ Browser -> FastAPI REST API -> ManageSieve (4190) / IMAP (993) -> Mail server
 
 ### Key Architectural Constraints
 - Connections are not pooled; each API call opens a fresh connection via context managers
-- The Sieve parser is hand-rolled (not sievelib); unrecognized constructs become `RawBlock` (preserved verbatim)
+- The Sieve parser is hand-rolled, but its LEXICAL model is sievelib's Lexer (`.10`): sievelib says where the braces and comments really are, and our own code decides what becomes a `Rule`. sievelib's own AST and its `tosieve()` are NOT used — `tosieve()` is a normaliser that regenerates `roundcube.sieve` to the empty string
+- Unrecognized constructs become `RawBlock`, preserved verbatim. That safety net only works if the parser FAILS on what it cannot read; the defects `.10` closed were cases where it succeeded and misread instead
 - Round-trip must be lossless for supported constructs
 - Frontend uses Svelte 4 compat syntax (`export let`, `$:`, `on:click`) despite Svelte 5
 

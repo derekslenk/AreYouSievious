@@ -39,6 +39,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- Sieve recogniser now has a lexical model (sievelib's Lexer), closing three data-corrupting defects that all regenerated as valid Sieve: a `{` inside a quoted folder name merged the following rule into the previous one and dropped its condition; a nested `if` lost its inner condition, leaving the inner action firing on the outer one; and a commented-out action was resurrected as live (areyousievious-8fg.10)
+
 - Condition header is a free-text field with suggestions rather than a closed dropdown: a rule on an unlisted header (`x-spam-flag`) rendered as an empty select and lost its value the moment that select was opened (areyousievious-8fg.18)
 
 - Sieve parser round-trip stability: `else`/`elsif` blocks and `address` tests with `:comparator` modifiers now survive a parse → generate cycle without mutation (Phase CP1)

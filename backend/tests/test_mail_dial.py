@@ -175,6 +175,11 @@ _PROTOCOL_LIBRARIES = {"imaplib", "sievelib", "imapclient", "ssl", "socket"}
 # a convenience.
 # Keyed on the path relative to backend/, not the bare filename: a future
 # `routers/ssrf.py` must not inherit `ssrf.py`'s grant by sharing its name.
+#
+# A grant may name a SUBMODULE. `sievelib` grants all of sievelib, as it always
+# did; `sievelib.parser` grants only that module and nothing else under the
+# package. That precision is what let `.10` in without handing the transform
+# the ManageSieve client that lives one module over.
 _MAY_IMPORT: dict[str, set[str]] = {
     # The dial itself: the whole policy lives here.
     "mail_dial.py": _PROTOCOL_LIBRARIES,
@@ -188,6 +193,13 @@ _MAY_IMPORT: dict[str, set[str]] = {
     # Resolves names and checks addresses. Never connects — and the call
     # denylist below still holds it to that, since it legitimately has socket.
     "ssrf.py": {"socket"},
+    # The Sieve recogniser needs a LEXER, and sievelib has the only one that
+    # knows a `{` inside a string is not a block (.10). Granted at submodule
+    # precision on a checked claim: the whole import closure of
+    # `sievelib.parser` is re, sys, typing, typing_extensions, collections.abc
+    # and two sibling sievelib modules — it cannot open a socket, and
+    # `sievelib.managesieve`, which can, is NOT granted here.
+    "sieve_transform.py": {"sievelib.parser"},
     # Standalone utility, not imported by the app.
     "fetch_grak_script.py": _PROTOCOL_LIBRARIES,
 }
@@ -222,15 +234,31 @@ def _dialling_calls(path: Path) -> set[str]:
 
 
 def _protocol_imports(path: Path) -> set[str]:
-    """The mail-protocol libraries `path` imports, by top-level name."""
+    """The mail-protocol modules `path` imports, by FULL dotted name.
+
+    Full rather than top-level so a grant can be written at submodule
+    precision. Selection is still by top-level package, so `import sievelib`
+    and `from sievelib.managesieve import Client` are both still caught — the
+    change is only in how exactly a grant can answer them.
+    """
     tree = ast.parse(path.read_text())
     found = set()
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
-            found.update(alias.name.split(".")[0] for alias in node.names)
+            found.update(alias.name for alias in node.names)
         elif isinstance(node, ast.ImportFrom) and node.module and node.level == 0:
-            found.add(node.module.split(".")[0])
-    return found & _PROTOCOL_LIBRARIES
+            found.add(node.module)
+    return {name for name in found if name.split(".")[0] in _PROTOCOL_LIBRARIES}
+
+
+def _is_granted(module: str, allowed: set[str]) -> bool:
+    """A grant covers a module it names, and anything beneath it.
+
+    So `{"imaplib"}` still covers `imaplib` exactly as before, and
+    `{"sievelib.parser"}` covers `sievelib.parser` without covering
+    `sievelib.managesieve`.
+    """
+    return any(module == grant or module.startswith(grant + ".") for grant in allowed)
 
 
 _APP_MODULES = sorted(
@@ -255,10 +283,10 @@ def test_only_the_dial_and_its_adapters_may_import_a_protocol_library(path: Path
     `FolderStore` — so the next caller cannot have the tools either.
     """
     allowed = _MAY_IMPORT.get(str(path.relative_to(BACKEND)), set())
-    offenders = _protocol_imports(path) - allowed
+    offenders = {m for m in _protocol_imports(path) if not _is_granted(m, allowed)}
     assert not offenders, (
         f"{path.relative_to(BACKEND)} imports {sorted(offenders)}, which only "
-        f"{sorted(n for n, libs in _MAY_IMPORT.items() if libs & offenders)} may. "
+        f"{sorted(n for n, libs in _MAY_IMPORT.items() if any(_is_granted(m, libs) for m in offenders))} may. "
         "Route the conversation through a store adapter instead."
     )
 
@@ -361,3 +389,48 @@ def test_login_aborts_on_rebinding_without_connecting(make_app):
 
     assert r.status_code == 400, r.text
     mock_pinned.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    ("source", "expected"),
+    [
+        pytest.param("from sievelib.parser import Lexer\n", set(), id="the granted submodule"),
+        pytest.param(
+            "from sievelib.managesieve import Client\n",
+            {"sievelib.managesieve"},
+            id="a sibling under the same package",
+        ),
+        pytest.param("import sievelib\n", {"sievelib"}, id="the package itself"),
+        pytest.param(
+            "from sievelib import parser\n",
+            {"sievelib"},
+            id="the package, spelled as a from-import",
+        ),
+    ],
+)
+def test_a_submodule_grant_does_not_grant_its_siblings(
+    source: str, expected: set[str], tmp_path: Path
+) -> None:
+    """`sieve_transform.py` holds `{"sievelib.parser"}`, not `{"sievelib"}`.
+
+    That distinction is the whole reason the recogniser could take sievelib's
+    Lexer without also being handed the ManageSieve client that lives one
+    module over. If `_protocol_imports` ever went back to reporting top-level
+    names, the grant would silently widen to the entire package and this is
+    what would notice.
+
+    `from sievelib import parser` reports the PACKAGE, not the submodule, and
+    is therefore refused: it binds the package object, from which anything
+    under it can be reached.
+    """
+    module = tmp_path / "would_be_offender.py"
+    module.write_text(source)
+    allowed = _MAY_IMPORT["sieve_transform.py"]
+    assert {m for m in _protocol_imports(module) if not _is_granted(m, allowed)} == expected
+
+
+def test_the_grant_sieve_transform_holds_is_the_narrow_one() -> None:
+    """Stated separately from the test above, which would still pass if the
+    entry were widened to the whole package — its offenders would just become
+    empty. This is the claim that the entry itself is narrow."""
+    assert _MAY_IMPORT["sieve_transform.py"] == {"sievelib.parser"}
