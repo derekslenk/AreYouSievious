@@ -98,7 +98,10 @@ def main() -> int:
     for stale in DEST.glob("*.sieve"):
         stale.unlink()
 
-    seen: collections.Counter[str] = collections.Counter()
+    # `utf8` is claimed up front: it is written after this loop, so a test method
+    # that slugified to the same stem would otherwise be silently overwritten by
+    # it. Claiming it here makes that collision come out as `utf8-2` instead.
+    seen: collections.Counter[str] = collections.Counter({"utf8": 1})
     for method, text in _valid_scripts((tests / "test_parser.py").read_text()):
         body = textwrap.dedent(text).lstrip("\n")
         if not body.endswith("\n"):
