@@ -15,6 +15,7 @@ import re
 from dataclasses import dataclass, field
 
 from sievelib.parser import Lexer, Parser
+from sievelib.parser import ParseError as SieveLibParseError
 
 # ── Data Model ──
 
@@ -214,48 +215,66 @@ class _LexicalMap:
 
     __slots__ = ("brace_delta", "masked_lines", "open_braces", "usable")
 
-    def __init__(self, text: str) -> None:
+    @staticmethod
+    def _scan(text: str) -> tuple[bytes, list[tuple[int, str, bytes]]]:
+        """The bytes, and every token in them with its byte offset.
+
+        Raises exactly where the input is the problem: `ParseError` when the
+        Lexer meets a token it has no rule for, `UnicodeEncodeError` when the
+        text cannot be bytes at all. Both are the caller's cue to fall back.
+        """
         raw = text.encode("utf-8")
         # A BOM kills the Lexer for the WHOLE file — verified: it reports the
         # entire remaining text as one unknown token. Skipped rather than
         # removed, so `text` and every offset into it stay as the caller sees.
         start_at = len(_BOM) if raw.startswith(_BOM) else 0
 
-        line_starts = [0] + [i + 1 for i, byte in enumerate(raw) if byte == 0x0A]
-        count = len(line_starts)
-        self.open_braces = [0] * count
-        self.brace_delta = [0] * count
+        lexer = Lexer(Parser.lrules)
+        # `lexer.pos` is the START of the token just yielded: `scan` suspends
+        # at the yield and advances only afterwards. This is not a documented
+        # API — test_lexical_map.py pins it, so a sievelib upgrade that changes
+        # it fails loudly rather than silently mis-segmenting someone's script.
+        tokens = [(start_at + lexer.pos, name, value) for name, value in lexer.scan(raw[start_at:])]
+        return raw, tokens
+
+    def __init__(self, text: str) -> None:
+        lines = text.split("\n")
+        self.open_braces = [0] * len(lines)
+        self.brace_delta = [0] * len(lines)
+        self.masked_lines = lines
         self.usable = False
 
-        masked = bytearray(raw)
-        lexer = Lexer(Parser.lrules)
         try:
-            for name, value in lexer.scan(raw[start_at:]):
-                # `lexer.pos` is the START of the token just yielded: `scan`
-                # suspends at the yield and advances only afterwards. This is
-                # not a documented API — test_lexical_map.py pins it, so a
-                # sievelib upgrade that changes it fails loudly here rather
-                # than silently mis-segmenting someone's script.
-                begin = start_at + lexer.pos
-                line = bisect.bisect_right(line_starts, begin) - 1
-                if name == "left_cbracket":
-                    self.open_braces[line] += 1
-                    self.brace_delta[line] += 1
-                elif name == "right_cbracket":
-                    self.brace_delta[line] -= 1
-                elif name in _OPAQUE_TOKENS:
-                    # Same length, so every offset into the text still lands
-                    # where it did. Newlines are kept: a multiline token spans
-                    # lines, and collapsing them would renumber the file.
-                    for i in range(begin, begin + len(value)):
-                        if masked[i] != 0x0A:
-                            masked[i] = 0x20
-        except Exception:
-            # An unknown token anywhere. A PARTIAL map is worse than none —
-            # later lines would report zero braces and a block would run to
-            # end of file — so the whole map is abandoned.
-            self.masked_lines = text.split("\n")
+            raw, tokens = self._scan(text)
+        except (SieveLibParseError, UnicodeEncodeError):
+            # The Lexer refused the text, or it is not encodable at all — a
+            # lone surrogate reaches us intact through `json.loads`, and the
+            # character-counting parser this replaced never needed the text to
+            # be bytes. A PARTIAL map would be worse than none, since lines
+            # past the failure would report zero braces and a block would run
+            # to end of file, so the whole map is abandoned.
             return
+
+        # Deliberately NOT inside the try. Everything below is OUR arithmetic
+        # over tokens we already hold: a failure here is a bug in this class,
+        # and swallowing it would silently drop the lexical model and let the
+        # three defects back in with no signal. Loud is the safer failure.
+        line_starts = [0] + [i + 1 for i, byte in enumerate(raw) if byte == 0x0A]
+        masked = bytearray(raw)
+        for begin, name, value in tokens:
+            line = bisect.bisect_right(line_starts, begin) - 1
+            if name == "left_cbracket":
+                self.open_braces[line] += 1
+                self.brace_delta[line] += 1
+            elif name == "right_cbracket":
+                self.brace_delta[line] -= 1
+            elif name in _OPAQUE_TOKENS:
+                # Same length, so every offset into the text still lands where
+                # it did. Newlines are kept: a multiline token spans lines, and
+                # collapsing them would renumber the file.
+                for i in range(begin, begin + len(value)):
+                    if masked[i] != 0x0A:
+                        masked[i] = 0x20
 
         # Masking only ever replaces whole tokens with ASCII spaces, so the
         # result is still the same valid UTF-8 line for line.
@@ -268,9 +287,14 @@ class _LexicalMap:
 
 class SieveParser:
     """
-    Hand-rolled parser because sievelib's AST is hard to work with
-    for bidirectional transforms. We parse the common patterns we
-    support and preserve everything else as raw blocks.
+    Hand-rolled projection because sievelib's AST is hard to work with for
+    bidirectional transforms. We parse the common patterns we support and
+    preserve everything else as raw blocks.
+
+    Hand-rolled is not the same as text-munging: since `.10` the LEXICAL
+    questions — where a block ends, which bytes are a comment — are answered by
+    `_LexicalMap`, i.e. by sievelib's Lexer. What stays ours is the PROJECTION
+    onto Rule/Condition/Action, which is what sievelib's AST is a poor fit for.
     """
 
     def __init__(self, text: str):

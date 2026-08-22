@@ -231,6 +231,47 @@ def test_text_the_lexer_refuses_falls_back_rather_than_failing() -> None:
     assert any("@@@" in raw.text for raw in script.raw_blocks)
 
 
+def test_text_that_cannot_be_bytes_falls_back_rather_than_500ing() -> None:
+    """Raised in review of #62, and it was a REGRESSION, not a pre-existing gap.
+
+    `json.loads` decodes `"\\ud800"` into a lone-surrogate Python str, and
+    `SaveRawRequest.content` is a plain `str`, so one can be stored through
+    `PUT /api/scripts/{name}/raw` and read back. The character-counting parser
+    this replaced never needed the text to be bytes at all and handled it
+    fine; the first draft of this class encoded OUTSIDE its own safety net and
+    answered a 500 on the next GET.
+
+    Measured on that draft:
+        UnicodeEncodeError: 'utf-8' codec can't encode character '\\ud800'
+    Now it falls back, exactly as an unknown token does.
+    """
+    import json
+
+    lone_surrogate = json.loads(r'{"c": "keep;\ud800"}')["c"]
+
+    lex = st._LexicalMap(lone_surrogate)
+    assert not lex.usable
+
+    script = st.parse_sieve(lone_surrogate)
+    assert script.entries, "the old parser produced an entry here and so must this one"
+
+
+def test_the_fallback_is_narrow_by_construction() -> None:
+    """Also from the #62 review: a bare `except Exception` around the scan
+    would swallow bugs in our own arithmetic and silently drop the lexical
+    model — letting the three defects back in with no signal.
+
+    Only `_scan` is guarded, and only for the two ways the INPUT can be the
+    problem. Everything after it is our own arithmetic over tokens we already
+    hold, and is left to fail loudly.
+    """
+    assert st._LexicalMap._scan.__doc__, "_scan is the guarded boundary; keep it documented"
+    with pytest.raises(SieveLibParseError):
+        st._LexicalMap._scan("@@@ not sieve @@@")
+    with pytest.raises(UnicodeEncodeError):
+        st._LexicalMap._scan("\ud800")
+
+
 @pytest.mark.parametrize(
     "path",
     sorted(p for p in (BACKEND / "test_scripts").rglob("*.sieve") if p.stat().st_size > 0),
