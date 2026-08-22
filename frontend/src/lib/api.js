@@ -7,6 +7,56 @@ const CSRF_COOKIE = 'ays_csrf';
 const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
 const CSRF_EXEMPT_PATHS = new Set(['/auth/login']);
 
+// The requests that happen BEFORE there is a session. A 401 here means the
+// credentials just sent were refused — not that a session ended, because none
+// exists yet. Same membership as CSRF_EXEMPT_PATHS above and as the backend's
+// own middleware.py EXEMPT_PATHS, for the same reason; kept separate because
+// they answer different questions and a future pre-auth path need not be CSRF
+// exempt.
+const PRE_AUTH_PATHS = new Set(['/auth/login']);
+
+/**
+ * A failed request, carrying the status that caused it.
+ *
+ * The status lives on the error because callers used to read it out of the
+ * MESSAGE — `e.message.includes('401')` in Login.svelte — which was wrong
+ * twice over. It never matched, because a 401 threw `Error('Session
+ * expired')` with no digits in it; and it would have matched the wrong
+ * things, because `${status}: ${body}` puts the server's text in the message,
+ * so a diagnostic reading `line 401:` looked like a rejected password.
+ */
+export class ApiError extends Error {
+  constructor(message, status, { preAuth = false } = {}) {
+    super(message);
+    this.name = 'ApiError';
+    this.status = status;
+    // True only for a 401 answering a pre-auth request. Lets a caller say
+    // "these credentials were refused" without knowing which paths those are.
+    this.preAuth = preAuth;
+  }
+}
+
+/**
+ * Turn a failed response into an ApiError, and end the session if it ended.
+ *
+ * One place, because two request paths need it: `request` and the multipart
+ * `importScript`, which builds its own fetch and used to carry a hand-copied
+ * version of this. Two copies of "what does a 401 mean" is how they drift.
+ */
+async function failureFor(res, path) {
+  const preAuth = PRE_AUTH_PATHS.has(path);
+  if (res.status === 401 && !preAuth) {
+    // A session that existed and no longer does. Tearing down local state is
+    // the right response — and exactly the wrong one for a refused login,
+    // which is why that case never reaches here.
+    window.dispatchEvent(new CustomEvent('ays:logout'));
+    return new ApiError('Session expired', 401);
+  }
+  const text = await res.text();
+  if (res.status === 401) return new ApiError(text || 'Authentication failed', 401, { preAuth });
+  return new ApiError(`${res.status}: ${text}`, res.status);
+}
+
 function getCsrfToken() {
   // Double-submit cookie: read the non-httponly ays_csrf cookie set
   // by the backend on login and send it back as X-CSRF-Token. A
@@ -33,15 +83,7 @@ async function request(path, opts = {}) {
     ...opts,
     headers,
   });
-  if (res.status === 401) {
-    // Session expired
-    window.dispatchEvent(new CustomEvent('ays:logout'));
-    throw new Error('Session expired');
-  }
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(`${res.status}: ${text}`);
-  }
+  if (!res.ok) throw await failureFor(res, path);
   return res.json();
 }
 
@@ -75,9 +117,8 @@ export const api = {
       credentials: 'include',
       headers: { 'X-CSRF-Token': getCsrfToken() },
       body: form,
-    }).then(r => {
-      if (r.status === 401) { window.dispatchEvent(new CustomEvent('ays:logout')); throw new Error('Session expired'); }
-      if (!r.ok) return r.text().then(t => { throw new Error(`${r.status}: ${t}`); });
+    }).then(async r => {
+      if (!r.ok) throw await failureFor(r, '/scripts/import');
       return r.json();
     });
   },

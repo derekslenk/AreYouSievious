@@ -26,7 +26,14 @@
       view.set('dashboard');
       showToast('Connected');
     } catch (e) {
-      error = e.message.includes('401') ? 'Invalid credentials' : e.message;
+      // `e.status`, not a substring of `e.message`. This read
+      // `e.message.includes('401')`, which could never match: api.js turned
+      // every 401 into `Error('Session expired')`, so a mistyped password
+      // showed "Session expired" and fired the global logout event. It would
+      // also have matched the wrong things — the server's text is
+      // interpolated into the message, so `line 401:` in a diagnostic read
+      // as a rejected password.
+      error = e.preAuth ? 'Invalid credentials' : e.message;
     } finally {
       loading = false;
     }
