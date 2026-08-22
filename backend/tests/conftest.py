@@ -21,7 +21,6 @@ if str(BACKEND) not in sys.path:
 import httpx  # noqa: E402
 import pytest  # noqa: E402
 from app import create_app  # noqa: E402
-from auth import sessions  # noqa: E402
 from config import Settings  # noqa: E402
 from dependencies import (  # noqa: E402
     SESSION_COOKIE,
@@ -59,22 +58,30 @@ def asgi_client_for():
 
 
 @pytest.fixture
-def authed_session():
-    """(token, csrf, cookies) for a real session in the process-global store,
-    destroyed on teardown."""
-    token = sessions.create(
-        host="mail.example.com",
-        host_ip="93.184.216.34",
-        username="user@example.com",
-        password="hunter2",
-    )
-    cookies = {SESSION_COOKIE: token, "ays_csrf": CSRF}
-    yield token, CSRF, cookies
-    sessions.destroy(token)
+def seed_session():
+    """Factory: put a real session in THIS app's store.
+
+    Takes the app rather than reaching for a global, and needs no teardown —
+    the store lives on `app.state` and dies with it. The fixture this replaced
+    created the session in a process-wide store BEFORE the app existed, so
+    every test shared one dict and a missed teardown leaked a session for the
+    rest of the run (`.23`).
+    """
+
+    def _seed(app) -> tuple[str, str, dict[str, str]]:
+        token = app.state.sessions.create(
+            host="mail.example.com",
+            host_ip="93.184.216.34",
+            username="user@example.com",
+            password="hunter2",
+        )
+        return token, CSRF, {SESSION_COOKIE: token, "ays_csrf": CSRF}
+
+    return _seed
 
 
 @pytest.fixture
-def authed_client(authed_session):
+def authed_client(seed_session):
     """Factory: a TestClient over a fresh app, session and CSRF preloaded.
 
     Pass `script_store` / `folder_store` to substitute a seam. They go in
@@ -89,8 +96,8 @@ def authed_client(authed_session):
         script_store=None,
         folder_store=None,
     ) -> TestClient:
-        _token, csrf, cookies = authed_session
         app = create_app(settings)
+        _token, csrf, cookies = seed_session(app)
         if script_store is not None:
             app.dependency_overrides[get_script_store] = lambda: script_store
         if folder_store is not None:

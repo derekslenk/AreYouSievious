@@ -24,7 +24,7 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 
-from auth import Session, sessions
+from auth import Session, SessionManager
 from config import Settings
 from fastapi import Depends, HTTPException, Request
 from imap_store import ImapFolderStore
@@ -43,6 +43,16 @@ def get_settings(request: Request) -> Settings:
     return request.app.state.settings
 
 
+def get_sessions(request: Request) -> SessionManager:
+    """The session store this app was built with.
+
+    `request.app.state.sessions`, never a module-level one — the store holds
+    plaintext passwords, and one shared by every app in the process is how a
+    session outlived the test that made it.
+    """
+    return request.app.state.sessions
+
+
 def get_session(request: Request) -> Session:
     """Extract and validate session from cookie or Authorization header."""
     token = request.cookies.get(SESSION_COOKIE)
@@ -52,7 +62,7 @@ def get_session(request: Request) -> Session:
             token = auth[7:]
     if not token:
         raise HTTPException(401, "Not authenticated")
-    session = sessions.get(token)
+    session = request.app.state.sessions.get(token)
     if not session:
         raise HTTPException(401, "Session expired")
     return session

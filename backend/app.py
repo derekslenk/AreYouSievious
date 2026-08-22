@@ -12,6 +12,7 @@ ASGI middleware lives in backend/middleware.py.
 import argparse
 from pathlib import Path
 
+from auth import SessionManager
 from config import Settings, settings
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -115,6 +116,15 @@ def create_app(config: Settings | None = None) -> FastAPI:
     # reads the configuration its app was built with — not whatever the
     # environment happens to say at that moment.
     app.state.settings = cfg
+
+    # The session store belongs to THIS app for the same reason: it was a
+    # module-level dict shared by every app in the process, so a session
+    # created by one test was visible to the next and the suite needed
+    # teardown to stop it. Reached through `dependencies.get_sessions`.
+    app.state.sessions = SessionManager(
+        idle_timeout=cfg.session_idle_timeout,
+        max_lifetime=cfg.session_max_lifetime,
+    )
 
     # Build the outbound TLS context now, so a missing or broken system CA
     # store fails while the app is being constructed rather than on a user's

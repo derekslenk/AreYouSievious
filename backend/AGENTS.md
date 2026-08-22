@@ -13,7 +13,7 @@ FastAPI application that serves the Svelte SPA as static files and provides a RE
 | `config.py` | Every environment variable, read into a frozen `Settings`. `settings()` reads the environment fresh and is called exactly once, by `create_app`; everything below it receives that instance (`Depends(get_settings)`, or `request.app.state.settings`) |
 | `dependencies.py` | The per-request dependencies routers RECEIVE: `get_settings` (reads `request.app.state.settings`), `get_session` (cookie or Bearer, raises 401), and `get_script_store` / `get_folder_store`, which yield an open adapter and close it when the request ends |
 | `api_models.py` | Pydantic request/response DTOs. Every model is `extra="forbid"` with `max_length` caps; `EntryDTO` is a `kind`-discriminated `RuleDTO \| RawBlockDTO` |
-| `auth.py` | `SessionManager` holding credentials in process memory (plaintext, 30 min idle timeout). Never persisted |
+| `auth.py` | `Session` and `SessionManager`, holding credentials in process memory (plaintext). NO module-level instance — `create_app` builds the store onto `app.state.sessions` and `dependencies.get_sessions` hands it out (`.23`), because one dict shared by every app in the process is what `app.state` exists to avoid. Every mutation holds a lock (sync handlers run in a threadpool; without it concurrent logins raised `RuntimeError: dictionary changed size during iteration` and `KeyError`, both from the sweep, AFTER the IMAP login had succeeded). Two clocks: an idle timeout and an absolute `max_lifetime` from `created_at`, which was previously written and never read. The sweep is rate-limited because it is O(n) — running it only on login meant a single-user deployment never swept |
 | `middleware.py` | `BodySizeLimitMiddleware` (Content-Length + streamed-byte cap) and `CSRFMiddleware` (double-submit cookie) |
 | `ssrf.py` | SSRF + DNS-rebinding guards. `validate_host` pins an IP at login; `assert_host_resolves_to` re-checks at every connect |
 | `protocol_names.py` | `validate_script_name` / `validate_folder_name` / `ProtocolNameError` — one rule for both ManageSieve and IMAP framing, rejected before any protocol call |
@@ -31,7 +31,7 @@ FastAPI application that serves the Svelte SPA as static files and provides a RE
 | Directory | Purpose |
 |-----------|---------|
 | `routers/` | One module per URL area: `auth`, `scripts`, `folders`, `health`, `static`. Do NOT cross-import between routers — shared helpers belong in `dependencies.py` |
-| `tests/` | 29 pytest files plus a shared conftest.py and `fakes.py` (in-memory ScriptStore/FolderStore), mostly regression locks tied to a bead id in the module docstring |
+| `tests/` | 30 pytest files plus a shared conftest.py and `fakes.py` (in-memory ScriptStore/FolderStore), mostly regression locks tied to a bead id in the module docstring |
 | `test_scripts/` | Sample Sieve scripts used as round-trip fixtures (see `test_scripts/AGENTS.md`) |
 
 ## For AI Agents
@@ -58,7 +58,7 @@ FastAPI application that serves the Svelte SPA as static files and provides a RE
 4. **Order**: `SieveScript.entries` is ONE ordered sequence of `Rule | RawBlock` — position IS the evaluation order. `.rules` and `.raw_blocks` are read-only filtered views. There is no separate `order` array; the parallel-array representation it replaced could drop a rule on save when the arrays disagreed.
 
 ### Testing Requirements
-- `cd backend && python -m pytest tests/ -v` — 29 files. Install with `pip install -r requirements.txt -r requirements-dev.txt`.
+- `cd backend && python -m pytest tests/ -v` — 30 files. Install with `pip install -r requirements.txt -r requirements-dev.txt`.
 - Lint/format: `ruff check backend/` and `ruff format --check backend/`. CI runs both.
 - Round-trip fidelity is asserted as a *fixed point* over every `test_scripts/*.sieve` fixture, in both text and AST. Counting rules is not sufficient — count-only assertions stayed green while action order silently changed.
 - Regression tests name the bead they lock in their module docstring; keep that convention when adding one.
