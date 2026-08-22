@@ -19,14 +19,29 @@
  * Every mutation returns a NEW document rather than mutating in place, so
  * Svelte reactivity fires on reassignment.
  *
- * @typedef {{key: string, kind: 'rule', name: string, enabled: boolean,
- *            match: string, conditions: Condition[], actions: Action[]}} RuleEntry
- * @typedef {{key: string, kind: 'raw', text: string, comment: string}} RawEntry
+ * The editable types are the WIRE types plus a render key, imported from the
+ * generated `api-types.d.ts` rather than restated here (areyousievious-8fg.18).
+ * They used to be hand-written, and were already looser than the schema — this
+ * block said `address_part: string` where the schema pins a four-value union.
+ * Worse, nothing in the SPA imported the generated file at all: CI checked the
+ * artifact was CURRENT, never that any code CONSUMED it, so the alarm could not
+ * ring. Now `toWire` is declared to return the wire types, which makes it a
+ * checked whitelist: add a field to `ConditionDTO` and this file stops
+ * compiling, instead of every save silently discarding it — precisely the
+ * `:domain` loss the parser memorialises below.
+ *
+ * @import { components } from './api-types.d.ts'
+ * @typedef {components['schemas']['ConditionDTO']} WireCondition
+ * @typedef {components['schemas']['ActionDTO']} WireAction
+ * @typedef {components['schemas']['RuleDTO']} WireRule
+ * @typedef {components['schemas']['RawBlockDTO']} WireRaw
+ *
+ * @typedef {WireCondition & {key: string}} Condition
+ * @typedef {WireAction & {key: string}} Action
+ * @typedef {Omit<WireRule, 'conditions' | 'actions'>
+ *           & {key: string, conditions: Condition[], actions: Action[]}} RuleEntry
+ * @typedef {WireRaw & {key: string}} RawEntry
  * @typedef {RuleEntry | RawEntry} Entry
- * @typedef {{key: string, header: string, match_type: string, value: string,
- *            address_test: boolean, negate: boolean, address_part: string,
- *            comparator: string}} Condition
- * @typedef {{key: string, type: string, argument: string}} Action
  * @typedef {{requires: string[], entries: Entry[]}} ScriptDocument
  */
 
@@ -36,7 +51,13 @@
 // and where ConditionBuilder re-derived address_test from its own private
 // header list. The components render these; they do not define them.
 
-/** Headers offered by the Condition builder. */
+/**
+ * Headers SUGGESTED by the Condition builder. Not a vocabulary: the field is
+ * free text backed by a `<datalist>`, because any quoted string is a legal
+ * Sieve header. Rendering it as a `<select>` lost data — a Condition on
+ * `x-spam-flag` matched no option, showed an empty dropdown, and kept its real
+ * value only until the user opened that select (areyousievious-8fg.18).
+ */
 export const HEADERS = [
   { value: 'from', label: 'From' },
   { value: 'to', label: 'To' },
@@ -161,8 +182,14 @@ export function fromWire(payload) {
  *
  * The backend DTOs are `extra="forbid"`, so a leaked `key` here is a 422.
  * That strictness is deliberate: a silent accept would write junk fields.
+ *
+ * The return type is the GENERATED wire type, not `object[]`. That is what
+ * turns this whitelist from a convention into a check: it cannot leak a render
+ * key (it names every field it copies), and it can no longer silently DROP one
+ * either, because a field added to the schema makes this function stop
+ * type-checking.
  * @param {ScriptDocument} doc
- * @returns {{requires: string[], entries: object[]}}
+ * @returns {{requires: string[], entries: (WireRule | WireRaw)[]}}
  */
 export function toWire(doc) {
   return {

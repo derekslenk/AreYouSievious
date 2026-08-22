@@ -1,3 +1,10 @@
+<script context="module">
+  // One datalist per instance. Only one ConditionBuilder is mounted today, but
+  // a duplicate DOM id is the kind of bug that appears the day a second one is,
+  // and costs nothing to make unrepresentable.
+  let datalistSeq = 0;
+</script>
+
 <script>
   import { createEventDispatcher } from 'svelte';
   import { sortable } from '../lib/sortable.js';
@@ -11,6 +18,14 @@
   // array upward and the document applies it as one mutation. Vocabularies
   // live in scriptDocument; this component only renders them.
   function emit(next) { dispatch('update', next); }
+
+  // The header is FREE TEXT with suggestions, not a closed list. Any quoted
+  // string is a legal Sieve header, and a `<select>` here lost data: a
+  // Condition on `x-spam-flag` matched no `<option>`, so it rendered as an
+  // empty dropdown and the real value survived only until the user opened
+  // that select — at which point the pick overwrote it. An enum would have
+  // turned that display bug into a hard restriction (areyousievious-8fg.18).
+  const HEADER_SUGGESTIONS = `header-suggestions-${(datalistSeq += 1)}`;
 
   function addCondition() { emit([...conditions, newCondition()]); }
 
@@ -36,16 +51,25 @@
   }
 </script>
 
+<datalist id={HEADER_SUGGESTIONS}>
+  {#each HEADERS as h}
+    <option value={h.value}>{h.label}</option>
+  {/each}
+</datalist>
+
 <div class="conditions" use:sortable={{ handle: '.drag-handle', onReorder: reorderCondition }}>
   {#each conditions as cond, i (cond.key)}
     <div class="condition-row">
       <span class="drag-handle" aria-hidden="true" title="Drag to reorder">&#9776;</span>
 
-      <select value={cond.header} on:change={(e) => setHeader(i, e.currentTarget.value)}>
-        {#each HEADERS as h}
-          <option value={h.value}>{h.label}</option>
-        {/each}
-      </select>
+      <input
+        class="header-input"
+        type="text"
+        list={HEADER_SUGGESTIONS}
+        value={cond.header}
+        on:input={(e) => setHeader(i, e.currentTarget.value)}
+        placeholder="header"
+      />
 
       <select value={cond.match_type} on:change={(e) => patch(i, { match_type: e.currentTarget.value })}>
         {#each MATCH_TYPES as mt}
@@ -81,6 +105,9 @@
   }
   .condition-row select { width: 120px; }
   .condition-row input[type="text"] { flex: 1; min-width: 150px; }
+  /* The header is an input, not a select, but it keeps the select's width so
+     the row still reads as three aligned columns. */
+  .condition-row input.header-input { flex: 0 0 120px; width: 120px; min-width: 0; }
   .negate-toggle {
     font-size: 0.7rem; color: var(--text2); display: flex;
     align-items: center; gap: 0.2rem; cursor: pointer; white-space: nowrap;

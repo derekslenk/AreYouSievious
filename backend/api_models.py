@@ -18,14 +18,58 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 _STRICT = ConfigDict(extra="forbid")
 
 
+# ── Closed vocabularies (areyousievious-8fg.18) ──
+#
+# These three sets are closed BY THE TRANSFORM: `_TEST_RE` and `_ACTION_RE` can
+# only ever emit these values, and `_parse_if_block` only ever sets `match` to
+# one of the three below. Spelling them as `Literal` costs nothing on the read
+# path and closes a real hole on the write path — before this, a body of
+#
+#     {"match": "xyzzy", "match_type": "bogus",
+#      "actions": [{"type": "vacation", "argument": "..."}]}
+#
+# was accepted with no 422 and generated a Rule whose only Action was the
+# comment `# unknown action: vacation`. For `vacation` that is VALID Sieve with
+# the Action silently deleted. The vocabulary was enforced on one field in four
+# — `address_part` — and free text on the rest.
+#
+# `header` is deliberately NOT here: any quoted string is a legal Sieve header
+# name (`_Q`, sieve_transform.py). See ConditionDTO.header.
+#
+# tests/test_wire_vocabulary.py pins each of these against the transform's own
+# patterns, so a vocabulary that grows there cannot silently stay 422 here.
+
+MatchType = Literal["contains", "is", "matches", "regex"]
+
+ActionType = Literal[
+    "fileinto",
+    "fileinto_copy",
+    "redirect",
+    "addflag",
+    "reject",
+    "keep",
+    "discard",
+    "stop",
+]
+
+# "" is the bare `if <test> {` shape — no anyof/allof wrapper in the source.
+# Inventing one made `if anyof (x)` come back as allof, so the empty string is
+# a real member of this vocabulary, not a missing value.
+MatchOperator = Literal["", "anyof", "allof"]
+
+
 # ── Sieve domain models (request side) ──
 
 
 class ConditionDTO(BaseModel):
     model_config = _STRICT
 
+    # Free text on purpose. Any quoted string is a legal Sieve header, and the
+    # builder offers the common ones as suggestions rather than as a closed
+    # list — an enum here would turn a display bug into a hard restriction and
+    # make `x-spam-flag` unsendable.
     header: str = Field(min_length=1, max_length=120)
-    match_type: str = Field(min_length=1, max_length=40)
+    match_type: MatchType
     value: str = Field(default="", max_length=4096)
     address_test: bool = False
     negate: bool = False
@@ -38,7 +82,7 @@ class ConditionDTO(BaseModel):
 class ActionDTO(BaseModel):
     model_config = _STRICT
 
-    type: str = Field(min_length=1, max_length=40)
+    type: ActionType
     argument: str = Field(default="", max_length=4096)
 
 
@@ -54,7 +98,7 @@ class RuleDTO(BaseModel):
     kind: Literal["rule"] = "rule"
     name: str = Field(default="", max_length=200)
     enabled: bool = True
-    match: str = Field(default="anyof", max_length=10)
+    match: MatchOperator = "anyof"
     conditions: list[ConditionDTO] = Field(default_factory=list, max_length=64)
     actions: list[ActionDTO] = Field(default_factory=list, max_length=64)
 

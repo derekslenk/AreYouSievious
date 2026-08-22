@@ -259,8 +259,11 @@ export interface components {
              * @default
              */
             argument: string;
-            /** Type */
-            type: string;
+            /**
+             * Type
+             * @enum {string}
+             */
+            type: "fileinto" | "fileinto_copy" | "redirect" | "addflag" | "reject" | "keep" | "discard" | "stop";
         };
         /** AuthStatusResponse */
         AuthStatusResponse: {
@@ -298,8 +301,11 @@ export interface components {
             comparator: string;
             /** Header */
             header: string;
-            /** Match Type */
-            match_type: string;
+            /**
+             * Match Type
+             * @enum {string}
+             */
+            match_type: "contains" | "is" | "matches" | "regex";
             /**
              * Negate
              * @default false
@@ -422,8 +428,9 @@ export interface components {
             /**
              * Match
              * @default anyof
+             * @enum {string}
              */
-            match: string;
+            match: "" | "anyof" | "allof";
             /**
              * Name
              * @default
