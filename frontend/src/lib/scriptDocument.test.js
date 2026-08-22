@@ -191,7 +191,6 @@ describe('moveRule', () => {
   });
 });
 
-
 describe('entryToWire', () => {
   it('is the same projection toWire applies, one entry at a time', () => {
     // The preview endpoint takes ONE Rule. If it were fed a differently
@@ -217,7 +216,6 @@ describe('entryToWire', () => {
     expect((wire.actions ?? []).every((a) => !('key' in a))).toBe(true);
   });
 });
-
 
 describe('REGRESSION: no entry can be orphaned', () => {
   it('every rule survives delete-after-reorder', () => {
