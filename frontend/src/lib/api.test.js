@@ -70,7 +70,7 @@ afterEach(() => {
 
 describe('a 401 answering the login request', () => {
   it('does not report the session as expired', async () => {
-    respond({ status: 401, body: 'Authentication failed' });
+    respond({ status: 401, body: '{"detail":"Authentication failed"}' });
     await expect(api.login({ host: 'h', username: 'u', password: 'wrong' })).rejects.toThrow(
       ApiError,
     );
@@ -79,13 +79,13 @@ describe('a 401 answering the login request', () => {
   it('does not fire the global logout event', async () => {
     // There is no session to end. Firing it tore down state the user was
     // still using and sent them round a loop that cannot succeed.
-    respond({ status: 401, body: 'Authentication failed' });
+    respond({ status: 401, body: '{"detail":"Authentication failed"}' });
     await api.login({ host: 'h', username: 'u', password: 'x' }).catch(() => {});
     expect(logouts()).toBe(0);
   });
 
   it('carries the status, so no caller has to read it out of a message', async () => {
-    respond({ status: 401, body: 'Authentication failed' });
+    respond({ status: 401, body: '{"detail":"Authentication failed"}' });
     const error = await api.login({ host: 'h', username: 'u', password: 'x' }).catch((e) => e);
     expect(error.status).toBe(401);
     expect(error.preAuth).toBe(true);
@@ -116,7 +116,7 @@ describe('the status never comes from the message text', () => {
     // The hazard the old sniff carried: the body is interpolated into the
     // message, so a script named `401` or a diagnostic quoting a line number
     // read as a rejected password.
-    respond({ status: 400, body: 'line 401: unknown command' });
+    respond({ status: 400, body: '{"detail":"line 401: unknown command"}' });
     const error = await api.listScripts().catch((e) => e);
     expect(error.status).toBe(400);
     expect(error.preAuth).toBe(false);
@@ -124,11 +124,40 @@ describe('the status never comes from the message text', () => {
   });
 
   it('every failure carries its status', async () => {
-    respond({ status: 502, body: 'The mail server is unavailable.' });
+    respond({ status: 502, body: '{"detail":"The mail server is unavailable."}' });
     const error = await api.listFolders().catch((e) => e);
     expect(error).toBeInstanceOf(ApiError);
     expect(error.status).toBe(502);
     expect(error.message).toContain('unavailable');
+  });
+});
+
+describe('the message is the server\'s sentence, not its JSON', () => {
+  it('does not put a raw body in front of the user', async () => {
+    // Every backend error answers `{"detail": ...}` through one JSONResponse
+    // in app.py, so interpolating the body verbatim showed literal JSON. The
+    // rate limiter makes it easy to reach: five mistyped passwords.
+    respond({
+      status: 429,
+      body: '{"detail":"Too many login attempts. Try again in 5 minutes."}',
+    });
+    const error = await api.login({ host: 'h', username: 'u', password: 'x' }).catch((e) => e);
+    expect(error.message).toBe('429: Too many login attempts. Try again in 5 minutes.');
+    expect(error.message).not.toContain('{');
+  });
+
+  it('falls back to the raw body when it is not the shape we send', async () => {
+    // A proxy or gateway can answer with HTML this app never generated.
+    // Losing the wording would be worse than showing it.
+    respond({ status: 504, body: '<html>gateway timeout</html>' });
+    const error = await api.listScripts().catch((e) => e);
+    expect(error.message).toBe('504: <html>gateway timeout</html>');
+  });
+
+  it('a pre-auth 401 carries the sentence too, for any caller that shows it', async () => {
+    respond({ status: 401, body: '{"detail":"Authentication failed"}' });
+    const error = await api.login({ host: 'h', username: 'u', password: 'x' }).catch((e) => e);
+    expect(error.message).toBe('Authentication failed');
   });
 });
 
