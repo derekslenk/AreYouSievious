@@ -195,6 +195,23 @@ describe('the message is the server\'s sentence, not its JSON', () => {
     expect(error.message).toBe('400: {"detail":123}');
   });
 
+  it('an entry without a loc still shows its message', async () => {
+    // The `field ? ... : msg` branch. A validation error is not obliged to
+    // name a field, and dropping the message because it did not is worse
+    // than showing it unattributed.
+    respond({ status: 422, body: '{"detail":[{"msg":"Request is malformed"}]}' });
+    const error = await api.listScripts().catch((e) => e);
+    expect(error.message).toBe('422: Request is malformed');
+  });
+
+  it('an empty list falls back rather than showing nothing', async () => {
+    // The `lines.length` branch. An empty render would have left the user
+    // with `422: ` and no reason.
+    respond({ status: 422, body: '{"detail":[]}' });
+    const error = await api.listScripts().catch((e) => e);
+    expect(error.message).toBe('422: {"detail":[]}');
+  });
+
   it('a list of entries we cannot read falls back to the body', async () => {
     respond({ status: 422, body: '{"detail":[{"nope":1}]}' });
     const error = await api.listScripts().catch((e) => e);
