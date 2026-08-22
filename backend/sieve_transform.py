@@ -10,8 +10,11 @@ Design principles:
 - Comments preserved as rule names or raw blocks
 """
 
+import bisect
 import re
 from dataclasses import dataclass, field
+
+from sievelib.parser import Lexer, Parser
 
 # ── Data Model ──
 
@@ -167,6 +170,99 @@ _COMPARATOR_RE = re.compile(r':comparator\s+"((?:[^"\\]|\\.)*)"')
 _MATCH_OPERATOR_RE = re.compile(rf"if\s+({'|'.join(MATCH_OPERATORS)})\s*\((.*?)\)\s*\{{", re.DOTALL)
 
 
+# ── Lexical map (areyousievious-8fg.10) ──
+
+_BOM = b"\xef\xbb\xbf"
+
+# Tokens whose CONTENTS must never be read as Sieve. Masked to spaces before
+# any regex scans a block, so a commented-out action stays commented out and a
+# `text:` body cannot contribute one.
+_OPAQUE_TOKENS = frozenset({"hash_comment", "bracket_comment", "multiline"})
+
+
+class _LexicalMap:
+    """Where the braces and comments REALLY are, per line.
+
+    The parser used to answer both questions by looking at characters:
+    `line.count("{") - line.count("}")` for block extent, and the action regex
+    over raw block text. Neither knows what a string or a comment is, and all
+    three of the corrupting defects this class exists to kill came from that:
+
+      1. `fileinto "Weird{Folder";` — the brace inside the STRING was counted,
+         so the block never closed and the NEXT rule was swallowed into it.
+         Measured: the second rule's condition vanished and its `fileinto`
+         fired on the first rule's match.
+      2. A nested `if` had its condition dropped, leaving the inner action
+         firing on the outer condition alone.
+      3. `# fileinto "Disabled";` inside a block came back as a LIVE action.
+
+    None of the three tripped the RawBlock safety net, because the parser did
+    not fail — it succeeded and misread, then regenerated valid Sieve that
+    routed mail somewhere else.
+
+    sievelib's Lexer has the lexical model we lacked: a `{` inside a string is
+    part of one `string` token, and `# ...` is one `hash_comment` token. Only
+    its LEXER is used here. Its Parser is a different question (its `tosieve()`
+    is a normaliser that regenerates roundcube.sieve to the empty string), and
+    its projection onto our AST is areyousievious-8fg.11.
+
+    `usable` is False when the Lexer refuses the text outright — an unknown
+    token anywhere, which no fixture in the corpus produces. The parser then
+    falls back to the old character counting, which is what it did before this
+    existed: worse, but not worse than yesterday.
+    """
+
+    __slots__ = ("brace_delta", "masked_lines", "open_braces", "usable")
+
+    def __init__(self, text: str) -> None:
+        raw = text.encode("utf-8")
+        # A BOM kills the Lexer for the WHOLE file — verified: it reports the
+        # entire remaining text as one unknown token. Skipped rather than
+        # removed, so `text` and every offset into it stay as the caller sees.
+        start_at = len(_BOM) if raw.startswith(_BOM) else 0
+
+        line_starts = [0] + [i + 1 for i, byte in enumerate(raw) if byte == 0x0A]
+        count = len(line_starts)
+        self.open_braces = [0] * count
+        self.brace_delta = [0] * count
+        self.usable = False
+
+        masked = bytearray(raw)
+        lexer = Lexer(Parser.lrules)
+        try:
+            for name, value in lexer.scan(raw[start_at:]):
+                # `lexer.pos` is the START of the token just yielded: `scan`
+                # suspends at the yield and advances only afterwards. This is
+                # not a documented API — test_lexical_map.py pins it, so a
+                # sievelib upgrade that changes it fails loudly here rather
+                # than silently mis-segmenting someone's script.
+                begin = start_at + lexer.pos
+                line = bisect.bisect_right(line_starts, begin) - 1
+                if name == "left_cbracket":
+                    self.open_braces[line] += 1
+                    self.brace_delta[line] += 1
+                elif name == "right_cbracket":
+                    self.brace_delta[line] -= 1
+                elif name in _OPAQUE_TOKENS:
+                    # Same length, so every offset into the text still lands
+                    # where it did. Newlines are kept: a multiline token spans
+                    # lines, and collapsing them would renumber the file.
+                    for i in range(begin, begin + len(value)):
+                        if masked[i] != 0x0A:
+                            masked[i] = 0x20
+        except Exception:
+            # An unknown token anywhere. A PARTIAL map is worse than none —
+            # later lines would report zero braces and a block would run to
+            # end of file — so the whole map is abandoned.
+            self.masked_lines = text.split("\n")
+            return
+
+        # Masking only ever replaces whole tokens with ASCII spaces, so the
+        # result is still the same valid UTF-8 line for line.
+        self.masked_lines = masked.decode("utf-8").split("\n")
+        self.usable = True
+
+
 # ── Parser (Sieve text -> SieveScript) ──
 
 
@@ -182,6 +278,7 @@ class SieveParser:
         self.pos = 0
         self.lines = text.split("\n")
         self.line_idx = 0
+        self.lex = _LexicalMap(text)
 
     def parse(self) -> SieveScript:
         script = SieveScript()
@@ -318,8 +415,23 @@ class SieveParser:
     def _parse_if_block(self, comment: str) -> Rule:
         """Parse an if block into a Rule."""
         # Collect lines until matching closing brace
-        block_lines = self._collect_block_lines()
-        block_text = "\n".join(block_lines)
+        block_lines, start, end = self._collect_block_lines()
+
+        # Every regex below reads the MASKED text: comment bodies replaced by
+        # spaces, same length, so offsets are unchanged. Without it the action
+        # scan read `# fileinto "Disabled";` and resurrected it as a live
+        # action (areyousievious-8fg.10).
+        if self.lex.usable:
+            block_text = "\n".join(self.lex.masked_lines[start:end])
+            # A nested block is not single-rule shaped. Admitting it dropped
+            # the inner condition and left the inner action firing on the OUTER
+            # one — `if A { if B { fileinto "X"; } }` came back as
+            # `if A { fileinto "X"; }`, so mail matching A alone was filed.
+            # One `{` is this block's own; more than one means nesting.
+            if sum(self.lex.open_braces[start:end]) > 1:
+                raise ParseError("nested block not supported as single rule")
+        else:
+            block_text = "\n".join(block_lines)
 
         # Reject blocks with else/elsif — they are not single-rule shaped.
         # The current AST has no representation for else branches, so admitting
@@ -367,8 +479,16 @@ class SieveParser:
 
         return rule
 
-    def _collect_block_lines(self) -> list[str]:
-        """Collect lines from current if block including nested braces."""
+    def _collect_block_lines(self) -> tuple[list[str], int, int]:
+        """Collect the lines of the block starting here, and its line range.
+
+        The depth comes from the lexical map — REAL braces, not every `{`
+        character — so a folder called `Weird{Folder` no longer holds the block
+        open and swallow the rule after it (areyousievious-8fg.10). Character
+        counting is the fallback for text the Lexer refused outright, which is
+        what this did for every script before.
+        """
+        start = self.line_idx
         lines = []
         depth = 0
         started = False
@@ -376,14 +496,20 @@ class SieveParser:
         while self.line_idx < len(self.lines):
             line = self.lines[self.line_idx]
             lines.append(line)
-            depth += line.count("{") - line.count("}")
-            if "{" in line:
+            if self.lex.usable:
+                delta = self.lex.brace_delta[self.line_idx]
+                opened = self.lex.open_braces[self.line_idx]
+            else:
+                delta = line.count("{") - line.count("}")
+                opened = line.count("{")
+            depth += delta
+            if opened:
                 started = True
             self.line_idx += 1
             if started and depth <= 0:
                 break
 
-        return lines
+        return lines, start, self.line_idx
 
     @staticmethod
     def _unquote(s: str) -> str:
@@ -458,8 +584,12 @@ class SieveParser:
         return actions
 
     def _consume_block(self) -> str:
-        """Consume lines for current block as raw text."""
-        lines = self._collect_block_lines()
+        """Consume lines for current block as raw text.
+
+        The ORIGINAL lines, never the masked ones: a RawBlock is the promise
+        that we hand back exactly what we were given.
+        """
+        lines, _start, _end = self._collect_block_lines()
         return "\n".join(lines)
 
 
