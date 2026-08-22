@@ -18,7 +18,7 @@ from typing import NoReturn
 
 from auth import Session
 from config import Settings
-from mail_dial import open_sieve
+from mail_dial import open_sieve, speaks_to_mail_server
 from mail_errors import (
     MailServerUnavailable,
     MailStoreError,
@@ -86,6 +86,7 @@ class SieveClient:
             except Exception:
                 pass
 
+    @speaks_to_mail_server
     def list_scripts(self) -> list[dict]:
         """Return list of {name, active} dicts."""
         listed = self._client.listscripts()
@@ -101,6 +102,7 @@ class SieveClient:
             scripts.append({"name": name, "active": False})
         return scripts
 
+    @speaks_to_mail_server
     def get_script(self, name: str) -> str:
         """Get script content by name."""
         validate_script_name(name)
@@ -113,6 +115,7 @@ class SieveClient:
             return result[-1]
         return result
 
+    @speaks_to_mail_server
     def put_script(self, name: str, content: str) -> None:
         """Upload/update a script. Raises ScriptRejected with the server's
         own compiler diagnostic when the script will not compile."""
@@ -120,12 +123,14 @@ class SieveClient:
         if not self._client.putscript(name, content):
             _fail(self._client, ScriptRejected)
 
+    @speaks_to_mail_server
     def activate_script(self, name: str) -> None:
         """Set a script as active."""
         validate_script_name(name)
         if not self._client.setactive(name):
             _fail(self._client, MailServerUnavailable)
 
+    @speaks_to_mail_server
     def delete_script(self, name: str) -> None:
         """Delete a script."""
         validate_script_name(name)

@@ -26,7 +26,7 @@ import socket
 import ssl
 import threading
 from contextlib import contextmanager
-from functools import lru_cache
+from functools import lru_cache, wraps
 
 from config import Settings
 from mail_errors import AuthFailed, MailServerUnavailable, MailStoreError
@@ -105,6 +105,37 @@ def transport_failures_are_semantic():
         # sievelib raises its own Error for a failed socket or an unreadable
         # capability banner; not an OSError, and just as fatal.
         raise MailServerUnavailable(_TRANSPORT_DEFAULT) from exc
+
+
+def speaks_to_mail_server(method):
+    """Mark an adapter operation as speaking, and net what the transport raises.
+
+    `.28` netted the DIAL and LOGIN and stopped there, so a socket dropping
+    one call later escaped as a raw imaplib/sievelib exception and FastAPI
+    answered 500 — an upstream outage wearing the costume of our own bug.
+
+    The net goes HERE, on the method, rather than around the yield in
+    `dependencies.get_script_store`. That would be one place instead of seven
+    and would cover operations not yet written, but the yield hands control to
+    the route handler, so the net would span the handler's own code too —
+    and `routers/scripts.py` reads an uploaded file inside exactly that span,
+    where a disk error would come back as "the mail server could not be
+    reached". The net belongs where "the transport can fail" is true.
+
+    The marker is what closes the gap that argument opens. Nothing here stops
+    the next operation from forgetting to decorate, so
+    `tests/test_transport_net_covers_operations.py` reads the operations off
+    the SEAM and fails when one is unnetted — the same by-construction shape
+    the import allowlist uses, rather than a promise to remember.
+    """
+
+    @wraps(method)
+    def netted(*args, **kwargs):
+        with transport_failures_are_semantic():
+            return method(*args, **kwargs)
+
+    netted.speaks_to_mail_server = True
+    return netted
 
 
 # ── TLS ──

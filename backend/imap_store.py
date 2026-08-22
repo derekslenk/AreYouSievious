@@ -19,7 +19,7 @@ from config import Settings
 from imapclient import imap_utf7
 from imapclient.exceptions import ProtocolError
 from imapclient.response_parser import parse_response
-from mail_dial import open_imap, transport_failures_are_semantic
+from mail_dial import open_imap, speaks_to_mail_server, transport_failures_are_semantic
 from mail_errors import (
     AuthFailed,
     FolderRejected,
@@ -250,6 +250,7 @@ class ImapFolderStore:
             except Exception:
                 pass
 
+    @speaks_to_mail_server
     def list_folders(self) -> list[dict]:
         """Every folder on the account, as {name, delimiter, flags} dicts.
 
@@ -268,6 +269,7 @@ class ImapFolderStore:
         folders.sort(key=lambda f: f["name"].lower())
         return folders
 
+    @speaks_to_mail_server
     def create_folder(self, name: str) -> None:
         """Create a new IMAP folder, and subscribe it.
 
