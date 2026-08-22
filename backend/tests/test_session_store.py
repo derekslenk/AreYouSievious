@@ -348,3 +348,46 @@ def test_the_session_cookie_expires_with_the_store_not_a_literal(make_app):
     assert set_cookies, "login set no cookies"
     for header in set_cookies:
         assert "Max-Age=120" in header, header
+
+
+# ── The two limits on when credentials are actually freed ──
+
+
+def test_an_expired_session_can_outlive_its_deadline_by_one_sweep_interval():
+    """Documented behaviour, pinned so the README cannot drift from it.
+
+    The sweep is rate-limited, so a busy store does NOT free an expired
+    session on the next request — the first wording of that README row said
+    it did, and five `get`s inside one interval left the password resident.
+    What IS guaranteed is that the session is never handed out, which the
+    assertion below states directly.
+    """
+    store = _store(idle_timeout=100, sweep_interval=60)
+    dead, live = store.create(**CREDS), store.create(**CREDS)
+    past = time.time() - 1000
+    store._sessions[dead].last_used = past
+    store._sessions[dead].created_at = past
+
+    for _ in range(5):
+        store.get(live)
+    assert dead in store._sessions, "rate limit gone: the README row now understates"
+    # The property that does hold, and the one that matters to a caller.
+    assert store.get(dead) is None
+
+
+def test_a_session_nobody_returns_to_is_never_swept():
+    """The gap the follow-up bead covers, stated as a test rather than only
+    as prose. A user who logs in and closes the tab calls neither `create`
+    nor `get` again, so nothing sweeps and the credential stays resident."""
+    store = _store(idle_timeout=100, sweep_interval=0)
+    token = store.create(**CREDS)
+    past = time.time() - 1000
+    store._sessions[token].last_used = past
+    store._sessions[token].created_at = past
+
+    time.sleep(0.05)  # time passing is not, by itself, a sweep
+    assert store.count() == 1
+    assert store._sessions[token].password == CREDS["password"], "the credential is what lingers"
+    # And the moment anything touches the store, it goes.
+    store.create(**CREDS)
+    assert token not in store._sessions

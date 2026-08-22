@@ -37,12 +37,21 @@ SESSION_MAX_LIFETIME = 8 * 3600
 # single-user deployment never sweeps at all, because nobody else ever logs
 # in.
 #
-# WHAT THIS STILL DOES NOT COVER, verified: the sweep only runs from `create`
-# and `get`, so a user who logs in and closes the tab leaves an expired
-# session resident until someone touches the store again. `get` refuses it
-# immediately — it is never USABLE — but the password stays in memory. Closing
-# that needs a background sweeper, which is its own piece of work: a thread,
-# a shutdown path, and tests that do not depend on wall-clock timing.
+# WHAT THIS STILL DOES NOT COVER, verified twice — the second time because
+# the first description of it was also wrong. The sweep runs only from
+# `create` and `get`, AND only once per interval, so "the next request frees
+# it" is untrue: five `get`s inside one interval left an expired session
+# resident with its password. Two separate limits, then:
+#
+#   * an expired session can outlive its deadline by up to one interval even
+#     on a busy store, because the sweep is rate-limited;
+#   * a session nobody returns to outlives it indefinitely, because neither
+#     `create` nor `get` is ever called again.
+#
+# `get` refuses such a session immediately — it is never USABLE — but the
+# password stays in memory. Closing that needs a background sweeper, which is
+# its own piece of work: a thread, a shutdown path, and tests that do not
+# depend on wall-clock timing.
 SESSION_SWEEP_INTERVAL = 60
 
 
