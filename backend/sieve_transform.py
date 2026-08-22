@@ -591,6 +591,11 @@ class SieveGenerator:
             return f'addflag "{arg}";'
         elif action.action_type == "reject":
             return f'reject "{arg}";'
+        # Unreachable from the API since .18 closed ActionType — routers/scripts.py
+        # is the only production caller and Pydantic 422s first. Kept because the
+        # generator takes a DATACLASS, not a DTO, so a caller can still hand it an
+        # Action it built itself; a visible comment beats a KeyError, and the
+        # closed wire is what stops this ever reaching a user's script again.
         return f"# unknown action: {action.action_type}"
 
 
