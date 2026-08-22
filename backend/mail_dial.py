@@ -77,7 +77,17 @@ def transport_failures_are_semantic(*, protocol_error_is_refusal: bool = True):
     let through to surface as itself.
 
     `IMAP4.abort` is unaffected in both positions: a dropped socket is an
-    outage wherever it happens.
+    outage wherever it happens. That is what makes the narrowing safe, and it
+    was audited rather than assumed — every genuine read failure in imaplib
+    raises `abort`, not `error`: `_get_line` for EOF and for an unterminated
+    line, `_get_response` for a response it cannot parse.
+
+    ONE case escapes the rule, and position gives it the wrong answer:
+    `readline` raises `error` when a single line exceeds `_MAXLINE`
+    (1_000_000 bytes), which is a misbehaving server reported as our bug. A
+    one-megabyte LIST line is not a case worth re-widening the net for —
+    doing so would bring back the BAD-response laundering this parameter
+    exists to remove — but it is not nothing, so it is written down.
 
     Public because speaking is as exposed as dialling: `imaplib` does not wrap
     OSError, so a socket that dies mid-LOGIN raises straight through the

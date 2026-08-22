@@ -324,3 +324,25 @@ def test_the_dials_last_line_is_inside_its_own_net():
     ):
         with pytest.raises(MailServerUnavailable):
             mail_dial.open_sieve("m.example.com", "93.184.216.34", 4190, "u", "p", cfg=Settings())
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        pytest.param(imaplib.IMAP4.abort("socket error: EOF"), id="eof"),
+        pytest.param(imaplib.IMAP4.abort("socket error: unterminated line: b'x'"), id="truncated"),
+        pytest.param(imaplib.IMAP4.abort("unexpected response: b'garbage'"), id="unparseable"),
+    ],
+)
+def test_narrowing_the_net_did_not_drop_a_real_read_failure(failure):
+    """The audit behind `protocol_error_is_refusal`, pinned.
+
+    Letting `IMAP4.error` through during an operation is only safe because
+    imaplib raises `abort` — not `error` — for every genuine read failure:
+    `_get_line` for EOF and for an unterminated line, `_get_response` for a
+    response it cannot parse. These are the three, in imaplib's own wording.
+    If a future imaplib demotes one of them to `error`, a real outage becomes
+    a 500 and this is where that shows up.
+    """
+    with pytest.raises(MailServerUnavailable):
+        _imap(**{"list.side_effect": failure}).list_folders()
