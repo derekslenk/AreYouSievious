@@ -11,8 +11,16 @@
             "type": "string"
           },
           "type": {
-            "maxLength": 40,
-            "minLength": 1,
+            "enum": [
+              "fileinto",
+              "fileinto_copy",
+              "redirect",
+              "addflag",
+              "reject",
+              "keep",
+              "discard",
+              "stop"
+            ],
             "title": "Type",
             "type": "string"
           }
@@ -109,8 +117,12 @@
             "type": "string"
           },
           "match_type": {
-            "maxLength": 40,
-            "minLength": 1,
+            "enum": [
+              "contains",
+              "is",
+              "matches",
+              "regex"
+            ],
             "title": "Match Type",
             "type": "string"
           },
@@ -348,7 +360,11 @@
           },
           "match": {
             "default": "anyof",
-            "maxLength": 10,
+            "enum": [
+              "",
+              "anyof",
+              "allof"
+            ],
             "title": "Match",
             "type": "string"
           },

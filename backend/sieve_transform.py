@@ -19,7 +19,7 @@ from dataclasses import dataclass, field
 @dataclass
 class Condition:
     header: str  # "from", "to", "subject", "cc", etc.
-    match_type: str  # "contains", "is", "matches", "regex"
+    match_type: str  # one of MATCH_TYPES
     value: str
     address_test: bool = False  # True = address test, False = header test
     negate: bool = False
@@ -28,13 +28,13 @@ class Condition:
     # `address :domain :is "from" "example.com"` rule became
     # `address :is "from" "example.com"` and stopped matching alice@example.com
     # entirely. Roundcube and SOGo both emit :domain, so this hit real scripts.
-    address_part: str = ""  # "", "all", "localpart", "domain"
+    address_part: str = ""  # one of ADDRESS_PARTS, or "" for none
     comparator: str = ""  # e.g. "i;ascii-casemap"
 
 
 @dataclass
 class Action:
-    action_type: str  # "fileinto", "redirect", "keep", "discard", "stop", "addflag"
+    action_type: str  # one of ACTION_TYPES
     argument: str = ""  # folder name, address, flag value, etc.
 
 
@@ -51,7 +51,7 @@ class Rule:
 
     name: str = ""
     enabled: bool = True
-    match: str = "anyof"  # "anyof", "allof"
+    match: str = "anyof"  # one of MATCH_OPERATORS, or "" for a bare `if <test> {`
     conditions: list[Condition] = field(default_factory=list)
     actions: list[Action] = field(default_factory=list)
 
@@ -128,22 +128,43 @@ _QUOTED_ACTIONS = (
 
 _BARE_ACTIONS = ("keep", "discard", "stop")
 
+# ── Closed vocabularies ──
+#
+# Declared once, here, and the regexes below are BUILT from them. Everything
+# that needs to know what the transform can emit — the wire DTOs' `Literal`s,
+# the builder's dropdowns — is pinned against these rather than restating them,
+# so a vocabulary cannot grow in one place and stay closed in another
+# (areyousievious-8fg.18).
+#
+# `header` is NOT one of these: any quoted string is a legal Sieve header name.
+
+ACTION_TYPES: tuple[str, ...] = tuple(a for _, a in _QUOTED_ACTIONS) + _BARE_ACTIONS
+MATCH_TYPES: tuple[str, ...] = ("contains", "is", "matches", "regex")
+MATCH_OPERATORS: tuple[str, ...] = ("anyof", "allof")
+ADDRESS_PARTS: tuple[str, ...] = ("all", "localpart", "domain")
+
+_PARTS = "|".join(ADDRESS_PARTS)
+
 # Tagged arguments on a test. RFC 5228 lets ADDRESS-PART, COMPARATOR and
 # MATCH-TYPE appear in any order, so the run of modifiers is captured as one
 # blob and picked apart afterwards rather than pinned to a fixed sequence.
-_MODIFIER_RUN = r'(?P<mods>(?:\s+:(?:all|localpart|domain)|\s+:comparator\s+"(?:[^"\\]|\\.)*")*)'
+_MODIFIER_RUN = rf'(?P<mods>(?:\s+:(?:{_PARTS})|\s+:comparator\s+"(?:[^"\\]|\\.)*")*)'
 
 _TEST_RE = re.compile(
     r"(?P<negate>not\s+)?"
     r"(?P<test_type>address|header)"
     + _MODIFIER_RUN
-    + r"\s+:(?P<match_type>contains|is|matches|regex)"
+    + rf"\s+:(?P<match_type>{'|'.join(MATCH_TYPES)})"
     + rf"\s+{_Q('header')}"
     + rf"\s+{_Q('value')}"
 )
 
-_ADDRESS_PART_RE = re.compile(r":(all|localpart|domain)\b")
+_ADDRESS_PART_RE = re.compile(rf":({_PARTS})\b")
 _COMPARATOR_RE = re.compile(r':comparator\s+"((?:[^"\\]|\\.)*)"')
+
+# The test-list wrappers. `_parse_if_block` records Rule.match as one of these,
+# or as "" for a bare `if <test> {` that carried no wrapper at all.
+_MATCH_OPERATOR_RE = re.compile(rf"if\s+({'|'.join(MATCH_OPERATORS)})\s*\((.*?)\)\s*\{{", re.DOTALL)
 
 
 # ── Parser (Sieve text -> SieveScript) ──
@@ -312,7 +333,7 @@ class SieveParser:
         rule = Rule(name=comment)
 
         # Parse the condition part: if anyof/allof (...) { or if <single test> {
-        cond_match = re.match(r"if\s+(anyof|allof)\s*\((.*?)\)\s*\{", block_text, re.DOTALL)
+        cond_match = _MATCH_OPERATOR_RE.match(block_text)
         if cond_match:
             rule.match = cond_match.group(1)
             tests_text = cond_match.group(2)
@@ -570,6 +591,11 @@ class SieveGenerator:
             return f'addflag "{arg}";'
         elif action.action_type == "reject":
             return f'reject "{arg}";'
+        # Unreachable from the API since .18 closed ActionType — routers/scripts.py
+        # is the only production caller and Pydantic 422s first. Kept because the
+        # generator takes a DATACLASS, not a DTO, so a caller can still hand it an
+        # Action it built itself; a visible comment beats a KeyError, and the
+        # closed wire is what stops this ever reaching a user's script again.
         return f"# unknown action: {action.action_type}"
 
 

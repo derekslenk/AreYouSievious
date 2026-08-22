@@ -9,7 +9,7 @@ Reusable UI components used within the rule editor for building filter condition
 ## Key Files
 | File | Description |
 |------|-------------|
-| `ConditionBuilder.svelte` | Editable list of filter conditions (header, match type, value, NOT) with drag-and-drop reordering |
+| `ConditionBuilder.svelte` | Editable list of filter conditions (header, match type, value, NOT) with drag-and-drop reordering. Header is a free-text input over a `<datalist>`; match type is a closed `<select>` |
 | `ActionBuilder.svelte` | Editable list of actions (fileinto, redirect, keep, etc.) with drag-and-drop reordering and folder picker integration |
 | `FolderPicker.svelte` | Modal dialog for browsing, searching, and creating IMAP folders |
 
@@ -21,6 +21,8 @@ Reusable UI components used within the rule editor for building filter condition
 - Keyed `{#each}` blocks key on `cond.key` / `action.key`. Those keys are **view state minted by `lib/scriptDocument.js`** (`newCondition()` / `newAction()`) and stripped by `toWire` before saving. Never construct a bare condition or action literal here, and never let a key reach the backend — the DTOs are `extra="forbid"` and will 422 (see `docs/adr/0001-identity-is-view-state.md`)
 - Drag-and-drop via `use:sortable` action from `lib/sortable.js`; arrow buttons as keyboard fallback
 - `ConditionBuilder` defaults `address_test` via `deriveAddressTest` from `lib/scriptDocument.js`, applied to the edited condition ONLY — siblings keep what the parser recorded (`header :contains "from"` is legal Sieve)
+- The header field is FREE TEXT with `HEADERS` as `<datalist>` suggestions, never a `<select>`. As a select it lost data: a Condition on `x-spam-flag` matched no `<option>`, rendered as an empty dropdown, and kept its real value only until the user opened that select. Widening the list would not have fixed it and closing the wire field would have made those rules unsendable (`.18`)
+- `match type` and the action `type` ARE closed, and the backend DTOs enforce them as `Literal`s — a value outside them is a 422, not a silently generated `# unknown action:` comment
 - `FolderPicker` must actually call `api.createFolder` before selecting a new name — selecting without creating pointed rules at folders that did not exist and delivery failed silently
 
 ### Common Patterns

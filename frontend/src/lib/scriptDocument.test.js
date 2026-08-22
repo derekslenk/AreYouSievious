@@ -127,8 +127,11 @@ describe('addRule', () => {
   it('produces a rule that survives the wire', () => {
     const payload = toWire(addRule(fromWire({})));
     expect(payload.entries).toHaveLength(1);
-    expect(payload.entries[0].kind).toBe('rule');
-    expect(payload.entries[0].conditions).toHaveLength(1);
+    const entry = payload.entries[0];
+    // Narrowed rather than asserted: `entries` is the generated union, so
+    // reaching for `.conditions` without proving `kind` is a type error now.
+    if (entry.kind !== 'rule') throw new Error(`expected a rule entry, got ${entry.kind}`);
+    expect(entry.conditions).toHaveLength(1);
     expect(JSON.stringify(payload)).not.toContain('"key"');
   });
 });
@@ -321,7 +324,12 @@ describe('deriveAddressTest', () => {
   });
 
   it('returns a new object and touches nothing but address_test', () => {
-    const cond = { ...newCondition(), header: 'subject', address_part: 'domain', value: 'x' };
+    const cond = {
+      ...newCondition(),
+      header: 'subject',
+      address_part: /** @type {'domain'} */ ('domain'),
+      value: 'x',
+    };
     const derived = deriveAddressTest(cond);
     expect(derived).not.toBe(cond);
     expect(derived).toEqual({ ...cond, address_test: false });
@@ -410,6 +418,7 @@ describe('snapshot / sameWire', () => {
 
 describe('vocabularies', () => {
   it('exports the closed Condition and Action vocabularies', () => {
+    // HEADERS is the exception: suggestions, not a closed set. See below.
     expect(HEADERS.map((h) => h.value)).toEqual([
       'from', 'to', 'cc', 'subject', 'reply-to', 'list-id',
     ]);
@@ -423,6 +432,28 @@ describe('vocabularies', () => {
     ]);
     // every arg-bearing action carries the hint text its input shows
     expect(ACTION_TYPES.filter((a) => a.hasArg).every((a) => a.placeholder)).toBe(true);
+  });
+
+  it('a header outside the suggestions survives the document untouched', () => {
+    // The trap this closes: the builder rendered `header` as a <select> over
+    // HEADERS, so `x-spam-flag` matched no option and the value lived only
+    // until the user opened that select. The document has always carried it —
+    // the loss was in the widget, which is why the fix is a free-text input
+    // with a <datalist> rather than a wider list here.
+    const wire = {
+      requires: [],
+      entries: [{
+        kind: 'rule', name: 'Spam', enabled: true, match: 'anyof',
+        conditions: [{
+          header: 'x-spam-flag', match_type: 'is', value: 'YES',
+          address_test: false, negate: false, address_part: '', comparator: '',
+        }],
+        actions: [{ type: 'fileinto', argument: 'Junk' }],
+      }],
+    };
+    const roundTripped = toWire(fromWire(wire));
+    expect(roundTripped).toEqual(wire);
+    expect(HEADERS.map((h) => h.value)).not.toContain('x-spam-flag');
   });
 
   it('actionSpec resolves a type to its vocabulary entry', () => {

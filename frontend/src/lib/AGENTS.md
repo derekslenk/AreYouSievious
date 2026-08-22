@@ -12,7 +12,8 @@ Shared utilities, state management, and API client used across all frontend comp
 | `api.js` | HTTP client wrapping `fetch` for all backend endpoints. Fails with `ApiError` carrying `.status` and `.preAuth`, so no caller reads a status out of a message; auto-dispatches `ays:logout` on 401 EXCEPT for `PRE_AUTH_PATHS` (`/auth/login`), where a 401 is a refused password rather than an expired session (`.21`) |
 | `stores.js` | Svelte writable stores: `user`, `scripts`, `currentScript`, `currentScriptName`, `folders`, `view`, `toast` |
 | `sortable.js` | Svelte action wrapping SortableJS; handles DOM revert so Svelte `{#each}` reconciles from data |
-| `scriptDocument.js` | Owns the editable Script: `fromWire`/`toWire`, `ruleEntries`, mutations (`addRule`/`deleteRule`/`moveRule`, `updateEntry`/`setConditions`/`setActions`, `moveItem`), the Condition/Action vocabularies, `deriveAddressTest`, and `snapshot`/`sameWire` for dirty tracking. Mints render keys and strips them at the wire |
+| `scriptDocument.js` | Owns the editable Script: `fromWire`/`toWire`, `ruleEntries`, mutations (`addRule`/`deleteRule`/`moveRule`, `updateEntry`/`setConditions`/`setActions`, `moveItem`), the Condition/Action vocabularies, `deriveAddressTest`, and `snapshot`/`sameWire` for dirty tracking. Mints render keys and strips them at the wire. Its `Condition`/`Action`/`RuleEntry` typedefs are `@import`ed from `api-types.d.ts` plus a key — the SPA's one binding to the generated schema |
+| `api-types.d.ts`, `openapi.json` | **Generated** by `npm run gen:types` from the backend's OpenAPI. Do not hand-edit; CI fails if they are stale |
 
 ## For AI Agents
 
@@ -22,6 +23,17 @@ Shared utilities, state management, and API client used across all frontend comp
 - Mutating calls attach `X-CSRF-Token` read from the non-httponly `ays_csrf` cookie;
   safe methods and `/auth/login` are exempt (mirrors `backend/middleware.py`)
 - `stores.js` is the single source of truth for app state; `view` store drives routing
+- `scriptDocument.js` is the ONLY consumer of `api-types.d.ts`, and that is load-bearing.
+  CI checks the generated artifact is CURRENT, never that any code CONSUMES it, so before
+  `.18` the hand-written typedefs could drift (they said `address_part: string` where the
+  schema pinned a four-value union) and nothing rang. `toWire` is declared to return the
+  generated wire types, which makes its whitelist a CHECKED one: it cannot leak a render
+  key, and it can no longer silently DROP a field either — add one to `ConditionDTO` and
+  this file stops compiling. Verified by doing exactly that
+- The closed vocabularies (`match`, `match_type`, action `type`, `address_part`) are
+  `Literal`s in the backend DTOs, so they arrive here as unions. `HEADERS` is NOT one:
+  headers are free text with `<datalist>` suggestions, because any quoted string is a legal
+  Sieve header
 - `sortable.js` action: critical to revert SortableJS DOM moves in `onEnd` before calling `onReorder`, so Svelte owns DOM reconciliation
 - The `filter` option in sortable excludes buttons from initiating drags
 

@@ -30,10 +30,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- Closed wire vocabularies: `match`, `match_type` and an Action's `type` are Pydantic `Literal`s pinned against `sieve_transform`'s own vocabulary tuples, so a body naming a construct that does not exist is a 422 instead of a silently mis-generated script. The SPA now imports the generated `api-types.d.ts`, making `toWire` a type-checked whitelist (areyousievious-8fg.18)
+
 - CORS configuration tightened: explicit `allow_methods` and `allow_headers` replace wildcard (P1)
 - `save_script` endpoint converted from `async def` to `sync def` to avoid event-loop blocking on ManageSieve I/O
 
 ### Fixed
+
+- Condition header is a free-text field with suggestions rather than a closed dropdown: a rule on an unlisted header (`x-spam-flag`) rendered as an empty select and lost its value the moment that select was opened (areyousievious-8fg.18)
 
 - Sieve parser round-trip stability: `else`/`elsif` blocks and `address` tests with `:comparator` modifiers now survive a parse → generate cycle without mutation (Phase CP1)
 - Frontend `rebuildOrder`: script rule order is now rebuilt from rule IDs rather than array index, fixing a desync when a rule is deleted after reordering (Phase CP1)
