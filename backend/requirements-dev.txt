@@ -13,5 +13,11 @@ httpx>=0.27
 ruff>=0.7
 basedpyright>=1.18
 
+# Reads .github/workflows/*.yml in tests/test_ci_gates_every_pr.py, which
+# locks the triggers that decide whether CI runs at all. Declared rather
+# than assumed: pre-commit pulls PyYAML in transitively, so the test passed
+# locally and would have failed in CI, where only these files are installed.
+PyYAML>=6
+
 # Pre-commit hooks
 pre-commit>=3.7
