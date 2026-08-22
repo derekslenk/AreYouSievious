@@ -36,6 +36,13 @@ SESSION_MAX_LIFETIME = 8 * 3600
 # running it only on login — which is what happened before — means a
 # single-user deployment never sweeps at all, because nobody else ever logs
 # in.
+#
+# WHAT THIS STILL DOES NOT COVER, verified: the sweep only runs from `create`
+# and `get`, so a user who logs in and closes the tab leaves an expired
+# session resident until someone touches the store again. `get` refuses it
+# immediately — it is never USABLE — but the password stays in memory. Closing
+# that needs a background sweeper, which is its own piece of work: a thread,
+# a shutdown path, and tests that do not depend on wall-clock timing.
 SESSION_SWEEP_INTERVAL = 60
 
 
@@ -64,9 +71,15 @@ class SessionManager:
         KeyError: <token>
 
     The first is a sweep iterating while another thread inserts; the second is
-    two sweeps computing overlapping expired lists and both deleting. Removal
-    also goes through `pop`, so each method is safe read on its own rather
-    than only in company.
+    two sweeps computing overlapping expired lists and both deleting.
+
+    The lock is the whole guarantee, and removals below say so by using `del`:
+    each one is reached with the key just found under the SAME lock hold, so
+    it cannot be missing. A `pop(..., None)` there would read as a second line
+    of defence and be untestable — no test can reach it while the lock holds,
+    which is exactly the shape of a guard that guards nothing. `destroy` still
+    uses `pop`, because an unknown token IS a real case there: a double logout
+    is a race, not a mistake.
     """
 
     def __init__(
@@ -131,7 +144,9 @@ class SessionManager:
             if session is None:
                 return None
             if self._is_over(session, now):
-                self._sessions.pop(token, None)
+                # `del`, not `pop`: the key was just read under this same lock
+                # hold, so it is there.
+                del self._sessions[token]
                 return None
             session.last_used = now
             return session
@@ -168,5 +183,7 @@ class SessionManager:
             return
         self._last_sweep = now
         self._sweeps += 1
+        # The list is built and consumed inside one lock hold, so every key in
+        # it is still present when it is deleted.
         for token in [t for t, s in self._sessions.items() if self._is_over(s, now)]:
-            self._sessions.pop(token, None)
+            del self._sessions[token]

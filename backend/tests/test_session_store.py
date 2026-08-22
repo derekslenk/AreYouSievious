@@ -149,18 +149,33 @@ def test_removing_a_session_twice_is_not_an_error():
     delete. `pop` closes that by construction, and this asserts the property
     instead of trying to lose the race on purpose.
     """
-    store = _store(idle_timeout=1000)
+    store = _store(idle_timeout=1000, sweep_interval=3600)
     token = store.create(**CREDS)
     store.destroy(token)
     store.destroy(token)
     assert store.get(token) is None
+
+    # Removal reached through the SWEEP, which is where both historical
+    # failures actually came from. Two sweeps over the same expired token
+    # must not fight: with `del` the second raises KeyError. Asserting this
+    # through `get` alone proved nothing — the second call short-circuits on
+    # a token already gone and never reaches the removal at all.
+    #
     # -1, not 0: `now - last_used > 0` is FALSE when both land in the same
-    # clock tick, so a 0 timeout made this pass alone and fail inside the
-    # suite. A negative bound is over for any elapsed time at all.
+    # clock tick, so a 0 timeout made an earlier version pass alone and fail
+    # inside the suite.
     store._idle_timeout = -1
-    other = store.create(**CREDS)
-    assert store.get(other) is None
-    assert store.get(other) is None
+    doomed = store.create(**CREDS)
+    expired = [(token, session) for token, session in store._sessions.items()]
+    store._sweep_interval = 0
+    store._sweep(time.time())
+    # Put it back and sweep again: the second pass walks a token the first
+    # already removed.
+    for token, session in expired:
+        store._sessions[token] = session
+    store._sweep(time.time())
+    assert store.get(doomed) is None
+    assert store.count() == 0
 
 
 def test_a_session_dies_at_its_absolute_lifetime_however_busy():
@@ -174,6 +189,25 @@ def test_a_session_dies_at_its_absolute_lifetime_however_busy():
         assert store.get(token) is not None, "constant use must not end it early"
     time.sleep(0.4)
     assert store.get(token) is None, "absolute lifetime did not fire"
+
+
+def test_use_refreshes_the_idle_clock():
+    """The half of `get` that keeps a working session alive.
+
+    Nothing pinned it: deleting `session.last_used = now` left all 693 tests
+    green, and that mutation logs every user out a fixed time after LOGIN
+    however hard they are working. The absolute-lifetime test cannot catch it
+    because it runs with a huge idle timeout on purpose.
+    """
+    store = _store(idle_timeout=0.3, max_lifetime=1000, sweep_interval=3600)
+    token = store.create(**CREDS)
+    for _ in range(6):
+        time.sleep(0.1)
+        assert store.get(token) is not None, "steady use must keep it alive"
+    # Total elapsed is now well past the idle timeout; only the refresh saved
+    # it. Stop touching it and it dies.
+    time.sleep(0.4)
+    assert store.get(token) is None
 
 
 def test_an_idle_session_still_dies_of_idleness():
@@ -201,15 +235,29 @@ def test_an_expired_session_is_dropped_not_merely_hidden():
 def test_expired_sessions_are_swept_without_anyone_logging_in():
     """`_cleanup` ran only from `create`. On a single-user deployment nobody
     else ever logs in, so nothing was ever swept — the store only grew."""
-    store = _store(idle_timeout=0.05, sweep_interval=0)
-    for _ in range(10):
-        store.create(**CREDS)
+    # A long interval first, so `create` does NOT sweep — otherwise the
+    # creates below do the work and this asserts sweep-on-login, which is the
+    # exact old behaviour. An earlier version of this test did precisely
+    # that: `count()` was already 1 before any `get`, and deleting the sweep
+    # from `get` left the whole suite green.
+    store = _store(idle_timeout=100, sweep_interval=3600)
+    doomed = [store.create(**CREDS) for _ in range(10)]
     live = store.create(**CREDS)
-    time.sleep(0.1)
-    fresh = store.create(**CREDS)  # not the sweeper under test; just a live token
-    store.get(fresh)  # a plain request is enough to trigger the sweep
-    assert store.count() == 1, f"expected only the fresh session, got {store.count()}"
-    assert store.get(live) is None
+
+    # Age the doomed ones by rewriting their clocks rather than sleeping.
+    # Sleeping to expire some sessions but not another needs the two windows
+    # to stay apart on a loaded CI box; this needs nothing.
+    past = time.time() - 1000
+    for token in doomed:
+        store._sessions[token].last_used = past
+        store._sessions[token].created_at = past
+    assert store.count() == 11, "setup failed: nothing should have been swept yet"
+
+    store._sweep_interval = 0
+    store.get(live)  # ONE ordinary request, by the one user there is
+
+    assert store.count() == 1, f"the sweep did not run on get: {store.count()} left"
+    assert all(store.get(token) is None for token in doomed)
 
 
 def test_the_sweep_does_not_run_on_every_request():
@@ -250,6 +298,30 @@ def test_destroying_an_unknown_token_is_not_an_error():
 
 
 # ── The cookie and the store agree ──
+
+
+def test_a_sub_second_timeout_still_yields_a_usable_cookie(make_app):
+    """`int(0.1)` is 0, and a browser reads `Max-Age=0` as delete-this-now.
+
+    So a sub-second idle timeout answered 200 OK with a cookie the browser
+    threw away immediately and the session never stuck — a login that
+    succeeds and does nothing. `_env_float` floors at 0.1, so this is
+    reachable from `AYS_SESSION_IDLE_TIMEOUT=0`.
+    """
+    app = make_app(Settings(session_idle_timeout=0.1))
+    with (
+        patch("routers.auth.validate_host", return_value="93.184.216.34"),
+        patch("routers.auth.verify_credentials", return_value=None),
+    ):
+        with TestClient(app) as http:
+            response = http.post(
+                "/api/auth/login",
+                json={"host": "mail.example.com", "username": "u", "password": "p"},
+            )
+    assert response.status_code == 200, response.text
+    for header in response.headers.get_list("set-cookie"):
+        assert "Max-Age=0" not in header, header
+        assert "Max-Age=1" in header, header
 
 
 def test_the_session_cookie_expires_with_the_store_not_a_literal(make_app):

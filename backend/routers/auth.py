@@ -13,6 +13,7 @@ Behavior is byte-identical to the pre-u40 inline handlers in app.py.
 from __future__ import annotations
 
 import ipaddress
+import math
 import time
 from collections import defaultdict
 
@@ -174,7 +175,10 @@ def login(
     # enforces expiry, and two numbers that mean the same thing drift apart —
     # a cookie outliving its session logs the user out mid-action, and one
     # dying early throws away a session the server still holds.
-    cookie_max_age = int(cfg.session_idle_timeout)
+    # Rounded UP, and never below 1: `int(0.1)` is 0, and browsers read
+    # `Max-Age=0` as delete-this-now — so a sub-second timeout answered 200
+    # OK with a cookie the browser threw away, and the session never stuck.
+    cookie_max_age = max(1, math.ceil(cfg.session_idle_timeout))
     response.set_cookie(
         SESSION_COOKIE,
         token,
