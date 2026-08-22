@@ -9,7 +9,7 @@ Shared utilities, state management, and API client used across all frontend comp
 ## Key Files
 | File | Description |
 |------|-------------|
-| `api.js` | HTTP client wrapping `fetch` for all backend endpoints; auto-dispatches `ays:logout` on 401 |
+| `api.js` | HTTP client wrapping `fetch` for all backend endpoints. Fails with `ApiError` carrying `.status` and `.preAuth`, so no caller reads a status out of a message; auto-dispatches `ays:logout` on 401 EXCEPT for `PRE_AUTH_PATHS` (`/auth/login`), where a 401 is a refused password rather than an expired session (`.21`) |
 | `stores.js` | Svelte writable stores: `user`, `scripts`, `currentScript`, `currentScriptName`, `folders`, `view`, `toast` |
 | `sortable.js` | Svelte action wrapping SortableJS; handles DOM revert so Svelte `{#each}` reconciles from data |
 | `scriptDocument.js` | Owns the editable Script: `fromWire`/`toWire`, `ruleEntries`, mutations (`addRule`/`deleteRule`/`moveRule`, `updateEntry`/`setConditions`/`setActions`, `moveItem`), the Condition/Action vocabularies, `deriveAddressTest`, and `snapshot`/`sameWire` for dirty tracking. Mints render keys and strips them at the wire |

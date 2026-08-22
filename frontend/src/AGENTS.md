@@ -27,7 +27,7 @@ Svelte application source. Contains the root component, global styles, and organ
 - Routing is store-based (`view` writable store), not a router library. Values: `login`, `dashboard`, `editor`, `raw`, `privacy`
 - Only `Login` is imported eagerly. Every other route is lazy — `{#await import('./routes/X.svelte')}` with loading and error branches. Adding a route means adding a branch, not build config
 - `view.subscribe` pushes history state and a `popstate` listener restores it, so browser back/forward works. The `skipPush` flag prevents a restore from re-pushing
-- Auto-logout on 401 via the `ays:logout` custom event dispatched from `api.js`
+- Auto-logout on 401 via the `ays:logout` custom event dispatched from `api.js` — EXCEPT on a pre-auth path (`/auth/login`), where a 401 means the credentials were refused and there is no session to end (`.21`)
 
 ## Dependencies
 
