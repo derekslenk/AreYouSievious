@@ -26,7 +26,7 @@ import socket
 import ssl
 import threading
 from contextlib import contextmanager
-from functools import lru_cache
+from functools import lru_cache, update_wrapper
 
 from config import Settings
 from mail_errors import AuthFailed, MailServerUnavailable, MailStoreError
@@ -59,8 +59,35 @@ _TRANSPORT_DEFAULT = "The mail server could not be reached."
 
 
 @contextmanager
-def transport_failures_are_semantic():
+def transport_failures_are_semantic(*, protocol_error_is_refusal: bool = True):
     """Translate whatever the transport raises into the mail vocabulary.
+
+    `protocol_error_is_refusal` says where this net is standing, because
+    `imaplib.IMAP4.error` does not mean the same thing in both places.
+
+    At the DIAL (True, the default) nothing of ours has been said yet, so a
+    protocol error is the server declining to talk: `IMAP4_SSL.__init__`
+    reads the greeting, and a server that accepts TCP and TLS then says BYE
+    arrives here. `.28` made that a 502 and it must stay one.
+
+    During an OPERATION (False) a command of ours is in flight, and imaplib
+    raises `IMAP4.error` for a **BAD** tagged response — the server rejecting
+    what we sent. That is our bug, and answering "could not be reached" hides
+    it behind an outage the user cannot act on and will retry forever. It is
+    let through to surface as itself.
+
+    `IMAP4.abort` is unaffected in both positions: a dropped socket is an
+    outage wherever it happens. That is what makes the narrowing safe, and it
+    was audited rather than assumed — every genuine read failure in imaplib
+    raises `abort`, not `error`: `_get_line` for EOF and for an unterminated
+    line, `_get_response` for a response it cannot parse.
+
+    ONE case escapes the rule, and position gives it the wrong answer:
+    `readline` raises `error` when a single line exceeds `_MAXLINE`
+    (1_000_000 bytes), which is a misbehaving server reported as our bug. A
+    one-megabyte LIST line is not a case worth re-widening the net for —
+    doing so would bring back the BAD-response laundering this parameter
+    exists to remove — but it is not nothing, so it is written down.
 
     Public because speaking is as exposed as dialling: `imaplib` does not wrap
     OSError, so a socket that dies mid-LOGIN raises straight through the
@@ -100,11 +127,51 @@ def transport_failures_are_semantic():
         # server that accepts TCP and TLS and then says BYE arrives here. No
         # credentials have been sent at this point, so this is the server
         # refusing to talk, not a rejected password.
+        #
+        # Only where that reading is TRUE. One call into the conversation it
+        # is false: imaplib raises this for a BAD tagged response, which is
+        # the server rejecting a command of ours.
+        if not protocol_error_is_refusal:
+            raise
         raise MailServerUnavailable(_TRANSPORT_DEFAULT) from exc
     except SievelibError as exc:
         # sievelib raises its own Error for a failed socket or an unreadable
         # capability banner; not an OSError, and just as fatal.
         raise MailServerUnavailable(_TRANSPORT_DEFAULT) from exc
+
+
+def speaks_to_mail_server(method):
+    """Mark an adapter operation as speaking, and net what the transport raises.
+
+    `.28` netted the DIAL and LOGIN and stopped there, so a socket dropping
+    one call later escaped as a raw imaplib/sievelib exception and FastAPI
+    answered 500 — an upstream outage wearing the costume of our own bug.
+
+    The net goes HERE, on the method, rather than around the yield in
+    `dependencies.get_script_store`. That would be one place instead of seven
+    and would cover operations not yet written, but the yield hands control to
+    the route handler, so the net would span the handler's own code too —
+    and `routers/scripts.py` reads an uploaded file inside exactly that span,
+    where a disk error would come back as "the mail server could not be
+    reached". The net belongs where "the transport can fail" is true.
+
+    The marker is what closes the gap that argument opens. Nothing here stops
+    the next operation from forgetting to decorate, so
+    `tests/test_transport_net_covers_operations.py` reads the operations off
+    the SEAM and fails when one is unnetted — the same by-construction shape
+    the import allowlist uses, rather than a promise to remember.
+    """
+
+    def netted(*args, **kwargs):
+        with transport_failures_are_semantic(protocol_error_is_refusal=False):
+            return method(*args, **kwargs)
+
+    # `update_wrapper` rather than the `@wraps` decorator, so `netted` stays a
+    # plain function: the decorator form types it as `_Wrapped[...]`, whose
+    # attributes are closed, and the marker below is the whole point.
+    update_wrapper(netted, method)
+    netted.speaks_to_mail_server = True
+    return netted
 
 
 # ── TLS ──
@@ -274,5 +341,11 @@ def open_sieve(
         raise MailServerUnavailable("The mail server refused to start TLS.")
 
     if client.sock is not None:
-        client.sock.settimeout(cfg.sieve_io_timeout)
+        # Inside the net like everything else that touches the socket. This
+        # was the dial's one unnetted line: a socket closed between the
+        # successful connect and here raises OSError(9, "Bad file
+        # descriptor"), which answered 500 for a mail server that had simply
+        # gone away.
+        with transport_failures_are_semantic():
+            client.sock.settimeout(cfg.sieve_io_timeout)
     return client
