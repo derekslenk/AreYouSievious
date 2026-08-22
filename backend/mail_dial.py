@@ -26,7 +26,7 @@ import socket
 import ssl
 import threading
 from contextlib import contextmanager
-from functools import lru_cache, wraps
+from functools import lru_cache, update_wrapper
 
 from config import Settings
 from mail_errors import AuthFailed, MailServerUnavailable, MailStoreError
@@ -59,8 +59,25 @@ _TRANSPORT_DEFAULT = "The mail server could not be reached."
 
 
 @contextmanager
-def transport_failures_are_semantic():
+def transport_failures_are_semantic(*, protocol_error_is_refusal: bool = True):
     """Translate whatever the transport raises into the mail vocabulary.
+
+    `protocol_error_is_refusal` says where this net is standing, because
+    `imaplib.IMAP4.error` does not mean the same thing in both places.
+
+    At the DIAL (True, the default) nothing of ours has been said yet, so a
+    protocol error is the server declining to talk: `IMAP4_SSL.__init__`
+    reads the greeting, and a server that accepts TCP and TLS then says BYE
+    arrives here. `.28` made that a 502 and it must stay one.
+
+    During an OPERATION (False) a command of ours is in flight, and imaplib
+    raises `IMAP4.error` for a **BAD** tagged response — the server rejecting
+    what we sent. That is our bug, and answering "could not be reached" hides
+    it behind an outage the user cannot act on and will retry forever. It is
+    let through to surface as itself.
+
+    `IMAP4.abort` is unaffected in both positions: a dropped socket is an
+    outage wherever it happens.
 
     Public because speaking is as exposed as dialling: `imaplib` does not wrap
     OSError, so a socket that dies mid-LOGIN raises straight through the
@@ -100,6 +117,12 @@ def transport_failures_are_semantic():
         # server that accepts TCP and TLS and then says BYE arrives here. No
         # credentials have been sent at this point, so this is the server
         # refusing to talk, not a rejected password.
+        #
+        # Only where that reading is TRUE. One call into the conversation it
+        # is false: imaplib raises this for a BAD tagged response, which is
+        # the server rejecting a command of ours.
+        if not protocol_error_is_refusal:
+            raise
         raise MailServerUnavailable(_TRANSPORT_DEFAULT) from exc
     except SievelibError as exc:
         # sievelib raises its own Error for a failed socket or an unreadable
@@ -129,11 +152,14 @@ def speaks_to_mail_server(method):
     the import allowlist uses, rather than a promise to remember.
     """
 
-    @wraps(method)
     def netted(*args, **kwargs):
-        with transport_failures_are_semantic():
+        with transport_failures_are_semantic(protocol_error_is_refusal=False):
             return method(*args, **kwargs)
 
+    # `update_wrapper` rather than the `@wraps` decorator, so `netted` stays a
+    # plain function: the decorator form types it as `_Wrapped[...]`, whose
+    # attributes are closed, and the marker below is the whole point.
+    update_wrapper(netted, method)
     netted.speaks_to_mail_server = True
     return netted
 
@@ -305,5 +331,11 @@ def open_sieve(
         raise MailServerUnavailable("The mail server refused to start TLS.")
 
     if client.sock is not None:
-        client.sock.settimeout(cfg.sieve_io_timeout)
+        # Inside the net like everything else that touches the socket. This
+        # was the dial's one unnetted line: a socket closed between the
+        # successful connect and here raises OSError(9, "Bad file
+        # descriptor"), which answered 500 for a mail server that had simply
+        # gone away.
+        with transport_failures_are_semantic():
+            client.sock.settimeout(cfg.sieve_io_timeout)
     return client

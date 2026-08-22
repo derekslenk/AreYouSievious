@@ -6,7 +6,9 @@ the dial, and LOGIN. It did not cover the operations that follow, so a socket
 dropping one call later escaped as a raw imaplib/sievelib exception and
 FastAPI answered 500: a mail-server outage wearing the costume of our own bug.
 
-All five cases below were verified to escape before this change. A dropped
+All SEVEN seam operations were verified to escape before this change — every
+operation on both adapters — plus the SUBSCRIBE leg inside `create_folder`,
+which the CREATE succeeding first makes easy to leave uncovered. A dropped
 socket mid-request is not exotic — it is what a server restart, an idle
 timeout, and a NAT eviction all look like.
 
@@ -28,8 +30,9 @@ reads the operations off the SEAM, so a method added to `ScriptStore` or
 from __future__ import annotations
 
 import imaplib
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
+import mail_dial
 import pytest
 from auth import Session
 from config import Settings
@@ -167,7 +170,20 @@ def test_our_own_bugs_are_not_relabelled_as_mail_server_failures():
 
 
 def _seam_operations(protocol: type) -> set[str]:
-    return {name for name in vars(protocol) if not name.startswith("_")}
+    """Every operation the seam declares, including any it inherits.
+
+    The MRO walk is not decoration: `vars()` alone reads one class body, so a
+    seam that grew a shared base would take its inherited operations out of
+    this lock's sight — silently, which is the failure mode the lock exists
+    to prevent.
+    """
+    return {
+        name
+        for klass in protocol.__mro__
+        if klass is not object
+        for name in vars(klass)
+        if not name.startswith("_")
+    }
 
 
 @pytest.mark.parametrize(
@@ -242,3 +258,69 @@ def test_a_dropped_socket_answers_502_not_500(authed_client, store_factory, path
     # The net's own wording, not a stack trace and not a bare "Internal
     # Server Error" — the reply has to name what failed to be worth anything.
     assert "mail server" in response.json()["detail"].lower()
+
+
+# ── The net must not launder a protocol error into an outage ──
+
+
+def test_a_bad_response_during_an_operation_is_not_an_outage():
+    r"""`IMAP4.error` does not mean the same thing in both places, and the
+    net is used in both.
+
+    At the DIAL it is the server declining to talk — `IMAP4_SSL.__init__`
+    reads the greeting, so a server that accepts TCP and TLS then says BYE
+    arrives there, and `.28` correctly made that a 502.
+
+    During an OPERATION imaplib raises it for a **BAD** tagged response
+    (`_command_complete`: `raise self.error('%s command error: %s %s')`),
+    which means the server rejected a command WE sent. Reporting "the mail
+    server could not be reached" for our own malformed command hides the bug
+    behind an outage the user cannot act on and will retry forever.
+
+    This is the same distinction `_login` already draws by reading protocol
+    errors INSIDE the net before it sees them — one call later, nothing drew
+    it.
+    """
+    store = _imap(**{"list.side_effect": imaplib.IMAP4.error("LIST command error: BAD")})
+    with pytest.raises(imaplib.IMAP4.error):
+        store.list_folders()
+
+
+def test_a_lost_connection_during_an_operation_is_still_an_outage():
+    """The half that must NOT change. `IMAP4.abort` subclasses `IMAP4.error`,
+    so narrowing the net for one must not narrow it for the other — a dropped
+    socket is exactly the case this bead exists to catch."""
+    store = _imap(**{"list.side_effect": imaplib.IMAP4.abort("connection closed")})
+    with pytest.raises(MailServerUnavailable):
+        store.list_folders()
+
+
+def test_the_dial_still_reads_a_refused_greeting_as_an_outage():
+    """The other side of the same net, pinned here so narrowing the operation
+    case cannot silently regress `.28`."""
+    with mail_dial.transport_failures_are_semantic():
+        pass
+    with pytest.raises(MailServerUnavailable):
+        with mail_dial.transport_failures_are_semantic():
+            raise imaplib.IMAP4.error("BYE server unavailable")
+
+
+def test_the_dials_last_line_is_inside_its_own_net():
+    """`open_sieve` set the read timeout after the net had closed.
+
+    A socket that goes away between the successful connect and that call
+    raises `OSError(9, "Bad file descriptor")`, which answered 500 — the same
+    defect as the operations above, in the one line of the dial that had been
+    left outside. Found reviewing this bead; fixed here because it is the same
+    net, the same file, and a known 500.
+    """
+    client = MagicMock()
+    client.connect.return_value = True
+    client.sock = MagicMock(spec=["settimeout"])
+    client.sock.settimeout.side_effect = OSError(9, "Bad file descriptor")
+    with (
+        patch.object(mail_dial, "assert_host_resolves_to", lambda *a, **kw: None),
+        patch.object(mail_dial, "Client", return_value=client),
+    ):
+        with pytest.raises(MailServerUnavailable):
+            mail_dial.open_sieve("m.example.com", "93.184.216.34", 4190, "u", "p", cfg=Settings())
