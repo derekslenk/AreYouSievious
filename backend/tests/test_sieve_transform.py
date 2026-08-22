@@ -5,8 +5,9 @@ Regression tests locking in the Critical-finding fixes from the
 Coverage:
   - Quality C-2: parser handling of else/elsif chains and address-test modifiers
   - Security C-2: ReDoS on unterminated quoted strings (CWE-1333)
-  - Round-trip stability across every test_scripts/*.sieve fixture
+  - Round-trip stability across every fixture under test_scripts/ (areyousievious-8fg.3)
   - Recognition census pinning the rules/raw split per fixture (areyousievious-8fg.1)
+  - Recogniser reach over the vendored third-party corpus (areyousievious-8fg.3)
 
 Run from the backend/ directory:
     cd backend && python -m pytest tests/ -v
@@ -14,6 +15,7 @@ Run from the backend/ directory:
 
 from __future__ import annotations
 
+import re
 import time
 from pathlib import Path
 
@@ -22,12 +24,68 @@ import sieve_transform as st
 
 BACKEND = Path(__file__).resolve().parent.parent
 
+# ── Fixture corpus (areyousievious-8fg.3) ──
+#
+# Two tiers, both parametrized by every test below:
+#
+#   test_scripts/*.sieve         Three scripts captured from real servers, plus
+#                                twelve hand-written files with one construct
+#                                family each. Written to be read: if you need to
+#                                know what the parser does with `:comparator`,
+#                                modifiers-comparator.sieve is the answer.
+#   test_scripts/vendor/*.sieve  sievelib's own parser corpus, vendored under MIT
+#                                (see vendor/LICENSE-sievelib). This tier is a
+#                                RECOGNISER-REACH BENCHMARK, not a wish list.
+#                                Most of it lands in RawBlock today; the exact
+#                                reach is pinned below by
+#                                test_vendor_corpus_reach_is_pinned rather than
+#                                asserted in a comment that can rot.
+
+FIXTURE_ROOT = BACKEND / "test_scripts"
+TEST_SCRIPTS = sorted(p for p in FIXTURE_ROOT.rglob("*.sieve") if p.stat().st_size > 0)
+VENDOR_SCRIPTS = [p for p in TEST_SCRIPTS if p.parent.name == "vendor"]
+
+
+def _corpus(known_red: dict[str, str] | None = None) -> list[object]:
+    """Every fixture as a param, xfailing the ones with a defect someone owns.
+
+    A fixture that reproduces a defect is NOT edited until it passes — see
+    test_scripts/AGENTS.md. It stays truthful and is pinned `xfail(strict=True)`
+    naming the bead that owns the fix. Strict is the whole point: the day the
+    fix lands the XPASS breaks this suite, so a pin cannot outlive its defect.
+    """
+    red = known_red or {}
+    params = []
+    for path in TEST_SCRIPTS:
+        fixture_id = str(path.relative_to(FIXTURE_ROOT))
+        marks = (
+            [pytest.mark.xfail(strict=True, reason=red[fixture_id])] if fixture_id in red else []
+        )
+        params.append(pytest.param(path, id=fixture_id, marks=marks))
+    return params
+
+
+# Defects reproduced by a fixture but fixed elsewhere. Keyed by fixture id.
+_DISABLED_RULE_NAME_ACCRETES = (
+    "areyousievious-8fg.15: _generate_rule emits the name comment INSIDE the "
+    "block, then generate() prefixes the whole block with '## '. On reparse "
+    "that line finds no `if`, falls through to the generic comment handler, and "
+    "lstrip('#').strip() bakes the marker into the name — one more '# --- ' per "
+    "save, forever."
+)
+_REQUIRES_ARE_LOST = (
+    "areyousievious-8fg.15: the parser ASSIGNS `requires` per require line "
+    "instead of extending it, and reads only the FIRST line of a multi-line "
+    "require. 'envelope', 'copy' and 'reject' are gone after one pass, and the "
+    "continuation lines come back as raw text emitted AFTER the regenerated "
+    "require — Sieve a real server refuses."
+)
+
+
 # ── Round-trip stability ──
 
-TEST_SCRIPTS = sorted(p for p in (BACKEND / "test_scripts").glob("*.sieve") if p.stat().st_size > 0)
 
-
-@pytest.mark.parametrize("path", TEST_SCRIPTS, ids=lambda p: p.name)
+@pytest.mark.parametrize("path", _corpus({"disabled-rules.sieve": _DISABLED_RULE_NAME_ACCRETES}))
 def test_round_trip_is_idempotent(path: Path) -> None:
     """parse -> generate must reach a fixed point, in TEXT and in AST.
 
@@ -53,7 +111,15 @@ def test_round_trip_is_idempotent(path: Path) -> None:
     assert ast3 == ast2, f"{path.name}: parsed AST is not a fixed point"
 
 
-@pytest.mark.parametrize("path", TEST_SCRIPTS, ids=lambda p: p.name)
+@pytest.mark.parametrize(
+    "path",
+    _corpus(
+        {
+            "disabled-rules.sieve": _DISABLED_RULE_NAME_ACCRETES,
+            "multiple-requires.sieve": _REQUIRES_ARE_LOST,
+        }
+    ),
+)
 def test_round_trip_preserves_every_entry_and_require(path: Path) -> None:
     """Nothing may be dropped by the first normalising pass.
 
@@ -78,25 +144,177 @@ def test_round_trip_preserves_every_entry_and_require(path: Path) -> None:
 # instead. If a count changes on purpose (recogniser upgrade, fixture edit),
 # re-measure and update the pin here.
 RECOGNITION_CENSUS = {
+    "actions-all.sieve": (2, 0),
+    "disabled-rules.sieve": (2, 0),
+    "escaping.sieve": (2, 0),
     "grak.sieve": (26, 0),
+    "layout-variants.sieve": (2, 0),
+    "match-regex.sieve": (2, 0),
+    "modifiers-address-part.sieve": (3, 0),
+    "modifiers-comparator.sieve": (2, 0),
+    "modifiers-either-order.sieve": (2, 0),
+    "multiple-requires.sieve": (1, 3),
+    "negation.sieve": (2, 0),
+    "raw-else-chain.sieve": (0, 1),
+    "raw-unparseable-if.sieve": (0, 2),
     "roundcube.sieve": (0, 1),
     "sogo.sieve": (14, 0),
+    "vendor/address-regex.sieve": (1, 0),
+    "vendor/body-content-regex.sieve": (0, 1),
+    "vendor/body-extension-2.sieve": (0, 1),
+    "vendor/body-extension-3.sieve": (0, 1),
+    "vendor/body-extension.sieve": (0, 1),
+    "vendor/body-raw-regex.sieve": (0, 1),
+    "vendor/bracket-comment.sieve": (0, 1),
+    "vendor/complex-allof-with-not.sieve": (0, 1),
+    "vendor/currentdate-command-timezone.sieve": (0, 1),
+    "vendor/currentdate-command.sieve": (0, 1),
+    "vendor/currentdate-norel.sieve": (0, 1),
+    "vendor/date-command.sieve": (1, 0),
+    "vendor/envelope-regex.sieve": (0, 1),
+    "vendor/environment-test.sieve": (0, 1),
+    "vendor/exists-get-string-or-list-2.sieve": (0, 1),
+    "vendor/exists-get-string-or-list.sieve": (0, 1),
+    "vendor/explicit-comparator.sieve": (0, 1),
+    "vendor/fileinto-create.sieve": (0, 1),
+    "vendor/fileinto-with-copy.sieve": (1, 0),
+    "vendor/hash-comment.sieve": (0, 1),
+    "vendor/header-regex.sieve": (1, 0),
+    "vendor/imap4flags-extension.sieve": (0, 1),
+    "vendor/imap4flags-hasflag.sieve": (0, 3),
+    "vendor/just-one-command.sieve": (0, 1),
+    "vendor/multiline-string.sieve": (0, 1),
+    "vendor/multiple-not.sieve": (0, 1),
+    "vendor/multitest-testlist.sieve": (0, 1),
+    "vendor/nested-blocks.sieve": (0, 1),
+    "vendor/non-ordered-args.sieve": (1, 0),
+    "vendor/notify-extension.sieve": (1, 0),
+    "vendor/redirect-with-copy.sieve": (0, 1),
+    "vendor/reject-extension.sieve": (0, 1),
+    "vendor/rfc5228-extended.sieve": (1, 15),
+    "vendor/set-command.sieve": (0, 6),
+    "vendor/singletest-testlist.sieve": (0, 1),
+    "vendor/string-with-bracket-comment.sieve": (1, 0),
+    "vendor/true-test.sieve": (0, 1),
+    "vendor/truefalse-testlist.sieve": (0, 1),
+    "vendor/utf8.sieve": (0, 1),
+    "vendor/vacation-seconds.sieve": (0, 1),
+    "vendor/vacationext-basic.sieve": (0, 1),
+    "vendor/vacationext-medium.sieve": (0, 1),
+    "vendor/vacationext-with-limit.sieve": (0, 4),
+    "vendor/vacationext-with-multiline.sieve": (0, 16),
+    "vendor/vacationext-with-single-mail-address.sieve": (0, 3),
 }
 
 
-@pytest.mark.parametrize("path", TEST_SCRIPTS, ids=lambda p: p.name)
+@pytest.mark.parametrize("path", _corpus())
 def test_recognition_does_not_regress(path: Path) -> None:
     """Every fixture keeps its recognised rules/raw split; new fixtures must be censused."""
-    assert path.name in RECOGNITION_CENSUS, (
-        f"{path.name}: uncensused fixture — measure (len(rules), len(raw_blocks)) "
+    fixture_id = str(path.relative_to(FIXTURE_ROOT))
+    assert fixture_id in RECOGNITION_CENSUS, (
+        f"{fixture_id}: uncensused fixture — measure (len(rules), len(raw_blocks)) "
         "and add it to RECOGNITION_CENSUS"
     )
     script = st.parse_sieve(path.read_text())
     got = (len(script.rules), len(script.raw_blocks))
-    assert got == RECOGNITION_CENSUS[path.name], (
-        f"{path.name}: recognition changed: (rules, raw_blocks) = {got}, "
-        f"pinned {RECOGNITION_CENSUS[path.name]}"
+    assert got == RECOGNITION_CENSUS[fixture_id], (
+        f"{fixture_id}: recognition changed: (rules, raw_blocks) = {got}, "
+        f"pinned {RECOGNITION_CENSUS[fixture_id]}"
     )
+
+
+# The headline number for the vendored corpus, kept separate from the per-file
+# census because it is the one figure a recogniser upgrade is supposed to move.
+# 8 Rules out of 45 third-party scripts is not a good score; it is the
+# honest starting line for areyousievious-8fg.10.
+VENDOR_RULES_RECOGNISED = 8
+
+
+def test_vendor_corpus_reach_is_pinned() -> None:
+    """The recogniser's reach over third-party Sieve may not silently shrink.
+
+    Per-file pins already catch a file changing shape, but this asserts the
+    total a human reads in a review: 'the wrap moved reach from N to M'. A
+    census where one file gains a Rule and another loses one leaves both file
+    pins wrong in opposite directions and this total unchanged, so both checks
+    earn their keep.
+    """
+    assert VENDOR_SCRIPTS, "the vendored sievelib corpus is missing"
+    total = sum(len(st.parse_sieve(p.read_text()).rules) for p in VENDOR_SCRIPTS)
+    assert total == VENDOR_RULES_RECOGNISED, (
+        f"vendor corpus reach changed: {total} Rules recognised across "
+        f"{len(VENDOR_SCRIPTS)} scripts, pinned {VENDOR_RULES_RECOGNISED}"
+    )
+
+
+# ── Construct coverage (areyousievious-8fg.3) ──
+
+
+def _alternation(pattern: str, prefix: str) -> set[str]:
+    """The alternatives inside `<prefix>a|b|c)` of a compiled pattern's source.
+
+    Read out of sieve_transform rather than copied into a list here. A copied
+    list is a claim about the vocabulary; this is the vocabulary. If the pattern
+    is ever reshaped the assert below fires rather than the set quietly
+    shrinking to something the corpus already satisfies.
+    """
+    start = pattern.index(prefix) + len(prefix)
+    options = pattern[start : pattern.index(")", start)].split("|")
+    assert all(re.fullmatch(r"[a-z]+", option) for option in options), (
+        f"{prefix!r} no longer introduces a plain alternation: {options}"
+    )
+    return set(options)
+
+
+SUPPORTED_ACTIONS = {action for _, action in st._QUOTED_ACTIONS} | set(st._BARE_ACTIONS)
+SUPPORTED_MATCH_TYPES = _alternation(st._TEST_RE.pattern, "(?P<match_type>")
+SUPPORTED_ADDRESS_PARTS = _alternation(st._ADDRESS_PART_RE.pattern, ":(")
+
+
+def test_the_corpus_exercises_every_supported_construct() -> None:
+    """Every construct the transform claims to support must appear in a fixture.
+
+    The census pins how MUCH is recognised; this pins WHAT. Without it a fixture
+    edit can drop the only `addflag` in the corpus and nothing goes red — the
+    counts still add up, and `addflag` quietly stops being tested. That is the
+    gap this corpus was built to close: before it, 17 of the ~33 supported
+    constructs had no round-trip fixture at all.
+    """
+    actions: set[str] = set()
+    match_types: set[str] = set()
+    address_parts: set[str] = set()
+    comparators: set[str] = set()
+    negated = disabled = address_tests = header_tests = bare_ifs = wrapped_ifs = raw_blocks = 0
+
+    for path in TEST_SCRIPTS:
+        script = st.parse_sieve(path.read_text())
+        raw_blocks += len(script.raw_blocks)
+        for rule in script.rules:
+            disabled += not rule.enabled
+            wrapped_ifs += bool(rule.match)
+            bare_ifs += not rule.match
+            actions |= {action.action_type for action in rule.actions}
+            for cond in rule.conditions:
+                match_types.add(cond.match_type)
+                address_parts.add(cond.address_part)
+                comparators.add(cond.comparator)
+                negated += cond.negate
+                address_tests += cond.address_test
+                header_tests += not cond.address_test
+
+    assert SUPPORTED_ACTIONS <= actions, f"no fixture uses {SUPPORTED_ACTIONS - actions}"
+    assert SUPPORTED_MATCH_TYPES <= match_types, (
+        f"no fixture uses {SUPPORTED_MATCH_TYPES - match_types}"
+    )
+    assert SUPPORTED_ADDRESS_PARTS <= address_parts, (
+        f"no fixture uses {SUPPORTED_ADDRESS_PARTS - address_parts}"
+    )
+    assert comparators - {""}, "no fixture carries a :comparator"
+    assert negated, "no fixture carries a negated test"
+    assert disabled, "no fixture carries a ## disabled rule"
+    assert address_tests and header_tests, "the corpus needs both address and header tests"
+    assert bare_ifs and wrapped_ifs, "the corpus needs both a bare `if` and an anyof/allof wrapper"
+    assert raw_blocks, "no fixture lands in a RawBlock"
 
 
 # ── Round-trip fidelity (architecture candidate 02) ──
