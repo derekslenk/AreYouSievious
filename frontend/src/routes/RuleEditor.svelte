@@ -1,5 +1,5 @@
 <script>
-  import { onMount } from 'svelte';
+  import { onDestroy, onMount } from 'svelte';
   import { api } from '../lib/api.js';
   import {
     view, currentScript, currentScriptName, folders, showToast,
@@ -22,8 +22,68 @@
   let showFolderPicker = false;
   let folderPickerCallback = null;
 
-  // Sieve preview of selected rule
+  // Sieve preview of the selected rule, rendered by the SERVER.
+  //
+  // This used to be `doc.previewRule`, a second implementation of the backend
+  // generator that both modules described as having to agree with it while
+  // nothing checked that it did. It had diverged five ways (dropped `negate`,
+  // no quote escaping, disabled rules shown live, no `# --- name ---` line,
+  // and nothing at all for a Rule whose last Condition was deleted — where a
+  // save writes `if anyof ( ) {`). It is deleted; the editor asks
+  // POST /api/scripts/preview instead (areyousievious-8fg.17).
   let preview = '';
+  let previewError = '';
+  // Debounce, plus a sequence number so a slow answer for an older Rule can
+  // never overwrite a newer one. Without it the preview would settle on
+  // whichever response happened to land last.
+  const PREVIEW_DEBOUNCE_MS = 200;
+  let previewSeq = 0;
+  let previewTimer;
+  // The wire payload the preview on screen was rendered from. The trigger
+  // below fires on ANY document mutation — `rules` is rebuilt whenever
+  // `script` is reassigned, so adding, deleting or reordering some OTHER rule
+  // reschedules the selected one too. Comparing payloads rather than array
+  // references means those cost nothing, and so does a keystroke that leaves
+  // the wire content unchanged.
+  let previewedWire = '';
+
+  function schedulePreview(rule) {
+    if (!rule) {
+      clearTimeout(previewTimer);
+      previewSeq += 1;
+      preview = '';
+      previewError = '';
+      previewedWire = '';
+      return;
+    }
+    const payload = doc.entryToWire(rule);
+    const identity = JSON.stringify(payload);
+    if (identity === previewedWire) return;
+    previewedWire = identity;
+
+    clearTimeout(previewTimer);
+    const wanted = (previewSeq += 1);
+    previewTimer = setTimeout(async () => {
+      try {
+        const { sieve } = await api.previewRule(payload);
+        if (wanted !== previewSeq) return;
+        preview = sieve;
+        previewError = '';
+      } catch (e) {
+        if (wanted !== previewSeq) return;
+        // Say so rather than leaving the last rule's Sieve on screen next to
+        // the rule the user is now editing — a stale preview is the same lie
+        // in a different shape.
+        preview = '';
+        previewError = e?.message || 'Preview unavailable';
+        // Forget what we asked for, so the next trigger retries instead of
+        // matching `identity` and leaving the error up forever.
+        previewedWire = '';
+      }
+    }, PREVIEW_DEBOUNCE_MS);
+  }
+
+  onDestroy(() => clearTimeout(previewTimer));
 
   // Rule entries, in order. Raw Blocks stay in `script.entries` and are never
   // rendered, but keep their position through every mutation.
@@ -50,11 +110,10 @@
 
   $: dirty = !!(script && pristine) && !doc.sameWire(script, pristine);
 
-  // Preview generation lives in ScriptDocument — it must agree with the
-  // backend generator, and it can only be tested outside a .svelte file.
-  $: if (rules[selectedIdx]) {
-    preview = doc.previewRule(rules[selectedIdx]);
-  }
+  // Fires on every document mutation, including ones to other rules — see
+  // `schedulePreview`, which is what decides whether the selected rule
+  // actually changed.
+  $: schedulePreview(rules[selectedIdx]);
 
   function addRule() {
     script = doc.addRule(script);
@@ -205,7 +264,11 @@
           />
 
           <h3>Preview</h3>
-          <pre class="sieve-preview">{preview}</pre>
+          {#if previewError}
+            <p class="preview-error">{previewError}</p>
+          {:else}
+            <pre class="sieve-preview">{preview}</pre>
+          {/if}
         {:else}
           <p class="muted">Select a rule from the list.</p>
         {/if}
@@ -285,6 +348,10 @@
     background: var(--surface); padding: 0.75rem; border-radius: 6px;
     font-family: monospace; font-size: 0.8rem; overflow-x: auto;
     white-space: pre-wrap; color: var(--text2);
+  }
+  .preview-error {
+    background: var(--surface); padding: 0.75rem; border-radius: 6px;
+    font-size: 0.8rem; color: var(--text2); margin: 0; font-style: italic;
   }
   .btn-xs {
     padding: 0.15rem 0.35rem; font-size: 0.7rem; border-radius: 4px;

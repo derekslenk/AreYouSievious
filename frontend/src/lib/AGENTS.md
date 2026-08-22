@@ -42,7 +42,11 @@ Shared utilities, state management, and API client used across all frontend comp
 - API methods return parsed JSON or throw on error
 - `scriptDocument.js` mutations are pure: each returns a NEW document so Svelte reactivity
   fires on reassignment. The one carve-out: no-op moves (`moveRule`, `moveItem`) return the
-  SAME reference so callers can cheaply detect that nothing happened. `previewRule` is a second implementation of the backend generator
-  and must stay byte-identical to it
+  SAME reference so callers can cheaply detect that nothing happened
+- There is NO Sieve generator in the SPA. `previewRule` used to be one — a second
+  implementation of `SieveGenerator` that both modules described as having to agree with it
+  while nothing checked that it did, and that had diverged five ways. It is deleted;
+  `api.previewRule` asks `POST /api/scripts/preview` instead (`.17`). If you find yourself
+  about to render Sieve here, that is the bug repeating
 
 <!-- MANUAL: -->

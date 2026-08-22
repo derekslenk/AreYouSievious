@@ -122,6 +122,36 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/scripts/preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Preview Rule
+         * @description Render one Rule as the Sieve a save would write.
+         *
+         *     NO MAIL-SERVER DIAL. It depends on `get_session` and not on
+         *     `get_script_store`, so it authenticates without opening a ManageSieve
+         *     connection — this runs on every keystroke behind a debounce, and a
+         *     connection per keystroke would be a self-inflicted denial of service
+         *     against the user's own mail server.
+         *
+         *     It replaces `previewRule` in the SPA, which was a second implementation of
+         *     `SieveGenerator` that had already diverged five ways. Declared BEFORE the
+         *     `/{name}` routes so `preview` is read as a literal path segment.
+         */
+        post: operations["preview_rule_api_scripts_preview_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/scripts/{name}": {
         parameters: {
             query?: never;
@@ -381,6 +411,26 @@ export interface components {
             sieve?: string | null;
             /** Username */
             username?: string | null;
+        };
+        /**
+         * PreviewRequest
+         * @description One Rule to render as Sieve (areyousievious-8fg.18 vocabularies apply).
+         *
+         *     Deliberately one Rule and not a whole script: the editor previews the rule
+         *     the user is looking at, and asking for a script would make the endpoint
+         *     need `requires`, which is a property of the script rather than of any Rule.
+         */
+        PreviewRequest: {
+            rule: components["schemas"]["RuleDTO"];
+        };
+        /**
+         * PreviewResponse
+         * @description POST /api/scripts/preview — the exact bytes a save would write for this
+         *     Rule, minus the script-level `require` line.
+         */
+        PreviewResponse: {
+            /** Sieve */
+            sieve: string;
         };
         /**
          * RawBlockDTO
@@ -675,6 +725,39 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["OkResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    preview_rule_api_scripts_preview_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PreviewRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PreviewResponse"];
                 };
             };
             /** @description Validation Error */

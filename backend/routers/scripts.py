@@ -1,8 +1,13 @@
 """
 Sieve script router (areyousievious-u40 split from app.py).
 
-Owns the nine /api/scripts/* endpoints that read, write, import,
+Owns the ten /api/scripts/* endpoints that read, write, import,
 export, activate, and delete Sieve scripts via ManageSieve.
+
+`preview` is the one that does not touch ManageSieve at all: it renders a
+Rule with the same generator a save uses and answers. It exists so the SPA
+does not have to carry a second implementation of that generator, which it
+did, and which had diverged five ways (areyousievious-8fg.17).
 
 The import size cap comes from `request.app.state.settings.max_body_bytes`,
 the same value the body-size middleware uses. It was a local constant here,
@@ -15,20 +20,25 @@ import re
 
 from api_models import (
     OkResponse,
+    PreviewRequest,
+    PreviewResponse,
     SaveRawRequest,
     SaveScriptRequest,
     ScriptListItem,
     ScriptRawResponse,
     ScriptResponse,
 )
+from auth import Session
 from config import Settings
-from dependencies import get_script_store, get_settings
+from dependencies import get_script_store, get_session, get_settings
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Response, UploadFile
 from mail_stores import ScriptStore
 from sieve_transform import (
+    generate_rule,
     generate_sieve,
     json_to_script,
     parse_sieve,
+    rule_from_json,
     script_to_json,
 )
 
@@ -88,6 +98,23 @@ def import_script(
         raise HTTPException(400, "File must be valid UTF-8 text")  # noqa: B904
     store.put_script(name, content)
     return {"ok": True, "name": name}
+
+
+@router.post("/preview", response_model=PreviewResponse)
+def preview_rule(req: PreviewRequest, _session: Session = Depends(get_session)):
+    """Render one Rule as the Sieve a save would write.
+
+    NO MAIL-SERVER DIAL. It depends on `get_session` and not on
+    `get_script_store`, so it authenticates without opening a ManageSieve
+    connection — this runs on every keystroke behind a debounce, and a
+    connection per keystroke would be a self-inflicted denial of service
+    against the user's own mail server.
+
+    It replaces `previewRule` in the SPA, which was a second implementation of
+    `SieveGenerator` that had already diverged five ways. Declared BEFORE the
+    `/{name}` routes so `preview` is read as a literal path segment.
+    """
+    return {"sieve": generate_rule(rule_from_json(req.rule.model_dump()))}
 
 
 @router.put("/{name}", response_model=OkResponse, response_model_exclude_none=True)

@@ -10,6 +10,7 @@
 
 import { describe, it, expect, beforeEach } from 'vitest';
 import {
+  entryToWire,
   fromWire,
   toWire,
   ruleEntries,
@@ -18,7 +19,6 @@ import {
   moveRule,
   newCondition,
   newAction,
-  previewRule,
   HEADERS,
   MATCH_TYPES,
   ACTION_TYPES,
@@ -191,97 +191,29 @@ describe('moveRule', () => {
   });
 });
 
-describe('previewRule', () => {
-  /** Build a rule entry directly, bypassing the wire. */
-  function rule(overrides = {}) {
-    const doc = addRule(fromWire({}));
-    return { ...ruleEntries(doc)[0], ...overrides };
-  }
-
-  function cond(overrides = {}) {
-    return { ...newCondition(), header: 'from', match_type: 'is', value: 'a@x.com', ...overrides };
-  }
-
-  it('renders a bare single-condition rule', () => {
-    const out = previewRule(
-      rule({ match: '', conditions: [cond()], actions: [{ ...newAction(), argument: 'A' }] })
-    );
-    expect(out).toBe('if address :is "from" "a@x.com" {\n    fileinto "A";\n}');
+describe('entryToWire', () => {
+  it('is the same projection toWire applies, one entry at a time', () => {
+    // The preview endpoint takes ONE Rule. If it were fed a differently
+    // shaped payload the preview would once again be of something other
+    // than what a save writes — the exact defect .17 deletes.
+    const document = fromWire(WIRE);
+    expect(document.entries.map(entryToWire)).toEqual(toWire(document).entries);
   });
 
-  it('renders a multi-condition rule with its match type', () => {
-    const out = previewRule(
-      rule({
-        match: 'allof',
-        conditions: [cond(), cond({ value: 'b@x.com' })],
-        actions: [{ ...newAction(), argument: 'A' }],
-      })
-    );
-    expect(out).toContain('if allof (');
-    expect(out.split('\n')[1]).toBe('    address :is "from" "a@x.com",');
-  });
-
-  it('REGRESSION: renders a negated condition as NOT', () => {
-    // The component's version dropped `negate` entirely, so a NOT condition
-    // previewed as its exact opposite.
-    const out = previewRule(rule({ match: '', conditions: [cond({ negate: true })], actions: [] }));
-    expect(out).toContain('not address :is "from" "a@x.com"');
-  });
-
-  it('REGRESSION: escapes quotes and backslashes', () => {
-    // The component interpolated raw, so a folder containing a quote produced
-    // a preview that was not what got saved.
-    const out = previewRule(
-      rule({
-        match: '',
-        conditions: [cond({ value: 'a"b' })],
-        actions: [{ ...newAction(), argument: 'X\\Y"Z' }],
-      })
-    );
-    expect(out).toContain('"a\\"b"');
-    expect(out).toContain('fileinto "X\\\\Y\\"Z";');
-  });
-
-  it('REGRESSION: shows a disabled rule commented out', () => {
-    // A disabled rule is stored `##`-commented; the component showed it live.
-    const out = previewRule(
-      rule({ match: '', enabled: false, conditions: [cond()], actions: [] })
-    );
-    expect(out.split('\n').every((l) => l.startsWith('##'))).toBe(true);
-  });
-
-  it('renders tagged arguments', () => {
-    const out = previewRule(
-      rule({
-        match: '',
-        conditions: [cond({ address_part: 'domain', comparator: 'i;octet' })],
-        actions: [],
-      })
-    );
-    expect(out).toContain('address :domain :comparator "i;octet" :is "from" "a@x.com"');
-  });
-
-  it('renders every action type', () => {
-    const types = [
-      ['fileinto', 'fileinto "F";'],
-      ['fileinto_copy', 'fileinto :copy "F";'],
-      ['redirect', 'redirect "F";'],
-      ['addflag', 'addflag "F";'],
-      ['reject', 'reject "F";'],
-      ['keep', 'keep;'],
-      ['discard', 'discard;'],
-      ['stop', 'stop;'],
-    ];
-    for (const [type, expected] of types) {
-      const out = previewRule(
-        rule({ match: '', conditions: [cond()], actions: [{ ...newAction(), type, argument: 'F' }] })
-      );
-      expect(out).toContain(`    ${expected}`);
+  it('strips the render key from a rule and from a raw block alike', () => {
+    for (const entry of fromWire(WIRE).entries) {
+      expect(entryToWire(entry)).not.toHaveProperty('key');
+      expect(JSON.stringify(entryToWire(entry))).not.toContain('"key"');
     }
   });
 
-  it('returns empty for a rule with no conditions', () => {
-    expect(previewRule(rule({ conditions: [] }))).toBe('');
+  it('drops the keys inside conditions and actions, not just the entry key', () => {
+    const rule = ruleEntries(fromWire(WIRE))[0];
+    const wire = entryToWire(rule);
+    if (wire.kind !== 'rule') throw new Error('expected a rule on the wire');
+    expect(rule.conditions.every((c) => c.key)).toBe(true);
+    expect((wire.conditions ?? []).every((c) => !('key' in c))).toBe(true);
+    expect((wire.actions ?? []).every((a) => !('key' in a))).toBe(true);
   });
 });
 

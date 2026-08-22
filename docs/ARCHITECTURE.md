@@ -148,6 +148,7 @@ Declare based on what actions are used:
 - `DELETE /api/scripts/:name` — delete script
 - `GET /api/scripts/:name/raw` — get raw Sieve text
 - `PUT /api/scripts/:name/raw` — save raw Sieve text directly
+- `POST /api/scripts/preview` — render one Rule as the Sieve a save would write. Authenticated but does NOT dial the mail server; the editor calls it behind a debounce so the SPA needs no second copy of the generator
 
 ### Folders
 - `GET /api/folders` — IMAP folder tree

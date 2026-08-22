@@ -486,12 +486,7 @@ class SieveGenerator:
         # Generate in order — position in `entries` IS the order
         for entry in script.entries:
             if isinstance(entry, Rule):
-                rule_text = self._generate_rule(entry)
-                if not entry.enabled:
-                    rule_text = "\n".join(
-                        "## " + line if line.strip() else "##" for line in rule_text.split("\n")
-                    )
-                parts.append(rule_text)
+                parts.append(self.generate_entry(entry))
                 parts.append("")
             else:
                 if entry.comment:
@@ -500,6 +495,25 @@ class SieveGenerator:
                 parts.append("")
 
         return "\n".join(parts).rstrip() + "\n"
+
+    def generate_entry(self, rule: Rule) -> str:
+        """The exact bytes one Rule contributes to a script.
+
+        Public because the preview endpoint calls it (areyousievious-8fg.17),
+        and `generate` calls it too. That sharing is the point: the SPA used to
+        carry `previewRule`, a SECOND implementation of this generator, and
+        both modules said in a comment that the two "must agree" while nothing
+        checked it. Five divergences shipped — dropped `negate`, no quote
+        escaping, a disabled rule shown live, the missing `# --- name ---`
+        line, and a conditionless Rule previewing as nothing while a save
+        wrote `if anyof ( ) {`. There is now one implementation to diverge
+        from.
+        """
+        text = self._generate_rule(rule)
+        if rule.enabled:
+            return text
+        # A disabled Rule is stored commented out.
+        return "\n".join("## " + line if line.strip() else "##" for line in text.split("\n"))
 
     def _compute_requires(self, script: SieveScript) -> list[str]:
         """Compute required extensions from rules."""
@@ -704,3 +718,23 @@ def parse_sieve(text: str) -> SieveScript:
 def generate_sieve(script: SieveScript) -> str:
     """Generate Sieve text from a SieveScript."""
     return SieveGenerator().generate(script)
+
+
+def rule_from_json(data: dict) -> Rule:
+    """Build a single Rule from its wire dict.
+
+    The rule-sized counterpart to `json_to_script`, for the preview endpoint —
+    which has one Rule and no script to put it in.
+    """
+    return _rule_from_json(data)
+
+
+def generate_rule(rule: Rule) -> str:
+    """The Sieve one Rule contributes to a script, byte for byte.
+
+    Goes through the same `SieveGenerator.generate_entry` a save does, so a
+    preview cannot say one thing and a save write another. Note what this does
+    NOT include: the `require [...]` line, which is a property of the whole
+    script rather than of any one Rule.
+    """
+    return SieveGenerator().generate_entry(rule)

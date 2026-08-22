@@ -156,6 +156,12 @@ export const api = {
   saveScriptRaw: (name, content) => request(`/scripts/${encodeURIComponent(name)}/raw`, {
     method: 'PUT', body: JSON.stringify({ content }),
   }),
+  // One Rule in, the Sieve a save would write out. No mail-server connection:
+  // the editor calls this behind a debounce on every keystroke, and it exists
+  // so the SPA does not carry a second copy of the backend's generator.
+  previewRule: (rule) => request('/scripts/preview', {
+    method: 'POST', body: JSON.stringify({ rule }),
+  }),
   activateScript: (name) => request(`/scripts/${encodeURIComponent(name)}/activate`, { method: 'POST' }),
   deleteScript: (name) => request(`/scripts/${encodeURIComponent(name)}`, { method: 'DELETE' }),
 
