@@ -209,26 +209,50 @@ def test_a_byte_order_mark_does_not_disable_the_map() -> None:
     assert [a.argument for a in with_bom.rules[0].actions] == ["Weird{Folder"]
 
 
-def test_text_the_lexer_refuses_falls_back_rather_than_failing() -> None:
+def test_text_the_lexer_refuses_becomes_one_whole_file_raw_block() -> None:
     """An unknown token anywhere and the map is abandoned whole.
 
     A PARTIAL map is worse than none: lines past the failure would report zero
-    braces and a block would run to end of file. Falling back to character
-    counting is what the parser did for every script before this existed —
-    worse than the map, but not worse than yesterday, and it still produces a
-    Script rather than an exception.
+    braces and a block would run to end of file.
 
-    No fixture in the corpus reaches this path; `test_every_fixture_is_lexable`
-    below is what says so.
+    And so is guessing. The first version of this fell back to character
+    counting — "worse than the map, but not worse than yesterday". That was
+    wrong, and `.11` says so in terms: `Lexer failure -> the whole file as one
+    RawBlock, content intact`. Character counting IS the thing whose three
+    corrupting defects `.10` exists to close, so falling back to it turns the
+    file we understand LEAST into the one we are most willing to guess about.
+
+    Zero Rules plus one whole-file RawBlock is a readable state meaning
+    "understood nothing". No fixture in the corpus reaches it;
+    `test_every_fixture_is_lexable` below is what says so.
     """
     hostile = 'require ["fileinto"];\n\n@@@ not sieve @@@\n'
-    lex = st._LexicalMap(hostile)
-    assert not lex.usable
-    assert lex.masked_lines == hostile.split("\n"), "the fallback masks nothing"
+    assert not st._LexicalMap(hostile).usable
 
     script = st.parse_sieve(hostile)
-    assert script.requires == ["fileinto"]
-    assert any("@@@" in raw.text for raw in script.raw_blocks)
+    assert script.rules == []
+    assert script.requires == [], "nothing is read out of a file we cannot lex"
+    (raw,) = script.raw_blocks
+    assert raw.text == hostile.rstrip("\n"), "content intact, byte for byte"
+
+
+def test_a_file_the_lexer_refuses_still_round_trips() -> None:
+    """Whole-file RawBlock or not, saving it must not change it."""
+    hostile = 'require ["fileinto"];\n\n@@@ not sieve @@@\n'
+    first = st.generate_sieve(st.parse_sieve(hostile))
+    assert first == st.generate_sieve(st.parse_sieve(first))
+    assert "@@@ not sieve @@@" in first
+    assert 'require ["fileinto"];' in first, "the require survives as raw text"
+
+
+def test_a_lexable_file_is_never_treated_that_way() -> None:
+    """The whole-file RawBlock is for text we cannot read, and nothing else.
+    A script that lexes must still be parsed normally, or this "safety" would
+    quietly make the editor useless."""
+    ordinary = 'require ["fileinto"];\n\nif header :is "a" "b" {\n    fileinto "X";\n}\n'
+    script = st.parse_sieve(ordinary)
+    assert len(script.rules) == 1
+    assert script.raw_blocks == []
 
 
 def test_text_that_cannot_be_bytes_falls_back_rather_than_500ing() -> None:

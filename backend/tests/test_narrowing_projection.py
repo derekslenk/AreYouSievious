@@ -273,3 +273,41 @@ def test_every_rule_in_the_corpus_uses_only_modelled_constructs() -> None:
             if keyword in text and keyword not in regenerated:
                 offenders.append((path.name, keyword))
     assert not offenders, f"constructs dropped on regeneration: {offenders}"
+
+
+def test_the_source_vocabulary_and_the_wire_vocabulary_stay_in_step() -> None:
+    """`COMMAND_NAMES` is what appears in Sieve SOURCE; `ACTION_TYPES` is what
+    appears on the WIRE. They are not the same list and must not be derived
+    from one another — raised in review of this change, and correct:
+
+      - `fileinto_copy` is a wire name for what the source spells
+        `fileinto :copy`, so the Lexer can never emit it as an identifier.
+        Leaving it in the modelled set was harmless but meaningless.
+      - Deriving one from the other couples them the wrong way round. Widening
+        `ACTION_TYPES` for the builder's DTOs (`.18`) would then silently widen
+        what the PARSER is willing to project onto a Rule — a product decision
+        about the editor quietly becoming a parser decision.
+
+    So they are separate declarations, pinned to each other HERE. This is the
+    check that the decoupling did not just become drift: exactly one difference
+    is allowed, and it is named.
+    """
+    assert set(st.COMMAND_NAMES) == set(st.ACTION_TYPES) - {"fileinto_copy"}
+    assert "fileinto_copy" not in st._MODELLED_IDENTIFIERS, (
+        "a wire name in the source vocabulary means the two were conflated again"
+    )
+
+
+def test_widening_the_wire_vocabulary_does_not_widen_the_parser() -> None:
+    """The consequence of the above, stated as behaviour rather than as set
+    arithmetic: a command the builder gained a DTO for is still raw to the
+    parser until `COMMAND_NAMES` says otherwise."""
+    src = (
+        'require ["fileinto"];\n\n'
+        'if header :is "a" "b" {\n'
+        '    fileinto "X";\n'
+        '    setflag "\\\\Seen";\n'
+        "}\n"
+    )
+    assert st.parse_sieve(src).rules == []
+    assert "setflag" not in st.COMMAND_NAMES

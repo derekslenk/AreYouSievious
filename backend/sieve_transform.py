@@ -152,23 +152,46 @@ ADDRESS_PARTS: tuple[str, ...] = ("all", "localpart", "domain")
 # legal Sieve we have no Condition for (areyousievious-8fg.11).
 TEST_TYPES: tuple[str, ...] = ("header", "address")
 
+# The command words that appear in SIEVE SOURCE.
+#
+# Deliberately NOT derived from ACTION_TYPES, which is the WIRE vocabulary:
+# `fileinto_copy` is a wire name for what the source spells `fileinto :copy`,
+# so the Lexer can never emit it as an identifier. Deriving one from the other
+# would also couple them the wrong way round — a DTO widened for the builder
+# (.18) would silently widen what the PARSER is willing to project. The two are
+# pinned to each other by a test instead, which is a check rather than a
+# coupling.
+COMMAND_NAMES: tuple[str, ...] = (
+    "fileinto",
+    "redirect",
+    "addflag",
+    "reject",
+    "keep",
+    "discard",
+    "stop",
+)
+
 # Every bare word that may appear inside a span we project onto a Rule. An
 # identifier outside this set means the span holds something we cannot
 # represent, and the whole span stays a RawBlock rather than being narrowed to
 # the part we happen to understand.
-#
-# `fileinto` covers `fileinto :copy` too — the `:copy` is a tag, not an
-# identifier.
-_MODELLED_IDENTIFIERS = frozenset(
-    {"if", "not", "fileinto", *MATCH_OPERATORS, *TEST_TYPES, *ACTION_TYPES}
-)
+_MODELLED_IDENTIFIERS = frozenset({"if", "not", *MATCH_OPERATORS, *TEST_TYPES, *COMMAND_NAMES})
 
 _PARTS = "|".join(ADDRESS_PARTS)
+
 
 # Tagged arguments on a test. RFC 5228 lets ADDRESS-PART, COMPARATOR and
 # MATCH-TYPE appear in any order, so the run of modifiers is captured as one
 # blob and picked apart afterwards rather than pinned to a fixed sequence.
-_MODIFIER_RUN = rf'(?P<mods>(?:\s+:(?:{_PARTS})|\s+:comparator\s+"(?:[^"\\]|\\.)*")*)'
+#
+# A function because the run appears TWICE in `_TEST_RE`, once either side of
+# the match-type, and each occurrence needs its own group name. Renaming the
+# group by `.replace()` on the pattern source was the first version of that and
+# it is a trap: a second named group in here would silently produce a
+# duplicate-group compile error at import.
+def _modifier_run(name: str) -> str:
+    return rf'(?P<{name}>(?:\s+:(?:{_PARTS})|\s+:comparator\s+"(?:[^"\\]|\\.)*")*)'
+
 
 # RFC 5228 §2.7.1 puts no order on tagged arguments, and the RFC's OWN example
 # (rfc5228.txt line 1351) writes the address-part AFTER the match-type. The
@@ -179,9 +202,9 @@ _MODIFIER_RUN = rf'(?P<mods>(?:\s+:(?:{_PARTS})|\s+:comparator\s+"(?:[^"\\]|\\.)
 _TEST_RE = re.compile(
     r"(?P<negate>not\s+)?"
     + rf"(?P<test_type>{'|'.join(TEST_TYPES)})"
-    + _MODIFIER_RUN
+    + _modifier_run("mods")
     + rf"\s+:(?P<match_type>{'|'.join(MATCH_TYPES)})"
-    + _MODIFIER_RUN.replace("<mods>", "<mods_after>")
+    + _modifier_run("mods_after")
     + rf"\s+{_Q('header')}"
     + rf"\s+{_Q('value')}"
 )
@@ -349,6 +372,22 @@ class SieveParser:
         self.lex = _LexicalMap(text)
 
     def parse(self) -> SieveScript:
+        if not self.lex.usable:
+            # The Lexer refused this text, so we have no trustworthy answer to
+            # "where does this block end" — and the three defects `.10` closed
+            # were all about answering that wrongly. Guessing with character
+            # counting would put them straight back, for exactly the file we
+            # understand least.
+            #
+            # So: the whole file, as one RawBlock, content intact
+            # (areyousievious-8fg.11). Zero Rules plus one whole-file RawBlock
+            # is a READABLE state meaning "understood nothing" — the caller
+            # tells outcomes apart from the result, never from an exception,
+            # because raising here would lock a user out of their own filters
+            # over one stray byte.
+            body = self.text.rstrip("\n")
+            return SieveScript(entries=[RawBlock(text=body)] if body.strip() else [])
+
         script = SieveScript()
         pending_comment = ""
 
@@ -462,10 +501,6 @@ class SieveParser:
         falls back to one line, which is what it always did.
         """
         start = self.line_idx
-        if not self.lex.usable:
-            self.line_idx += 1
-            return self.lines[start]
-
         while self.line_idx < len(self.lines):
             has_terminator = self.lex.semicolons[self.line_idx] > 0
             self.line_idx += 1
@@ -569,43 +604,40 @@ class SieveParser:
     def _parse_if_block(self, comment: str) -> Rule:
         """Parse an if block into a Rule."""
         # Collect lines until matching closing brace
-        block_lines, start, end = self._collect_block_lines()
+        _lines, start, end = self._collect_block_lines()
 
         # Every regex below reads the MASKED text: comment bodies replaced by
         # spaces, same length, so offsets are unchanged. Without it the action
         # scan read `# fileinto "Disabled";` and resurrected it as a live
         # action (areyousievious-8fg.10).
-        if self.lex.usable:
-            block_text = "\n".join(self.lex.masked_lines[start:end])
-            # A nested block is not single-rule shaped. Admitting it dropped
-            # the inner condition and left the inner action firing on the OUTER
-            # one — `if A { if B { fileinto "X"; } }` came back as
-            # `if A { fileinto "X"; }`, so mail matching A alone was filed.
-            # One `{` is this block's own; more than one means nesting.
-            if sum(self.lex.open_braces[start:end]) > 1:
-                raise ParseError("nested block not supported as single rule")
+        block_text = "\n".join(self.lex.masked_lines[start:end])
+        # A nested block is not single-rule shaped. Admitting it dropped
+        # the inner condition and left the inner action firing on the OUTER
+        # one — `if A { if B { fileinto "X"; } }` came back as
+        # `if A { fileinto "X"; }`, so mail matching A alone was filed.
+        # One `{` is this block's own; more than one means nesting.
+        if sum(self.lex.open_braces[start:end]) > 1:
+            raise ParseError("nested block not supported as single rule")
 
-            # NARROWING (areyousievious-8fg.11). A span becomes a Rule only if
-            # every construct in it is one we model. Partly-understood used to
-            # mean projected anyway, and what fell out was silent: a block whose
-            # `allof` held one `header` test and two `date` tests came back
-            # carrying the header test alone, and regenerating wrote a script
-            # with the hours gone — a rule that filed the boss's mail during
-            # office hours now filing it at every hour of the day.
-            #
-            # Reach is bounded by what the BUILDER can render, not by what a
-            # parser could manage. sievelib understands `vacation` perfectly
-            # well and a `vacation` block still stays raw, deliberately.
-            foreign = {
-                name
-                for line in self.lex.identifiers[start:end]
-                for name in line
-                if name not in _MODELLED_IDENTIFIERS
-            }
-            if foreign:
-                raise ParseError(f"not in the builder's vocabulary: {sorted(foreign)}")
-        else:
-            block_text = "\n".join(block_lines)
+        # NARROWING (areyousievious-8fg.11). A span becomes a Rule only if
+        # every construct in it is one we model. Partly-understood used to
+        # mean projected anyway, and what fell out was silent: a block whose
+        # `allof` held one `header` test and two `date` tests came back
+        # carrying the header test alone, and regenerating wrote a script
+        # with the hours gone — a rule that filed the boss's mail during
+        # office hours now filing it at every hour of the day.
+        #
+        # Reach is bounded by what the BUILDER can render, not by what a
+        # parser could manage. sievelib understands `vacation` perfectly
+        # well and a `vacation` block still stays raw, deliberately.
+        foreign = {
+            name
+            for line in self.lex.identifiers[start:end]
+            for name in line
+            if name not in _MODELLED_IDENTIFIERS
+        }
+        if foreign:
+            raise ParseError(f"not in the builder's vocabulary: {sorted(foreign)}")
 
         # Reject blocks with else/elsif — they are not single-rule shaped.
         # The current AST has no representation for else branches, so admitting
@@ -670,13 +702,8 @@ class SieveParser:
         while self.line_idx < len(self.lines):
             line = self.lines[self.line_idx]
             lines.append(line)
-            if self.lex.usable:
-                delta = self.lex.brace_delta[self.line_idx]
-                opened = self.lex.open_braces[self.line_idx]
-            else:
-                delta = line.count("{") - line.count("}")
-                opened = line.count("{")
-            depth += delta
+            depth += self.lex.brace_delta[self.line_idx]
+            opened = self.lex.open_braces[self.line_idx]
             if opened:
                 started = True
             self.line_idx += 1

@@ -21,6 +21,7 @@ from pathlib import Path
 
 import pytest
 import sieve_transform as st
+from sievelib.parser import Parser as SieveLibParser
 
 BACKEND = Path(__file__).resolve().parent.parent
 
@@ -111,13 +112,23 @@ def test_round_trip_preserves_every_entry_and_require(path: Path) -> None:
     declaring it, which is the point. So the assertion is the two properties
     that survive that change —
 
-      SHRINK ONLY. The first pass may drop an extension nothing uses; it may
-      never invent one, and it may never drop one that IS used, because the
-      derivation adds those back from the actions and conditions themselves.
+      SHRINK ONLY. The first pass may drop an extension nothing uses, and may
+      never invent one.
 
       THEN STABLE. Whatever the first pass settled on, the second must agree.
       A derivation that pruned a little more on each pass would satisfy
       "shrink only" forever while quietly emptying the list.
+
+      AND STILL VALID SIEVE. Those two alone are satisfied by dropping EVERY
+      require on the first pass and then holding steady — raised in review, and
+      correct. Neither says a require that is USED survived, and no assertion
+      written in terms of our own derivation could say it without being
+      circular. sievelib can: it treats a command whose extension was not
+      required as a hard parse failure, so it refuses exactly the script an
+      over-eager prune would produce. Checked, so the oracle is known to bite:
+
+          require ["fileinto"]; if header :is "a" "b" { fileinto "X"; }  -> True
+                                if header :is "a" "b" { fileinto "X"; }  -> False
     """
     original = path.read_text()
     first = st.parse_sieve(original)
@@ -132,6 +143,11 @@ def test_round_trip_preserves_every_entry_and_require(path: Path) -> None:
     assert set(third.requires) == set(second.requires), (
         f"{path.name}: requires still shrinking on the second pass — "
         f"lost {sorted(set(second.requires) - set(third.requires))}"
+    )
+    regenerated = st.generate_sieve(first)
+    assert SieveLibParser().parse(regenerated.encode()), (
+        f"{path.name}: the regenerated script does not parse — the likeliest "
+        f"cause is a require that IS used being pruned away:\n{regenerated}"
     )
 
 
@@ -228,8 +244,13 @@ def test_recognition_does_not_regress(path: Path) -> None:
 
 # The headline number for the vendored corpus, kept separate from the per-file
 # census because it is the one figure a recogniser upgrade is supposed to move.
-# 8 Rules out of 45 third-party scripts is not a good score; it is the
-# honest starting line for areyousievious-8fg.10.
+# It has moved twice, and NOT MONOTONICALLY, which is the point of tracking it:
+#   8  after .10 gave the parser a lexical model
+#   7  after .11 — two scripts lost because we were projecting them WRONG
+#      (`date` and `notify` blocks came back missing constructs), one gained
+#      because the modifier-ordering fix made it readable at last.
+# A number going down can be the recogniser getting more honest. Re-measure and
+# say which it was; do not assume either direction is the good one.
 VENDOR_RULES_RECOGNISED = 7
 
 
