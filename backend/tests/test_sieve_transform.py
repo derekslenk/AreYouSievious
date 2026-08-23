@@ -21,6 +21,7 @@ from pathlib import Path
 
 import pytest
 import sieve_transform as st
+from sievelib.parser import Parser as SieveLibParser
 
 BACKEND = Path(__file__).resolve().parent.parent
 
@@ -65,27 +66,15 @@ def _corpus(known_red: dict[str, str] | None = None) -> list[object]:
     return params
 
 
-# Defects reproduced by a fixture but fixed elsewhere. Keyed by fixture id.
-_DISABLED_RULE_NAME_ACCRETES = (
-    "areyousievious-8fg.15: _generate_rule emits the name comment INSIDE the "
-    "block, then generate() prefixes the whole block with '## '. On reparse "
-    "that line finds no `if`, falls through to the generic comment handler, and "
-    "lstrip('#').strip() bakes the marker into the name — one more '# --- ' per "
-    "save, forever."
-)
-_REQUIRES_ARE_LOST = (
-    "areyousievious-8fg.15: the parser ASSIGNS `requires` per require line "
-    "instead of extending it, and reads only the FIRST line of a multi-line "
-    "require. 'envelope', 'copy' and 'reject' are gone after one pass, and the "
-    "continuation lines come back as raw text emitted AFTER the regenerated "
-    "require — Sieve a real server refuses."
-)
-
+# Both fixtures that were pinned here are green: areyousievious-8fg.15 fixed
+# the disabled-Rule name accretion and the require losses they reproduced. The
+# pins were `xfail(strict=True)` precisely so they could not outlive the
+# defects, and this is them not outliving them.
 
 # ── Round-trip stability ──
 
 
-@pytest.mark.parametrize("path", _corpus({"disabled-rules.sieve": _DISABLED_RULE_NAME_ACCRETES}))
+@pytest.mark.parametrize("path", _corpus())
 def test_round_trip_is_idempotent(path: Path) -> None:
     """parse -> generate must reach a fixed point, in TEXT and in AST.
 
@@ -111,28 +100,55 @@ def test_round_trip_is_idempotent(path: Path) -> None:
     assert ast3 == ast2, f"{path.name}: parsed AST is not a fixed point"
 
 
-@pytest.mark.parametrize(
-    "path",
-    _corpus(
-        {
-            "disabled-rules.sieve": _DISABLED_RULE_NAME_ACCRETES,
-            "multiple-requires.sieve": _REQUIRES_ARE_LOST,
-        }
-    ),
-)
+@pytest.mark.parametrize("path", _corpus())
 def test_round_trip_preserves_every_entry_and_require(path: Path) -> None:
     """Nothing may be dropped by the first normalising pass.
 
-    The entry sequence must match exactly, and `require` must be preserved as a
-    set — generation sorts it, which is a deliberate normalisation, but losing
-    an extension would change which constructs the server accepts.
+    The entry sequence must match exactly.
+
+    `require` used to be asserted equal as a set. It cannot be, since
+    areyousievious-8fg.15 made the set a function of CONTENT rather than a
+    floor: a script declaring `envelope` and never testing one now stops
+    declaring it, which is the point. So the assertion is the two properties
+    that survive that change —
+
+      SHRINK ONLY. The first pass may drop an extension nothing uses, and may
+      never invent one.
+
+      THEN STABLE. Whatever the first pass settled on, the second must agree.
+      A derivation that pruned a little more on each pass would satisfy
+      "shrink only" forever while quietly emptying the list.
+
+      AND STILL VALID SIEVE. Those two alone are satisfied by dropping EVERY
+      require on the first pass and then holding steady — raised in review, and
+      correct. Neither says a require that is USED survived, and no assertion
+      written in terms of our own derivation could say it without being
+      circular. sievelib can: it treats a command whose extension was not
+      required as a hard parse failure, so it refuses exactly the script an
+      over-eager prune would produce. Checked, so the oracle is known to bite:
+
+          require ["fileinto"]; if header :is "a" "b" { fileinto "X"; }  -> True
+                                if header :is "a" "b" { fileinto "X"; }  -> False
     """
     original = path.read_text()
     first = st.parse_sieve(original)
     second = st.parse_sieve(st.generate_sieve(first))
+    third = st.parse_sieve(st.generate_sieve(second))
 
     assert second.entries == first.entries, f"{path.name}: entries changed on round-trip"
-    assert set(second.requires) == set(first.requires), f"{path.name}: a require was lost"
+    assert set(second.requires) <= set(first.requires), (
+        f"{path.name}: the round trip INVENTED a require: "
+        f"{sorted(set(second.requires) - set(first.requires))}"
+    )
+    assert set(third.requires) == set(second.requires), (
+        f"{path.name}: requires still shrinking on the second pass — "
+        f"lost {sorted(set(second.requires) - set(third.requires))}"
+    )
+    regenerated = st.generate_sieve(first)
+    assert SieveLibParser().parse(regenerated.encode()), (
+        f"{path.name}: the regenerated script does not parse — the likeliest "
+        f"cause is a require that IS used being pruned away:\n{regenerated}"
+    )
 
 
 # ── Recognition census (areyousievious-8fg.1) ──
@@ -156,7 +172,7 @@ RECOGNITION_CENSUS = {
     "modifiers-address-part.sieve": (3, 0),
     "modifiers-comparator.sieve": (2, 0),
     "modifiers-either-order.sieve": (2, 0),
-    "multiple-requires.sieve": (1, 3),
+    "multiple-requires.sieve": (1, 0),
     "negation.sieve": (2, 0),
     "raw-else-chain.sieve": (0, 1),
     "raw-unparseable-if.sieve": (0, 2),
@@ -173,12 +189,12 @@ RECOGNITION_CENSUS = {
     "vendor/currentdate-command-timezone.sieve": (0, 1),
     "vendor/currentdate-command.sieve": (0, 1),
     "vendor/currentdate-norel.sieve": (0, 1),
-    "vendor/date-command.sieve": (1, 0),
+    "vendor/date-command.sieve": (0, 1),
     "vendor/envelope-regex.sieve": (0, 1),
     "vendor/environment-test.sieve": (0, 1),
     "vendor/exists-get-string-or-list-2.sieve": (0, 1),
     "vendor/exists-get-string-or-list.sieve": (0, 1),
-    "vendor/explicit-comparator.sieve": (0, 1),
+    "vendor/explicit-comparator.sieve": (1, 0),
     "vendor/fileinto-create.sieve": (0, 1),
     "vendor/fileinto-with-copy.sieve": (1, 0),
     "vendor/hash-comment.sieve": (0, 1),
@@ -191,7 +207,7 @@ RECOGNITION_CENSUS = {
     "vendor/multitest-testlist.sieve": (0, 1),
     "vendor/nested-blocks.sieve": (0, 1),
     "vendor/non-ordered-args.sieve": (1, 0),
-    "vendor/notify-extension.sieve": (1, 0),
+    "vendor/notify-extension.sieve": (0, 1),
     "vendor/redirect-with-copy.sieve": (0, 1),
     "vendor/reject-extension.sieve": (0, 1),
     "vendor/rfc5228-extended.sieve": (1, 15),
@@ -228,9 +244,14 @@ def test_recognition_does_not_regress(path: Path) -> None:
 
 # The headline number for the vendored corpus, kept separate from the per-file
 # census because it is the one figure a recogniser upgrade is supposed to move.
-# 8 Rules out of 45 third-party scripts is not a good score; it is the
-# honest starting line for areyousievious-8fg.10.
-VENDOR_RULES_RECOGNISED = 8
+# It has moved twice, and NOT MONOTONICALLY, which is the point of tracking it:
+#   8  after .10 gave the parser a lexical model
+#   7  after .11 — two scripts lost because we were projecting them WRONG
+#      (`date` and `notify` blocks came back missing constructs), one gained
+#      because the modifier-ordering fix made it readable at last.
+# A number going down can be the recogniser getting more honest. Re-measure and
+# say which it was; do not assume either direction is the good one.
+VENDOR_RULES_RECOGNISED = 7
 
 
 def test_vendor_corpus_reach_is_pinned() -> None:
