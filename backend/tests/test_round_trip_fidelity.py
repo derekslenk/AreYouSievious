@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import pytest
 import sieve_transform as st
+from sievelib.parser import Parser as SieveLibParser
 
 
 def _round_trips(text: str, times: int = 3) -> list[str]:
@@ -261,8 +262,14 @@ def test_an_unterminated_require_does_not_eat_the_next_statement() -> None:
     script = st.parse_sieve(src)
 
     assert len(script.rules) == 1, "the rule after an unterminated require was deleted"
-    assert script.requires == ["fileinto"], "and the require is still read"
     assert 'fileinto "x";' in st.generate_sieve(script)
+
+    # And the malformed `require` itself is PRESERVED rather than read. An
+    # earlier version of this fix read it anyway; refusing is the same call
+    # made for every other unclean statement below — we do not guess at
+    # something we cannot parse, we hand back its bytes.
+    assert script.requires == []
+    assert any('require ["fileinto"]' in raw.text for raw in script.raw_blocks)
 
 
 def test_a_script_that_is_only_requires_keeps_them() -> None:
@@ -350,3 +357,113 @@ def test_a_long_run_of_disabled_lines_does_not_blow_up() -> None:
     st.parse_sieve("\n".join(body) + "\n")
     elapsed = time.perf_counter() - started
     assert elapsed < 2.0, f"{elapsed:.2f}s for {len(body)} commented lines"
+
+
+def test_many_failing_disabled_fragments_do_not_blow_up() -> None:
+    """The EXPENSIVE retry path, which the test above does not reach.
+
+    Raised in review of this PR, and the review was right: above, the peek
+    finds no `if` and gives up immediately, so every retry is cheap. Here each
+    retry position DOES find an `if` ahead, so each one built a fresh
+    `SieveParser` and re-lexed the rest of the file. Measured before the fix:
+
+        200 fragments  0.092s
+        400 fragments  0.383s      <- four times the work for twice the input
+        800 fragments  1.532s
+
+    A `## ` run that fails is now tried ONCE, not once per line, so this is
+    linear. The body-size limit admits a 1 MiB script and this runs on an HTTP
+    request, which is what made the difference worth having.
+    """
+    import time
+
+    fragments = "\n".join(f'## if header :is "a{i}" "b" {{' for i in range(3000))
+    started = time.perf_counter()
+    st.parse_sieve(fragments + "\n")
+    elapsed = time.perf_counter() - started
+    assert elapsed < 1.0, f"{elapsed:.2f}s for 3000 failing fragments"
+
+
+def test_a_name_that_looks_like_accretion_is_indistinguishable_from_it() -> None:
+    """A known ambiguity, pinned rather than papered over.
+
+    A rule a user genuinely names `# --- urgent` is written back by
+    `generate_entry` as `# --- # --- urgent ---` — byte-identical to what the
+    old accretion produced from the name `urgent`. Nothing in the text can tell
+    the two apart, so the peel takes it back to `urgent`.
+
+    Raised in review of this PR. It is not fixable by reading harder; it would
+    need a different on-disk shape for names, which is a format change and a
+    bigger decision than this bead. The trigger is narrow — a name has to begin
+    with exactly `# --- ` — and the peel exists to unwind real damage from
+    every script saved before `.15`. Recorded here so the next person meets it
+    as a decision rather than as a surprise.
+    """
+    src = (
+        'require ["fileinto"];\n\n# --- # --- urgent ---\n'
+        'if header :is "a" "b" {\n    fileinto "X";\n}\n'
+    )
+    (rule,) = st.parse_sieve(src).rules
+    assert rule.name == "urgent"
+
+
+@pytest.mark.parametrize(
+    ("label", "src"),
+    [
+        pytest.param("shared line", 'require ["fileinto"]; keep;\n', id="shared line"),
+        pytest.param("multi-line shared", 'require [\n    "fileinto"\n]; keep;\n', id="multi-line"),
+        pytest.param("no terminator", 'require ["fileinto"]\nkeep;\n', id="unterminated"),
+    ],
+)
+def test_a_require_sharing_its_line_loses_nothing(label: str, src: str) -> None:
+    """Whole LINES are consumed, so a statement sharing the terminator's line
+    went with it. Raised in review of this PR and reproduced both ways:
+
+        require ["fileinto"]; keep;     ->  the `keep;` simply GONE
+        require [\n "fileinto"\n]; keep;  ->  an orphan `]; keep;` line, with
+                                            no matching `[` — invalid Sieve
+
+    Splitting a line is not available to a line-shaped parser, so an unclean
+    statement is refused and kept verbatim instead. The `require` stops being
+    read; nothing stops existing.
+    """
+    generated = st.generate_sieve(st.parse_sieve(src))
+    assert "keep;" in generated, f"{label}: the statement after the require was lost"
+    # Valid-in, valid-out. An earlier version of this test looked for a line
+    # starting `];`, which flagged the CORRECT output too — the fixed code
+    # keeps the whole fragment together, so its `[` is two lines above. The
+    # real property is that we did not turn parseable Sieve into unparseable
+    # Sieve, and sievelib is the one that can say so.
+    if SieveLibParser().parse(src.encode()):
+        assert SieveLibParser().parse(generated.encode()), (
+            f"{label}: valid Sieve in, invalid out:\n{generated}"
+        )
+
+
+def test_a_comparator_keeps_the_require_it_needs() -> None:
+    """RFC 5228 §2.7.3: only `i;octet` and `i;ascii-casemap` are built in.
+
+    `_generate_test` emits the `:comparator` tag, but the derivation never
+    looked at `cond.comparator` — so pruning dropped the declaration and left
+    the tag, on an UNEDITED re-save. Raised in review of this PR; a compliant
+    server (Dovecot Pigeonhole) refuses the result.
+    """
+    src = (
+        'require ["fileinto", "comparator-i;ascii-numeric"];\n\n'
+        'if header :comparator "i;ascii-numeric" :is "x-priority" "10" {\n'
+        '    fileinto "Urgent";\n}\n'
+    )
+    generated = st.generate_sieve(st.parse_sieve(src))
+    assert ':comparator "i;ascii-numeric"' in generated
+    assert '"comparator-i;ascii-numeric"' in generated, generated
+
+
+@pytest.mark.parametrize("comparator", ["i;octet", "i;ascii-casemap"])
+def test_a_builtin_comparator_needs_no_require(comparator: str) -> None:
+    """The other half. Requiring these would be noise a server has to ignore,
+    and would make the derivation wrong in the opposite direction."""
+    src = (
+        f'require ["fileinto"];\n\nif header :comparator "{comparator}" :is "a" "b" {{\n'
+        '    fileinto "X";\n}}\n'
+    )
+    assert f'"comparator-{comparator}"' not in st.generate_sieve(st.parse_sieve(src))

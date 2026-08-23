@@ -147,6 +147,10 @@ MATCH_TYPES: tuple[str, ...] = ("contains", "is", "matches", "regex")
 MATCH_OPERATORS: tuple[str, ...] = ("anyof", "allof")
 ADDRESS_PARTS: tuple[str, ...] = ("all", "localpart", "domain")
 
+# The two comparators every implementation has (RFC 5228 §2.7.3). Any other one
+# has to be named in `require ["comparator-..."]`.
+_BUILTIN_COMPARATORS = frozenset({"i;octet", "i;ascii-casemap"})
+
 # The tests the visual builder can render. `header` and `address` and nothing
 # else — `envelope`, `size`, `date`, `body`, `exists` and the rest are all
 # legal Sieve we have no Condition for (areyousievious-8fg.11).
@@ -281,6 +285,7 @@ class _LexicalMap:
         "identifiers",
         "masked_lines",
         "open_braces",
+        "open_parens",
         "semicolons",
         "usable",
     )
@@ -312,6 +317,7 @@ class _LexicalMap:
         self.open_braces = [0] * len(lines)
         self.brace_delta = [0] * len(lines)
         self.semicolons = [0] * len(lines)
+        self.open_parens = [0] * len(lines)
         self.identifiers: list[list[str]] = [[] for _ in lines]
         self.masked_lines = lines
         self.usable = False
@@ -340,6 +346,11 @@ class _LexicalMap:
                 self.brace_delta[line] += 1
             elif name == "right_cbracket":
                 self.brace_delta[line] -= 1
+            elif name == "left_parenthesis":
+                # A test LIST opens exactly one. A second means the list holds
+                # another list — `allof(anyof(a, b), c)` — and a Rule has one
+                # flat `match` with no way to say that (areyousievious-8fg.11).
+                self.open_parens[line] += 1
             elif name == "identifier":
                 # Every bare word the Lexer saw, which is how the projection
                 # answers "is there anything in this block I do not model"
@@ -408,6 +419,8 @@ class SieveParser:
 
         script = SieveScript()
         pending_comment = ""
+        # Past this line index, a `## ` run has already been tried and refused.
+        failed_run_end = 0
 
         while self.line_idx < len(self.lines):
             line = self.lines[self.line_idx].strip()
@@ -425,19 +438,34 @@ class SieveParser:
                 # since by gen1 both sides had already lost it. RFC 5228 §3.2
                 # shows multiple statements and Horde/Ingo emits them
                 # (areyousievious-8fg.15).
-                for extension in self._parse_require(self._consume_statement()):
+                statement, clean = self._consume_statement()
+                if not clean:
+                    # Not a `require` we can read. Keep its bytes rather than
+                    # guess at them.
+                    script.entries.append(RawBlock(text=statement, comment=pending_comment))
+                    pending_comment = ""
+                    continue
+                for extension in self._parse_require(statement):
                     if extension not in script.requires:
                         script.requires.append(extension)
                 continue
 
             # Disabled rule (commented out with ## prefix) — check before comment handler
-            if line.startswith("## "):
+            if line.startswith("## ") and self.line_idx >= failed_run_end:
                 disabled_rule = self._try_parse_disabled_block(pending_comment)
                 if disabled_rule:
                     script.entries.append(disabled_rule)
                     pending_comment = ""
                     continue
-                # Not a disabled rule — fall through to comment handler
+                # Not a disabled rule. Do not try again at every line of the
+                # SAME `## ` run: each attempt builds a fresh SieveParser and
+                # re-lexes everything from that line on, so retrying per line
+                # made a long run cost the square of its length — 800 fragments
+                # took 1.5s, and the body-size limit admits a 1 MiB script on an
+                # HTTP request. Raised in review of this PR. One attempt per
+                # run; the rest of it is comments.
+                failed_run_end = self._end_of_disabled_run()
+                # Fall through to comment handler
 
             # Comments - accumulate as potential rule name
             if line.startswith("#"):
@@ -511,7 +539,7 @@ class SieveParser:
             clean = peeled
         return clean or comment_text
 
-    def _consume_statement(self) -> str:
+    def _consume_statement(self) -> tuple[str, bool]:
         """The lines of the statement starting here, up to its terminating `;`.
 
         A statement is not a line. `require [\n "fileinto",\n "imap4flags"\n];`
@@ -532,24 +560,51 @@ class SieveParser:
         falls back to one line, which is what it always did.
         """
         start = self.line_idx
-        while self.line_idx < len(self.lines):
-            index = self.line_idx
+        end = start
+        terminated = False
+        while end < len(self.lines):
             # A `require` holds strings, brackets, commas and its `;` — nothing
-            # else. So a line carrying a brace or a bare word has to belong to
-            # the NEXT statement, and the one we are reading was unterminated.
+            # else. So a line carrying a brace, or a bare word other than the
+            # opening `require` itself, belongs to a DIFFERENT statement.
             #
             # Stopping matters: without this, `require ["fileinto"]` with no
             # semicolon ran on to the next `;` anywhere in the file and ate the
-            # rule after it, which then regenerated to nothing at all. Raised in
-            # review, reproduced, and a deletion is the worst thing this module
-            # can do.
-            if index > start and (self.lex.open_braces[index] or self.lex.identifiers[index]):
+            # rule after it, which regenerated to nothing at all. Deletion is
+            # the worst thing this module can do.
+            words = self.lex.identifiers[end]
+            extra_words = words[1:] if end == start else words
+            if self.lex.open_braces[end] or extra_words:
                 break
-            has_terminator = self.lex.semicolons[index] > 0
-            self.line_idx = index + 1
-            if has_terminator:
+            terminated = self.lex.semicolons[end] > 0
+            end += 1
+            if terminated:
                 break
-        return "\n".join(self.lines[start : self.line_idx])
+
+        # Whole LINES are consumed, so a second statement sharing the
+        # terminator's line would be swallowed with it — `require ["fileinto"];
+        # keep;` regenerated with the `keep;` simply gone, and its multi-line
+        # cousin left an orphan `];` line behind. Both raised in review, both
+        # reproduced.
+        #
+        # Rather than split a line, which this whole parser is line-shaped
+        # around, an unclean statement is REFUSED and handed back for the raw
+        # path: the `require` stops being READ, but nothing is LOST. Reach is
+        # much the cheaper thing to give up.
+        if terminated:
+            self.line_idx = end
+            return "\n".join(self.lines[start:end]), True
+
+        # Unclean. Consume through the line that ends the statement anyway, so
+        # the fragment stays together and comes back as the bytes it arrived
+        # as — splitting it across entries is what produced the orphan `];`.
+        end = start
+        while end < len(self.lines) and not self.lex.open_braces[end]:
+            has_semicolon = self.lex.semicolons[end] > 0
+            end += 1
+            if has_semicolon:
+                break
+        self.line_idx = max(end, start + 1)
+        return "\n".join(self.lines[start : self.line_idx]), False
 
     def _parse_require(self, text: str) -> list[str]:
         """Parse: require ["fileinto", "envelope", "regex"];"""
@@ -576,6 +631,16 @@ class SieveParser:
             # Reset and let caller handle as raw block
             self.line_idx = start_line
             return None
+
+    def _end_of_disabled_run(self) -> int:
+        """One past the last line of the `## ` run starting at the cursor."""
+        index = self.line_idx
+        while index < len(self.lines):
+            stripped = self.lines[index].strip()
+            if not stripped.startswith("## ") and stripped != "##":
+                break
+            index += 1
+        return index
 
     def _try_parse_disabled_block(self, comment: str) -> Rule | None:
         """Try to parse a ## commented-out block as a disabled rule."""
@@ -692,6 +757,17 @@ class SieveParser:
         }
         if foreign:
             raise ParseError(f"not in the builder's vocabulary: {sorted(foreign)}")
+
+        # A vocabulary check is not a grammar check, and this is where that gap
+        # showed. `allof(anyof(a, b), c)` uses only modelled words, so nothing
+        # above objects — while `_parse_tests` scans the list text with no
+        # parenthesis-awareness and returns three conditions, which regenerate
+        # as `a AND b AND c`. `(a OR b) AND c` is not that. Raised in review of
+        # this PR, and it is the SAME corruption class the bead exists to close,
+        # reached through nesting instead of an unmodelled test. A Rule has one
+        # flat `match`; a nested list cannot be said in it, so this stays raw.
+        if sum(self.lex.open_parens[start:end]) > 1:
+            raise ParseError("nested test list has no flat representation")
 
         # Reject blocks with else/elsif — they are not single-rule shaped.
         # The current AST has no representation for else branches, so admitting
@@ -954,6 +1030,14 @@ class SieveGenerator:
             for cond in rule.conditions:
                 if cond.match_type == "regex":
                     requires.add("regex")
+                # RFC 5228 §2.7.3: `i;octet` and `i;ascii-casemap` are built in,
+                # anything else must be required. `_generate_test` happily emits
+                # the `:comparator` tag, so deriving requires without this
+                # pruned the declaration while leaving the tag behind — a
+                # script a compliant server refuses, produced by an UNEDITED
+                # re-save. Raised in review of this PR.
+                if cond.comparator and cond.comparator not in _BUILTIN_COMPARATORS:
+                    requires.add(f"comparator-{cond.comparator}")
                 # address test is core Sieve, no require needed
 
         return sorted(requires)

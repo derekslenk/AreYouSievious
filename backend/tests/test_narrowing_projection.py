@@ -130,6 +130,75 @@ def test_reach_is_bounded_by_the_builder_and_not_by_the_parser() -> None:
     assert st.parse_sieve(src).rules == []
 
 
+# ── Nesting the projection cannot say ──
+
+
+NESTED_LIST = """require ["fileinto"];
+
+if allof(anyof(header :is "from" "a", header :is "from" "b"),
+         header :is "subject" "c") { fileinto "X"; }
+"""
+
+
+def test_a_nested_test_list_stays_raw() -> None:
+    """Raised in review of this PR, and it is the SAME corruption class as the
+    office-hours rule above — reached through nesting rather than through an
+    unmodelled test.
+
+    `allof(anyof(a, b), c)` means `(a OR b) AND c`. Every word in it is one we
+    model, so the vocabulary gate has nothing to object to; but `_parse_tests`
+    scans the list text with no parenthesis-awareness and returned three
+    conditions, which regenerate as `a AND b AND c`. Measured before the fix:
+
+        match='allof' conds=[('from','a'), ('from','b'), ('subject','c')]
+
+    A message from `b` with subject `c` matched before and would not after. A
+    Rule has ONE flat `match`; nesting cannot be said in it, so the block stays
+    raw. A vocabulary check is not a grammar check.
+    """
+    script = st.parse_sieve(NESTED_LIST)
+
+    assert script.rules == [], "a nested test list has no flat representation"
+    (raw,) = script.raw_blocks
+    assert "anyof(" in raw.text and "allof(" in raw.text
+    assert raw.text in NESTED_LIST, "verbatim"
+
+
+def test_the_nested_list_survives_a_save() -> None:
+    generated = st.generate_sieve(st.parse_sieve(NESTED_LIST))
+    assert "anyof(" in generated and "allof(" in generated
+
+
+@pytest.mark.parametrize(
+    ("shape", "rules"),
+    [
+        pytest.param('if allof (header :is "a" "b", header :is "c" "d")', 1, id="one flat list"),
+        pytest.param('if header :is "a" "b"', 1, id="no list at all"),
+        pytest.param('if allof (anyof (header :is "a" "b"), header :is "c" "d")', 0, id="nested"),
+        pytest.param(
+            'if anyof (allof (header :is "a" "b", header :is "c" "d"))',
+            0,
+            id="nested the other way",
+        ),
+    ],
+)
+def test_only_nesting_is_refused(shape: str, rules: int) -> None:
+    """The gate counts parenthesis TOKENS, so it must not fire on the ordinary
+    single-list shape most real scripts use, nor miss either nesting order."""
+    script = st.parse_sieve(f'require ["fileinto"];\n\n{shape} {{\n    fileinto "X";\n}}\n')
+    assert len(script.rules) == rules, shape
+
+
+def test_a_parenthesis_inside_a_string_is_not_nesting() -> None:
+    """The lexical model again: a folder called `Mail (old)` must not read as a
+    nested list and cost the user their rule."""
+    script = st.parse_sieve(
+        'require ["fileinto"];\n\nif allof (header :is "a" "b") {\n    fileinto "Mail (old)";\n}\n'
+    )
+    assert len(script.rules) == 1
+    assert script.rules[0].actions[0].argument == "Mail (old)"
+
+
 # ── The modifier-ordering gap ──
 
 
