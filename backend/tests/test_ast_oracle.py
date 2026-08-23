@@ -97,24 +97,32 @@ def _normalise(dump: str) -> list[str]:
         out.append(_unescape_strings(line))
         index += 1
 
-        # A header/address test names its header in the first argument that is
-        # not a tag. `:comparator` is the one tag carrying a value of its own,
-        # so its argument is skipped with it.
+        # A header/address test ends with its header name and then its value,
+        # whatever tags came before. Counting from the END is why: an earlier
+        # version walked FORWARD looking for the first argument that was not a
+        # tag, special-casing `:comparator` as the one tag with a value of its
+        # own — and a relational `header :count "eq" :is "Subject" "1"` would
+        # have read `"eq"` as the header name.
+        #
+        # Raised in review of this PR as unreachable, and checked: it is more
+        # unreachable than that, because sievelib cannot parse a relational
+        # test AT ALL, so `meaning()` returns None and the comparison never
+        # happens. This is therefore robustness in the normaliser, not a bug
+        # fix — worth having anyway, since the oracle is what every other
+        # claim in this suite leans on, and counting from the end is simpler
+        # than special-casing which tags carry arguments.
         if not any(stripped.startswith(f"{name} ") for name in _TESTS_WITH_A_HEADER_NAME):
             continue
         depth = _indent(line)
+        arguments = []
         while index < len(lines) and _indent(lines[index]) > depth:
-            argument = lines[index].strip()
-            out.append(_unescape_strings(lines[index]))
+            arguments.append(_unescape_strings(lines[index]))
             index += 1
-            if argument.startswith(":"):
-                if argument == ":comparator" and index < len(lines):
-                    out.append(_unescape_strings(lines[index]))
-                    index += 1
-                continue
-            # This was the header name. Case is not part of its meaning.
-            out[-1] = out[-1].lower()
-            break
+        if len(arguments) >= 2:
+            # Second from last is the header name. Case is not part of its
+            # meaning (RFC 5322 §3.6.8).
+            arguments[-2] = arguments[-2].lower()
+        out.extend(arguments)
     return out
 
 
@@ -295,3 +303,26 @@ def test_no_fixture_is_refused_by_its_own_preflight(path: Path) -> None:
     user locked out of saving. Every fixture in the corpus — including all 45
     third-party ones — must pass it."""
     assert st.preflight_error(st.parse_sieve(path.read_text())) is None
+
+
+@pytest.mark.parametrize(
+    ("change", "flagged"),
+    [
+        pytest.param(('"Subject"', '"subject"'), False, id="header case"),
+        pytest.param(('"one"', '"two"'), True, id="the value"),
+        pytest.param(("i;octet", "i;ascii-casemap"), True, id="the comparator"),
+        pytest.param((":is", ":contains"), True, id="the match type"),
+        pytest.param(('"Subject"', '"From"'), True, id="a different header"),
+    ],
+)
+def test_the_normaliser_folds_case_and_nothing_else(change: tuple[str, str], flagged: bool) -> None:
+    """Every argument of a header test, one at a time.
+
+    The normaliser lowercases the header NAME, and that is a licence to hide
+    things if it reaches one argument too far — a comparator or a value folded
+    to lowercase would make a real difference invisible. So each position is
+    checked separately rather than trusting the one that motivated the code.
+    """
+    base = 'if header :comparator "i;octet" :is "Subject" "one" { keep; }\n'
+    assert meaning(base) is not None, "premise: sievelib reads this"
+    assert (meaning(base) != meaning(base.replace(*change))) is flagged
