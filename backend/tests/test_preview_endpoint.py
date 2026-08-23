@@ -109,6 +109,18 @@ def test_the_preview_is_the_bytes_a_save_writes(authed_client, name: str) -> Non
     with authed_client(script_store=store) as http:
         previewed = _preview(http, rule)
         saved = http.put("/api/scripts/filters", json={"requires": [], "entries": [rule]})
+
+    if name == "no_conditions":
+        # The two beads meeting. `.17` makes the preview SHOW the invalid Sieve
+        # this Rule generates instead of showing nothing; `.13`'s pre-flight
+        # then REFUSES to send it. So there is no saved script to agree with —
+        # and the preview having warned about exactly what the save refuses is
+        # the behaviour, not a gap in this test.
+        assert saved.status_code == 400, saved.text
+        assert "if anyof (" in previewed
+        assert store.scripts == {}
+        return
+
     assert saved.status_code == 200, saved.text
     assert previewed in store.scripts["filters"], (
         f"{name}: preview and save disagree\n--- preview ---\n{previewed}\n"

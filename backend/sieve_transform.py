@@ -12,6 +12,7 @@ Design principles:
 
 import bisect
 import re
+import threading
 from dataclasses import dataclass, field
 
 from sievelib.parser import Lexer, Parser
@@ -220,6 +221,9 @@ _COMPARATOR_RE = re.compile(r':comparator\s+"((?:[^"\\]|\\.)*)"')
 # or as "" for a bare `if <test> {` that carried no wrapper at all.
 # A rule-name decoration: `--- x ---`, or `# --- x ---` before a leading `## `
 # has been stripped. BOTH ends required, in one match (areyousievious-8fg.15).
+# RFC 5228 §2.4.2: a backslash before ANY character is that character.
+_ESCAPE_RE = re.compile(r"\\(.)", re.DOTALL)
+
 _NAME_MARKER_RE = re.compile(r"^#?\s*-{2,}\s*(?P<name>.+?)\s*-{2,}$")
 
 # One layer of the accretion, and only that. `_generate_rule` used to write
@@ -489,9 +493,14 @@ class SieveParser:
                 pending_comment = ""
                 continue
 
-            # Anything else is a raw block
-            raw_text = self.lines[self.line_idx]
-            self.line_idx += 1
+            # Anything else is a raw block — the WHOLE statement, not one
+            # line of it. Taking a line at a time shattered a multi-line
+            # command into N RawBlocks, and generation puts a blank line
+            # between entries, so a `vacation` message spanning lines came back
+            # with a blank line injected INTO its string. Found by the AST
+            # oracle (areyousievious-8fg.13): the message text a user would
+            # receive was not the message text they wrote.
+            raw_text = self._consume_raw_statement()
             script.entries.append(RawBlock(text=raw_text, comment=pending_comment))
             pending_comment = ""
 
@@ -605,6 +614,27 @@ class SieveParser:
                 break
         self.line_idx = max(end, start + 1)
         return "\n".join(self.lines[start : self.line_idx]), False
+
+    def _consume_raw_statement(self) -> str:
+        """The lines of the top-level statement starting here, verbatim.
+
+        Bounded to a statement, so it stops at the terminating `;` from the
+        lexical map — a `;` inside a string or a comment is not one. If a
+        block opens, or nothing terminates, it falls back to the single line
+        this always took, which keeps the degenerate cases where they were.
+        """
+        start = self.line_idx
+        end = start
+        while end < len(self.lines):
+            if self.lex.open_braces[end]:
+                break
+            has_terminator = self.lex.semicolons[end] > 0
+            end += 1
+            if has_terminator:
+                self.line_idx = end
+                return "\n".join(self.lines[start:end])
+        self.line_idx = start + 1
+        return self.lines[start]
 
     def _parse_require(self, text: str) -> list[str]:
         """Parse: require ["fileinto", "envelope", "regex"];"""
@@ -844,8 +874,26 @@ class SieveParser:
 
     @staticmethod
     def _unquote(s: str) -> str:
-        """Unescape a Sieve quoted string (reverse of SieveGenerator._quote)."""
-        return s.replace('\\"', '"').replace("\\\\", "\\")
+        """Unescape a Sieve quoted string.
+
+        RFC 5228 §2.4.2: an UNDEFINED escape sequence is read as if the
+        backslash were not there — `"\\."` is `.`, not `\\.`. Handling only
+        `\\"` and `\\\\` meant every other backslash survived parsing and then got
+        escaped again on the way out, which changed what the script means.
+        Found by the AST oracle (areyousievious-8fg.13), and it is the same
+        silent-meaning-change class as the rest of this epic. Three strings in
+        the corpus, both kinds:
+
+          `:regex "^test@example\\.org$"` is the regex `^test@example.org$`,
+          where the dot matches ANY character. We re-emitted `"\\\\."`, making it
+          a literal dot — a different filter.
+
+          `addflag "\\Flagged Big"` is the flag `Flagged Big`. We re-emitted
+          `"\\\\Flagged Big"`, i.e. `\\Flagged Big` — a different flag. (Writing
+          the IMAP flag `\\Flagged` in Sieve needs `"\\\\Flagged"`; that trap is
+          the user's, but turning one into the other is ours.)
+        """
+        return _ESCAPE_RE.sub(r"\1", s)
 
     def _parse_tests(self, text: str) -> list[Condition]:
         """Parse condition tests from text.
@@ -1230,6 +1278,55 @@ def rule_from_json(data: dict) -> Rule:
     which has one Rule and no script to put it in.
     """
     return _rule_from_json(data)
+
+
+# sievelib's PARSER resets `RequireCommand.loaded_extensions` — a CLASS
+# attribute — on every parse, so two concurrent parses race and one sees the
+# other's extensions. Measured: 30 spurious rejections in 24,000 parses across
+# 16 threads, 0 under this lock. FastAPI runs sync handlers on a threadpool, so
+# that race is two HTTP requests apart, and on the pre-flight path each one
+# tells a user their perfectly good script is broken.
+#
+# The LEXER needs no such thing and does not take this (areyousievious-8fg.10);
+# only the Parser has the shared state.
+_PARSER_LOCK = threading.Lock()
+
+
+def sieve_is_parseable(text: str) -> str | None:
+    """sievelib's complaint about `text`, or None if it parses.
+
+    An INDEPENDENT grammar. Checking our generator's output with our own parser
+    would assert only that the two agree with each other, which is the loop
+    that let three `previewRule` divergences ship.
+    """
+    parser = Parser()
+    with _PARSER_LOCK:
+        if parser.parse(text.encode()):
+            return None
+        return str(parser.error)
+
+
+def preflight_error(script: SieveScript) -> str | None:
+    """Why the mail server would refuse this script, or None (`.13`).
+
+    ONLY THE SPANS WE REGENERATED are checked, never the RawBlocks, and that
+    scoping is load-bearing rather than an optimisation. sievelib's grammar has
+    real gaps — `include`, `addheader` and `spamtest` are all "unknown command"
+    to it though every real server takes them — so validating the whole script
+    would refuse working scripts forever, for a construct we never touched.
+
+    Checking only what we generated is sound because a RawBlock is re-emitted
+    byte-identical and the server already accepted it once.
+
+    Each Rule is checked as its own little script, with the requires it needs,
+    because sievelib treats a command whose extension was not required as a
+    hard parse failure.
+    """
+    for rule in script.rules:
+        problem = sieve_is_parseable(generate_sieve(SieveScript(entries=[rule])))
+        if problem:
+            return problem
+    return None
 
 
 def generate_rule(rule: Rule) -> str:

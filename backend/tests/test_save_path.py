@@ -192,20 +192,54 @@ def test_validation_refuses_a_rule_whose_last_condition_was_deleted(authed_clien
     assert store.scripts == {}
 
 
-def test_validation_is_off_by_default(authed_client):
-    """Because sievelib's grammar has real gaps, a mandatory validator would
-    refuse scripts a real server accepts. Off unless a test asks for it.
+def test_a_conditionless_rule_is_refused_before_it_is_sent(authed_client):
+    """THE ASSERTION THAT FLIPPED.
 
-    WARNING — this asserts today's false success. The 200 here is the route
-    accepting a script a real server would refuse, and it is expected only
-    because nothing yet validates before the PUT. `.13` adds that pre-flight,
-    at which point this assertion MUST become a rejection. It is a
-    characterisation test, not a statement of desired behaviour.
+    This test used to require a 200 here, and said so in a warning: it was a
+    characterisation test pinning today's FALSE SUCCESS — the route accepting a
+    script a real server would refuse, because nothing validated before the
+    PUT. A Rule whose last Condition was deleted generates `if anyof ( ) {`.
+
+    `.13` added that pre-flight, and the bead said in terms that this
+    assertion must become a rejection when it landed. It has, so it did. The
+    store is never touched.
+
+    Note this is NOT the fake's opt-in `validate=True` oracle — that is a test
+    seam. This is the route's own pre-flight, so it holds for a real server
+    too.
     """
     store = FakeScriptStore()
     with authed_client(script_store=store) as http:
         r = http.put("/api/scripts/filters", json=_body({**RULE, "conditions": []}))
+    assert r.status_code == 400, r.text
+    assert "parsing error" in r.json()["detail"]
+    assert store.scripts == {}, "nothing invalid may reach the store"
+
+
+def test_the_preflight_judges_only_what_we_generated(authed_client):
+    """The scoping that makes a mandatory validator safe.
+
+    sievelib does not know `include`, `addheader` or `spamtest`, though real
+    servers take all three — so a whole-script check would refuse working
+    scripts forever. Those land in RawBlocks, are re-emitted byte-identical,
+    and were already accepted by the server once; they are not ours to judge.
+
+    Without this scoping the pre-flight would be unshippable, so it is asserted
+    rather than described.
+    """
+    raw_entry = {
+        "kind": "raw",
+        "text": 'include :personal "shared";',
+        "comment": "",
+    }
+    store = FakeScriptStore()
+    with authed_client(script_store=store) as http:
+        r = http.put(
+            "/api/scripts/filters",
+            json={"requires": ["include"], "entries": [raw_entry, RULE]},
+        )
     assert r.status_code == 200, r.text
+    assert "include :personal" in store.scripts["filters"]
 
 
 @pytest.mark.parametrize(

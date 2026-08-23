@@ -220,9 +220,9 @@ RECOGNITION_CENSUS = {
     "vendor/vacation-seconds.sieve": (0, 1),
     "vendor/vacationext-basic.sieve": (0, 1),
     "vendor/vacationext-medium.sieve": (0, 1),
-    "vendor/vacationext-with-limit.sieve": (0, 4),
-    "vendor/vacationext-with-multiline.sieve": (0, 16),
-    "vendor/vacationext-with-single-mail-address.sieve": (0, 3),
+    "vendor/vacationext-with-limit.sieve": (0, 1),
+    "vendor/vacationext-with-multiline.sieve": (0, 1),
+    "vendor/vacationext-with-single-mail-address.sieve": (0, 1),
 }
 
 

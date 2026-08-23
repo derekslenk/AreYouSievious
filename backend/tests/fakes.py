@@ -32,19 +32,21 @@ from __future__ import annotations
 
 from mail_errors import FolderRejected, MailStoreError, ScriptNotFound, ScriptRejected
 from protocol_names import validate_folder_name, validate_script_name
-from sievelib.parser import Parser
+from sieve_transform import sieve_is_parseable
 
 
 def sieve_errors(content: str) -> str | None:
     """sievelib's complaint about `content`, or None if it parses.
 
-    The independent oracle. Its verdict is advisory for anything using an
-    extension it lacks, which is why callers opt in.
+    Delegates to the production pre-flight's own checker rather than keeping a
+    second copy (`.13`). Two implementations of "what does sievelib say" is how
+    a fake drifts from the thing it stands in for — and this one gets the
+    parser lock for free, which a copy would have had to remember.
+
+    Its verdict is advisory for anything using an extension sievelib lacks,
+    which is why callers opt in.
     """
-    parser = Parser()
-    if parser.parse(content):
-        return None
-    return str(parser.error)
+    return sieve_is_parseable(content.decode() if isinstance(content, bytes) else content)
 
 
 class _Programmable:
