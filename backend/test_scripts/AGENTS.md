@@ -35,8 +35,8 @@ One construct family per file, so "what does the parser do with X" has a single 
 | `layout-variants.sieve` | A whole rule on one line; tabs and run-on spacing |
 | `raw-else-chain.sieve` | `if`/`elsif`/`else` — must land wholly in one `RawBlock`, never be merged into a single rule |
 | `raw-unparseable-if.sieve` | An `envelope` test and a `size` test wrapping a nested `if` — must land in `RawBlock` without the nested body being half-eaten |
-| `disabled-rules.sieve` | A `##`-commented rule. **Red on arrival** — see below |
-| `multiple-requires.sieve` | Repeated `require` statements and a multi-line one. **Red on arrival** — see below |
+| `disabled-rules.sieve` | A `##`-commented rule, and the name that used to accrete a `# --- ` per save (`.15`) |
+| `multiple-requires.sieve` | Repeated `require` statements and a multi-line one — both used to be lost before the first generation (`.15`) |
 | `lexical-brace-in-a-string.sieve` | `fileinto "Weird{Folder";` — the brace that used to hold the block open and swallow the rule after it (`.10`) |
 | `lexical-nested-if.sieve` | A nested block, which must reach `RawBlock` whole rather than have its inner condition dropped (`.10`) |
 | `lexical-commented-action.sieve` | A commented-out action inside a live block, which must stay commented out (`.10`) |
@@ -52,11 +52,14 @@ One construct family per file, so "what does the parser do with X" has a single 
 - These files contain real addresses and folder names from the maintainer's mail. Do not add new fixtures carrying anyone else's PII; `tools/check-no-pii.sh` guards the fetch script but not this directory
 - `vendor/` is third-party test data published under MIT and is out of scope for that rule, but it is not synthetic either: a handful of its addresses are the sievelib author's own (`tonio@ngyn.org`) or RFC 5228's examples. Copy it wholesale via the tool, never hand-pick lines out of it
 
-### The two red fixtures
-Both reproduce defects owned by **areyousievious-8fg.15**, and both are `xfail(strict=True)` today:
+### The two fixtures that arrived red
+`disabled-rules.sieve` and `multiple-requires.sieve` were added by `.3` reproducing defects
+it did not own, and pinned `xfail(strict=True)` naming **areyousievious-8fg.15**. Both are
+green now and the pins are gone — which is the mechanism working, not a coincidence: strict
+means an unexpected PASS fails the suite, so a pin cannot outlive its defect.
 
-- `disabled-rules.sieve` — the name comment is emitted *inside* the block that then gets `## `-prefixed, so each save re-parses the name as `# --- name` and accretes one more marker. Three saves give `## # --- # --- # --- GitHub notifications ---`
-- `multiple-requires.sieve` — the parser *assigns* `requires` per `require` line instead of extending, and reads only the first line of a multi-line `require`. `envelope`, `copy` and `reject` are gone after one pass, and the continuation lines come back as raw text emitted *after* the regenerated `require` — Sieve a real server refuses
+Keep that pattern. A fixture that reproduces a defect belonging to another bead lands
+truthful and pinned, never edited until it passes.
 
 ### Regenerating `vendor/`
 `vendor/` is produced mechanically from the installed sievelib, never edited by hand:

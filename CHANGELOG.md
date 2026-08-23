@@ -41,6 +41,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- Narrowing projection: a block is only read as an editable Rule when every construct in it is one the builder models. Previously a partly-understood block was projected anyway — an `allof` holding one `header` test and two `date` tests came back carrying the header test alone, so a rule that filed mail only during office hours regenerated to file it at every hour (areyousievious-8fg.11)
+- Tagged arguments now parse in any order, as RFC 5228 §2.7.1 allows and the RFC's own example writes: `address :is :all "from" "x"` was previously unreadable while `address :all :is "from" "x"` was fine (areyousievious-8fg.11)
+- Round-trip fidelity (areyousievious-8fg.15): a disabled rule's name no longer accretes a `# --- ` marker per save; a second `require` statement extends rather than replaces the first; a multi-line `require` is read whole instead of leaving fragments that regenerated into invalid Sieve; and `require` is now derived from content instead of only ever growing
+
 - Sieve recogniser now has a lexical model (sievelib's Lexer), closing three data-corrupting defects that all regenerated as valid Sieve: a `{` inside a quoted folder name merged the following rule into the previous one and dropped its condition; a nested `if` lost its inner condition, leaving the inner action firing on the outer one; and a commented-out action was resurrected as live (areyousievious-8fg.10)
 
 - Condition header is a free-text field with suggestions rather than a closed dropdown: a rule on an unlisted header (`x-spam-flag`) rendered as an empty select and lost its value the moment that select was opened (areyousievious-8fg.18)

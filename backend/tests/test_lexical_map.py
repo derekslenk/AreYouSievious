@@ -345,25 +345,17 @@ def test_every_rule_we_recognise_is_sieve_sievelib_accepts() -> None:
     assert not rejected, f"we recognise {len(rejected)} rules sievelib refuses: {rejected[:5]}"
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "areyousievious-8fg.11 owns this. A command we do not model is dropped "
-        "from a block we DO recognise — segmentation is now correct, but the "
-        "projection onto Rule is still lossy, and losing a command silently is "
-        "the same shape of defect as the three above."
-    ),
-)
 def test_a_command_we_do_not_model_is_not_silently_dropped() -> None:
-    """The fourth corruption class, which the lexical map does NOT close.
+    """The fourth corruption class. Closed by areyousievious-8fg.11; this was
+    pinned xfail(strict=True) naming that bead until it landed.
 
     `setflag` is valid Sieve we have no Action for. The block still matches our
     regexes, so it is projected onto a Rule carrying only `fileinto` — and
     regenerating writes a script with `setflag` gone. Measured, not predicted.
 
-    The lexical model cannot help: nothing here is mis-SEGMENTED. Deciding what
-    may be projected onto a Rule at all is `.11`, and the check above is the
-    evidence that the sievelib gate it would use costs no recognition.
+    The lexical model could not help: nothing here is mis-SEGMENTED. Deciding
+    what may be projected onto a Rule at all was `.11`, which now keeps the
+    whole block raw rather than narrowing it to the part we understand.
     """
     src = (
         'require ["fileinto", "imap4flags"];\n\n'

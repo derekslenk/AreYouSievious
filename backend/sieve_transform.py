@@ -147,6 +147,22 @@ MATCH_TYPES: tuple[str, ...] = ("contains", "is", "matches", "regex")
 MATCH_OPERATORS: tuple[str, ...] = ("anyof", "allof")
 ADDRESS_PARTS: tuple[str, ...] = ("all", "localpart", "domain")
 
+# The tests the visual builder can render. `header` and `address` and nothing
+# else — `envelope`, `size`, `date`, `body`, `exists` and the rest are all
+# legal Sieve we have no Condition for (areyousievious-8fg.11).
+TEST_TYPES: tuple[str, ...] = ("header", "address")
+
+# Every bare word that may appear inside a span we project onto a Rule. An
+# identifier outside this set means the span holds something we cannot
+# represent, and the whole span stays a RawBlock rather than being narrowed to
+# the part we happen to understand.
+#
+# `fileinto` covers `fileinto :copy` too — the `:copy` is a tag, not an
+# identifier.
+_MODELLED_IDENTIFIERS = frozenset(
+    {"if", "not", "fileinto", *MATCH_OPERATORS, *TEST_TYPES, *ACTION_TYPES}
+)
+
 _PARTS = "|".join(ADDRESS_PARTS)
 
 # Tagged arguments on a test. RFC 5228 lets ADDRESS-PART, COMPARATOR and
@@ -154,11 +170,18 @@ _PARTS = "|".join(ADDRESS_PARTS)
 # blob and picked apart afterwards rather than pinned to a fixed sequence.
 _MODIFIER_RUN = rf'(?P<mods>(?:\s+:(?:{_PARTS})|\s+:comparator\s+"(?:[^"\\]|\\.)*")*)'
 
+# RFC 5228 §2.7.1 puts no order on tagged arguments, and the RFC's OWN example
+# (rfc5228.txt line 1351) writes the address-part AFTER the match-type. The
+# modifier run therefore appears on BOTH sides: capturing only the leading one
+# made `address :domain :is "from" "x"` a Rule and `address :is :all "from"
+# "x"` a RawBlock, while the docstring claimed any order was handled
+# (areyousievious-8fg.11).
 _TEST_RE = re.compile(
     r"(?P<negate>not\s+)?"
-    r"(?P<test_type>address|header)"
+    + rf"(?P<test_type>{'|'.join(TEST_TYPES)})"
     + _MODIFIER_RUN
     + rf"\s+:(?P<match_type>{'|'.join(MATCH_TYPES)})"
+    + _MODIFIER_RUN.replace("<mods>", "<mods_after>")
     + rf"\s+{_Q('header')}"
     + rf"\s+{_Q('value')}"
 )
@@ -213,7 +236,14 @@ class _LexicalMap:
     existed: worse, but not worse than yesterday.
     """
 
-    __slots__ = ("brace_delta", "masked_lines", "open_braces", "usable")
+    __slots__ = (
+        "brace_delta",
+        "identifiers",
+        "masked_lines",
+        "open_braces",
+        "semicolons",
+        "usable",
+    )
 
     @staticmethod
     def _scan(text: str) -> tuple[bytes, list[tuple[int, str, bytes]]]:
@@ -241,6 +271,8 @@ class _LexicalMap:
         lines = text.split("\n")
         self.open_braces = [0] * len(lines)
         self.brace_delta = [0] * len(lines)
+        self.semicolons = [0] * len(lines)
+        self.identifiers: list[list[str]] = [[] for _ in lines]
         self.masked_lines = lines
         self.usable = False
 
@@ -268,6 +300,18 @@ class _LexicalMap:
                 self.brace_delta[line] += 1
             elif name == "right_cbracket":
                 self.brace_delta[line] -= 1
+            elif name == "identifier":
+                # Every bare word the Lexer saw, which is how the projection
+                # answers "is there anything in this block I do not model"
+                # (areyousievious-8fg.11). Comments and strings are their own
+                # token types, so a word inside either is never counted.
+                self.identifiers[line].append(value.decode("utf-8", "replace"))
+            elif name == "semicolon":
+                # Where a STATEMENT ends, which is not the same question as
+                # where a line ends. `require` spans lines in scripts Roundcube
+                # and SOGo emit, and a `;` inside a comment or a string is not
+                # a terminator (areyousievious-8fg.15).
+                self.semicolons[line] += 1
             elif name in _OPAQUE_TOKENS:
                 # Same length, so every offset into the text still lands where
                 # it did. Newlines are kept: a multiline token spans lines, and
@@ -318,8 +362,15 @@ class SieveParser:
 
             # Require statement
             if line.startswith("require"):
-                script.requires = self._parse_require(line)
-                self.line_idx += 1
+                # EXTEND, never assign. Assigning meant a second `require`
+                # replaced the first and everything it named was gone before
+                # the first generation — invisible to both round-trip tests,
+                # since by gen1 both sides had already lost it. RFC 5228 §3.2
+                # shows multiple statements and Horde/Ingo emits them
+                # (areyousievious-8fg.15).
+                for extension in self._parse_require(self._consume_statement()):
+                    if extension not in script.requires:
+                        script.requires.append(extension)
                 continue
 
             # Disabled rule (commented out with ## prefix) — check before comment handler
@@ -336,10 +387,7 @@ class SieveParser:
                 comment_text = line.lstrip("#").strip()
                 # Skip decorator lines (=== --- etc.)
                 if comment_text and not re.match(r"^[=\-\s]+$", comment_text):
-                    # Strip surrounding --- markers from comment names
-                    clean = re.sub(r"^-+\s*", "", comment_text)
-                    clean = re.sub(r"\s*-+$", "", clean)
-                    pending_comment = clean.strip() or comment_text
+                    pending_comment = self._clean_comment_name(comment_text)
                 self.line_idx += 1
                 continue
 
@@ -364,10 +412,70 @@ class SieveParser:
 
         return script
 
-    def _parse_require(self, line: str) -> list[str]:
+    @staticmethod
+    def _clean_comment_name(comment_text: str) -> str:
+        """Reduce `# --- x ---` decoration down to `x`.
+
+        REPEATEDLY, which is the whole point. One pass is what the reader did
+        before, and one pass leaves a marker behind on a name that accreted
+        several — which is exactly what a script saved by any version before
+        areyousievious-8fg.15 carries:
+
+            ## # --- # --- # --- GitHub notifications ---
+
+        Each save added one. Peeling until stable is what lets opening such a
+        script show the real name, and saving it write the clean shape, so the
+        accretion unwinds instead of being frozen at whatever depth it reached.
+
+        Only the full `--- x ---` shape is peeled, never a bare leading `#`, so
+        a rule a user actually named `# 1 priority` keeps its name.
+        """
+        clean = comment_text
+        # Bounded: a name that peels forever would be pathological input, and
+        # a loop with no bound in a parser is a denial of service waiting for
+        # one.
+        for _ in range(16):
+            stripped = re.sub(r"\s*-+$", "", re.sub(r"^#?\s*-+\s*", "", clean)).strip()
+            if not stripped or stripped == clean:
+                break
+            clean = stripped
+        return clean or comment_text
+
+    def _consume_statement(self) -> str:
+        """The lines of the statement starting here, up to its terminating `;`.
+
+        A statement is not a line. `require [\n "fileinto",\n "imap4flags"\n];`
+        is one statement over four lines, and reading only the first gave
+        `requires == []` while the continuation lines became RawBlocks — which
+        the generator then emitted AFTER its own regenerated require:
+
+            require ["fileinto"];
+                "copy",
+                "reject"
+            ];
+
+        That is not Sieve, and it was PUT to the mail server. Roundcube and
+        SOGo both emit the multi-line shape.
+
+        The terminator comes from the lexical map, so a `;` inside a comment or
+        a quoted string does not end the statement. Without a usable map this
+        falls back to one line, which is what it always did.
+        """
+        start = self.line_idx
+        if not self.lex.usable:
+            self.line_idx += 1
+            return self.lines[start]
+
+        while self.line_idx < len(self.lines):
+            has_terminator = self.lex.semicolons[self.line_idx] > 0
+            self.line_idx += 1
+            if has_terminator:
+                break
+        return "\n".join(self.lines[start : self.line_idx])
+
+    def _parse_require(self, text: str) -> list[str]:
         """Parse: require ["fileinto", "envelope", "regex"];"""
-        match = re.findall(r'"([^"]+)"', line)
-        return match
+        return re.findall(r'"([^"]+)"', text)
 
     @staticmethod
     def _auto_name_rule(rule: Rule):
@@ -423,18 +531,40 @@ class SieveParser:
         if not disabled_lines:
             self.line_idx = start_line
             return None
-        # Try to parse the uncommented text as a normal rule
+        # Parse the uncommented text as a whole script rather than reaching
+        # straight for `_parse_if_block`. That is what accepts BOTH name
+        # shapes (areyousievious-8fg.15): the clean one, where the name is a
+        # normal comment above the `## ` block and arrives here as `comment`;
+        # and the legacy poisoned one, where a previous version wrote it
+        # INSIDE, so uncommenting yields `# --- name ---` on its own line and
+        # the ordinary comment handling picks it up. Reaching for
+        # `_parse_if_block` at line 0 could only ever handle the first, which
+        # is why the second baked a `# --- ` in per save.
+        #
+        # Scripts already carry the poisoned shape and we do not own the file,
+        # so normalising on the way IN is what unwinds it: the name reads
+        # correctly, and the next save writes the clean shape.
         uncommented = "\n".join(disabled_lines)
-        sub_parser = SieveParser(uncommented)
-        sub_parser.line_idx = 0
         try:
-            rule = sub_parser._parse_if_block(comment)
-            rule.enabled = False
-            self._auto_name_rule(rule)
-            return rule
+            inner = SieveParser(uncommented).parse()
         except (ParseError, IndexError):
             self.line_idx = start_line
             return None
+
+        # Exactly one Rule and nothing else. A `## ` run holding two rules, or
+        # a rule plus something unrecognised, is not one disabled Rule and
+        # must stay raw rather than be silently narrowed to its first half.
+        if len(inner.entries) != 1 or not isinstance(inner.entries[0], Rule):
+            self.line_idx = start_line
+            return None
+
+        rule = inner.entries[0]
+        rule.enabled = False
+        # An outer name wins: it is the clean shape, written by this version.
+        if comment:
+            rule.name = comment
+        self._auto_name_rule(rule)
+        return rule
 
     def _parse_if_block(self, comment: str) -> Rule:
         """Parse an if block into a Rule."""
@@ -454,6 +584,26 @@ class SieveParser:
             # One `{` is this block's own; more than one means nesting.
             if sum(self.lex.open_braces[start:end]) > 1:
                 raise ParseError("nested block not supported as single rule")
+
+            # NARROWING (areyousievious-8fg.11). A span becomes a Rule only if
+            # every construct in it is one we model. Partly-understood used to
+            # mean projected anyway, and what fell out was silent: a block whose
+            # `allof` held one `header` test and two `date` tests came back
+            # carrying the header test alone, and regenerating wrote a script
+            # with the hours gone — a rule that filed the boss's mail during
+            # office hours now filing it at every hour of the day.
+            #
+            # Reach is bounded by what the BUILDER can render, not by what a
+            # parser could manage. sievelib understands `vacation` perfectly
+            # well and a `vacation` block still stays raw, deliberately.
+            foreign = {
+                name
+                for line in self.lex.identifiers[start:end]
+                for name in line
+                if name not in _MODELLED_IDENTIFIERS
+            }
+            if foreign:
+                raise ParseError(f"not in the builder's vocabulary: {sorted(foreign)}")
         else:
             block_text = "\n".join(block_lines)
 
@@ -557,7 +707,7 @@ class SieveParser:
         """
         conditions = []
         for m in _TEST_RE.finditer(text):
-            mods = m.group("mods") or ""
+            mods = (m.group("mods") or "") + (m.group("mods_after") or "")
             part = _ADDRESS_PART_RE.search(mods)
             comp = _COMPARATOR_RE.search(mods)
             conditions.append(
@@ -663,15 +813,43 @@ class SieveGenerator:
         wrote `if anyof ( ) {`. There is now one implementation to diverge
         from.
         """
-        text = self._generate_rule(rule)
-        if rule.enabled:
-            return text
-        # A disabled Rule is stored commented out.
-        return "\n".join("## " + line if line.strip() else "##" for line in text.split("\n"))
+        block = self._generate_rule(rule)
+        if not rule.enabled:
+            # A disabled Rule is stored commented out.
+            block = "\n".join("## " + line if line.strip() else "##" for line in block.split("\n"))
+        if not rule.name:
+            return block
+        # The name is emitted HERE, outside anything that gets commented, and
+        # never by `_generate_rule`. It used to live inside the block, so a
+        # disabled Rule had its own name `## `-prefixed; on reparse that line
+        # found no `if`, fell through to the generic comment handler, and
+        # `lstrip("#").strip()` baked the marker in — one more `# --- ` per
+        # save, forever (areyousievious-8fg.15). Emitting it out here does not
+        # fix that bug so much as make it unrepresentable: there is no longer a
+        # path by which `## ` can reach the name.
+        return f"# --- {rule.name} ---\n{block}"
 
     def _compute_requires(self, script: SieveScript) -> list[str]:
-        """Compute required extensions from rules."""
-        requires = set(script.requires)
+        """The extensions this script needs.
+
+        Seeding from `script.requires` made this a FLOOR: it only ever grew.
+        Swap a `reject` action for `keep` and save, and `require ["fileinto",
+        "reject"]` outlives the action that needed it — the script keeps
+        claiming an extension it does not use, and a server that does not offer
+        `reject` then refuses a script that no longer needs it
+        (areyousievious-8fg.15).
+
+        THE CARVE-OUT, and why this is not simply "derive from content": a
+        RawBlock's requirements are unknowable. We did not recognise the block,
+        so we cannot say what it needs. Measured — an `envelope` test lands in
+        a RawBlock, and deriving purely from Rules drops `require ["envelope"]`
+        and leaves a script the server rejects. So pruning happens only when
+        EVERY entry is a Rule, i.e. when we understand the whole file. One
+        RawBlock and the declared set is preserved whole, which is what the old
+        floor did for every script.
+        """
+        understood = all(isinstance(entry, Rule) for entry in script.entries)
+        requires = set() if understood else set(script.requires)
 
         for rule in script.rules:
             if not rule.enabled:
@@ -695,12 +873,11 @@ class SieveGenerator:
     def _generate_rule(self, rule: Rule) -> str:
         lines = []
 
-        # Comment with rule name. Emitted verbatim — `.upper()` here meant a
-        # user's "GitHub notifications" came back as "GITHUB NOTIFICATIONS"
-        # after a single save, permanently, because the comment is the only
-        # place the name is stored.
-        if rule.name:
-            lines.append(f"# --- {rule.name} ---")
+        # NO name comment here. It is `generate_entry`'s, so that it lands
+        # outside the `## ` prefixing a disabled Rule gets. The name is emitted
+        # verbatim there — `.upper()` once meant a user's "GitHub
+        # notifications" came back as "GITHUB NOTIFICATIONS" after one save,
+        # permanently, because the comment is the only place a name is stored.
 
         # Conditions. A wrapper is emitted when the source had one, or whenever
         # there is more than one condition (where it is required). A single

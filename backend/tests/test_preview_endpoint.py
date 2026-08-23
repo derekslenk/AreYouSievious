@@ -152,9 +152,20 @@ def test_quotes_and_backslashes_are_escaped(authed_client) -> None:
 
 
 def test_a_disabled_rule_previews_commented_out(authed_client) -> None:
+    """Every line of the BLOCK is commented — but not the name.
+
+    areyousievious-8fg.15 moved the `# --- name ---` line outside the region
+    that gets `## `-prefixed, because inside it the name accreted one marker
+    per save. The preview shows exactly what a save writes, so it shows that
+    too: one uncommented name line, and a block that is commented all the way
+    down.
+    """
     with authed_client(script_store=FakeScriptStore()) as http:
         sieve = _preview(http, RULES["disabled"])
-    assert all(line.startswith("##") for line in sieve.split("\n") if line), sieve
+
+    name, *block = [line for line in sieve.split("\n") if line]
+    assert name == "# --- Newsletters ---", sieve
+    assert all(line.startswith("##") for line in block), sieve
 
 
 # ── What the endpoint must NOT do ──
