@@ -239,3 +239,114 @@ def test_every_shape_still_reaches_a_fixed_point(src: str) -> None:
     gen1, gen2, gen3 = _round_trips(src)
     assert gen2 == gen1
     assert gen3 == gen2
+
+
+# ── Raised in review of this change ──
+
+
+def test_an_unterminated_require_does_not_eat_the_next_statement() -> None:
+    """The worst thing this module can do is DELETE something.
+
+    `require` was consumed up to its terminating `;`, and a `require` without
+    one ran on to the next `;` anywhere in the file. Reproduced:
+
+        require ["fileinto"]
+        if header :is "a" "b" { fileinto "x"; }
+
+    regenerated to `"\\n"` — the rule gone. A `require` holds strings,
+    brackets, commas and its semicolon; a line with a brace or a bare word
+    belongs to the next statement, so the scan stops there.
+    """
+    src = 'require ["fileinto"]\nif header :is "a" "b" { fileinto "x"; }\n'
+    script = st.parse_sieve(src)
+
+    assert len(script.rules) == 1, "the rule after an unterminated require was deleted"
+    assert script.requires == ["fileinto"], "and the require is still read"
+    assert 'fileinto "x";' in st.generate_sieve(script)
+
+
+def test_a_script_that_is_only_requires_keeps_them() -> None:
+    """`all(...)` over an empty sequence is True, so a script with no entries
+    counted as fully understood and had every extension pruned — regenerating
+    `require ["fileinto"];` to nothing at all. A script with nothing in it is
+    not one we understand; it is one with nothing to derive from."""
+    generated = st.generate_sieve(st.parse_sieve('require ["fileinto", "imap4flags"];\n'))
+    assert '"fileinto"' in generated and '"imap4flags"' in generated
+
+
+@pytest.mark.parametrize(
+    ("name", "expected"),
+    [
+        pytest.param("# --- # --- # --- Boss ---", "Boss", id="three saves of accretion"),
+        pytest.param("# --- Boss ---", "Boss", id="one marker"),
+        pytest.param("# -- important -- stuff", "# -- important -- stuff", id="two dashes, a name"),
+        pytest.param("-- a -- b", "-- a -- b", id="unbalanced, a name"),
+        pytest.param("# 1 priority", "# 1 priority", id="leading hash, a name"),
+        pytest.param("Alpha - Beta", "Alpha - Beta", id="a dash in the middle"),
+    ],
+)
+def test_only_the_accretion_shape_is_peeled(name: str, expected: str) -> None:
+    """The peel ran two independent `re.sub`s, so the leading one could fire
+    with no trailing marker to balance it and `# -- important -- stuff` came
+    back as `important -- stuff` — a name quietly edited. Raised in review.
+
+    Both ends must match in ONE pattern, and the accretion's own asymmetric
+    layer (`# --- `, exactly as the generator wrote it) is peeled separately.
+    """
+    assert st.SieveParser._clean_comment_name(name) == expected
+
+
+def test_re_entry_is_bounded(monkeypatch) -> None:
+    """Parsing the uncommented text as a whole script is what accepts both name
+    shapes — and it means `parse` can call itself. A parser that recurses on
+    text a user can supply, with no bound, is a denial of service waiting to be
+    found. Raised in review of this change.
+
+    Asserted by watching PARSER CONSTRUCTION, because neither the output nor
+    the call depth can see the bound: the output is identical either way, and
+    `_try_parse_disabled_block` is only entered where `## ` lines exist, so an
+    unbounded run never records a deeper call. Two earlier versions of this
+    test watched those and the mutation survived both.
+
+    The input is mixed-depth on purpose: a uniform `## ## ` run never reaches
+    the guard, because the peek strips one layer, finds no `if`, and gives up
+    before any re-entry.
+    """
+    depths = []
+    original = st.SieveParser.__init__
+
+    def watched(self, text, depth=0):
+        depths.append(depth)
+        original(self, text, depth)
+
+    monkeypatch.setattr(st.SieveParser, "__init__", watched)
+
+    st.parse_sieve(
+        '## if header :is "a" "b" {\n##     fileinto "X";\n## }\n'
+        '## ## if header :is "c" "d" {\n## ##     fileinto "Y";\n## ## }\n'
+    )
+
+    assert max(depths) == st._MAX_DISABLED_DEPTH, (
+        f"expected re-entry to stop at depth {st._MAX_DISABLED_DEPTH}, "
+        f"saw {max(depths)} — if this is 0 the input no longer reaches the guard, "
+        "and if it is higher the guard is not holding"
+    )
+
+
+def test_a_long_run_of_disabled_lines_does_not_blow_up() -> None:
+    """The retry path: a `## ` run whose parse fails is re-attempted from each
+    line, so cost grows with the square of the run. Bounded here rather than
+    argued about — the body-size limit lets a 1 MiB script through, and this
+    runs on an HTTP request.
+    """
+    import time
+
+    body = (
+        ['## if header :is "a" "b" {']
+        + [f'##     vacation "x{i}";' for i in range(2000)]
+        + ["## }"]
+    )
+    started = time.perf_counter()
+    st.parse_sieve("\n".join(body) + "\n")
+    elapsed = time.perf_counter() - started
+    assert elapsed < 2.0, f"{elapsed:.2f}s for {len(body)} commented lines"
