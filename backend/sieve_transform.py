@@ -59,6 +59,14 @@ class Rule:
     match: str = "anyof"  # one of MATCH_OPERATORS, or "" for a bare `if <test> {`
     conditions: list[Condition] = field(default_factory=list)
     actions: list[Action] = field(default_factory=list)
+    source: str = ""
+    """The exact bytes this Rule was parsed from, including its leading gap.
+
+    Empty for a Rule the builder minted: it was never parsed from anything, so
+    there is nothing to re-emit and it regenerates. This is CONTENT, not
+    identity (docs/adr/0001-identity-is-view-state.md) — two identical Rules
+    legitimately carry identical spans, and nothing here distinguishes them.
+    """
 
 
 @dataclass
@@ -67,6 +75,7 @@ class RawBlock:
 
     text: str
     comment: str = ""
+    source: str = ""
 
 
 Entry = Rule | RawBlock
@@ -84,6 +93,14 @@ class SieveScript:
 
     requires: list[str] = field(default_factory=list)
     entries: list[Entry] = field(default_factory=list)
+    preamble: str = ""
+    """Bytes before the first `require`, or before the first entry when there
+    is none. Immovable: reordering Rules never moves the file's header."""
+    requires_source: str = ""
+    """The exact bytes of the `require` statement(s), which may be several and
+    may span lines. Re-emitted verbatim only when nothing in the file changed."""
+    tail: str = ""
+    """Bytes after the last entry's span. Blank lines and trailing comments."""
 
     @property
     def rules(self) -> list[Rule]:
@@ -1186,6 +1203,7 @@ def _rule_to_json(r: Rule) -> dict:
             for c in r.conditions
         ],
         "actions": [{"type": a.action_type, "argument": a.argument} for a in r.actions],
+        "source": r.source,
     }
 
 
@@ -1198,10 +1216,13 @@ def script_to_json(script: SieveScript) -> dict:
     """
     return {
         "requires": script.requires,
+        "preamble": script.preamble,
+        "requires_source": script.requires_source,
+        "tail": script.tail,
         "entries": [
             _rule_to_json(e)
             if isinstance(e, Rule)
-            else {"kind": "raw", "text": e.text, "comment": e.comment}
+            else {"kind": "raw", "text": e.text, "comment": e.comment, "source": e.source}
             for e in script.entries
         ],
     }
@@ -1234,6 +1255,7 @@ def _rule_from_json(r: dict) -> Rule:
         match=r.get("match", "anyof"),
         conditions=conditions,
         actions=actions,
+        source=r.get("source", ""),
     )
 
 
@@ -1245,13 +1267,24 @@ def json_to_script(data: dict) -> SieveScript:
     The previous representation could, and silently dropped the omitted rule on
     save.
     """
-    script = SieveScript(requires=data.get("requires", []))
+    script = SieveScript(
+        requires=data.get("requires", []),
+        preamble=data.get("preamble", ""),
+        requires_source=data.get("requires_source", ""),
+        tail=data.get("tail", ""),
+    )
 
     for e in data.get("entries", []):
         if not isinstance(e, dict):
             continue
         if e.get("kind") == "raw":
-            script.entries.append(RawBlock(text=e.get("text", ""), comment=e.get("comment", "")))
+            script.entries.append(
+                RawBlock(
+                    text=e.get("text", ""),
+                    comment=e.get("comment", ""),
+                    source=e.get("source", ""),
+                )
+            )
         elif e.get("kind") == "rule":
             script.entries.append(_rule_from_json(e))
 
