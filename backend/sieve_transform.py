@@ -1575,24 +1575,49 @@ def _unwritable_byte_error(script: SieveScript) -> str | None:
     """Whether any text we would write carries a byte that is not ours to write.
 
     One question — are these bytes ours to write — asked of every field that
-    becomes part of the script outside a quoted string. Values and arguments are
-    excluded because the generator escapes them into quoted strings, verified; a
-    byte there is a literal, not a statement.
+    becomes part of the script. The generator escapes a Condition's header,
+    value and comparator and an Action's argument into quoted strings, verified,
+    so a byte there is a literal and not a statement of its own.
 
-    THAT EXCLUSION ANSWERS STATEMENT INJECTION AND NOTHING ELSE, which is worth
-    saying plainly before the NUL clause below leans on a harm quoting does not
-    address. Escaping stops a byte from becoming a statement of its own; it does
-    not stop the byte from reaching the mail server. A Condition value holding a
-    NUL, and an Action argument holding one, both pass `preflight_error`, and
-    the generated `header :contains` and `fileinto` lines carry that byte raw
-    between the quotes — a lone CR in a value likewise. So each rule below is a
-    NARROWING of where such a byte may appear, never a seal: a server that
-    truncates its input at a NUL still has one to truncate at. That is accepted
-    rather than overlooked. No version of this app has ever checked a value for
-    these bytes — `_unwritable_byte_error` is new on this branch, and main had
-    no byte guard at all — so the gap is not a regression, and closing it is a
-    decision about what a value may contain, which is a different question from
-    which bytes are ours to write.
+    QUOTING ANSWERS STATEMENT INJECTION AND NOTHING ELSE, and the difference is
+    the whole reason those four fields are checked for a NUL below rather than
+    trusted to their quotes. Escaping stops a byte from becoming a statement; it
+    does not stop the byte from reaching the mail server. A server that
+    truncates its input at a NUL does not truncate one value — it truncates the
+    WHOLE SCRIPT there, silently dropping every rule after the offending one
+    while our UI keeps showing them, because our own parser is happy with a NUL
+    between quotes. That is DELETION of a user's filters, which this module
+    treats as the worst thing it can do (see `_consume_statement`), and it needs
+    no `RawBlock` to reach. RFC 5228 §2.4.2's quoted-string production does not
+    admit NUL, so refusing it costs nothing legitimate.
+
+    LF AND CR ARE NOT ASKED OF THOSE FOUR, deliberately, and the reason is NOT
+    that quoting escapes them — `_quote` escapes a backslash and a quote and
+    nothing else, so a newline in a value goes out RAW between the quotes. It is
+    that the string is still open around it: the statement ends at the closing
+    quote, so a line ending inside one cannot terminate anything, and a value
+    carrying one parses back to the same Condition, a fixed point, verified.
+    Those two bytes are refused where they are refused below because THOSE
+    fields are not quoted — a comment line, or verbatim span bytes, where a line
+    ending is the end of the construct.
+
+    THE RESIDUAL THERE, named rather than left to be found: RFC 5228's
+    `quoted-safe` admits CRLF but not a lone CR or LF, so a bare one in a value
+    is malformed for a strict server too. It is left to the server because the
+    two failures are not the same failure — a server that dislikes a line
+    ending REFUSES THE SCRIPT, loudly, and the user sees it; a server that
+    truncates at a NUL accepts a script and silently drops the rules after it.
+    Only the second is invisible, and invisible is what this guard is for.
+
+    THE FOUR ARE THE FREE TEXT THE WIRE ADMITS, which is why they are the four.
+    `api_models` pins `match_type`, `address_part`, the action type and `match`
+    to `Literal` vocabularies that hold no NUL to smuggle; `header`, `value` and
+    `comparator` are free text there on purpose, and `argument` is a folder name
+    or an address. A NUL in the comparator happens to be refused today by
+    sievelib's own comparator whitelist, but ONLY as collateral of
+    areyousievious-3o4 — that whitelist refuses `i;ascii-numeric` too, which is
+    a bug — so the day 3o4 is fixed that accidental cover goes with it. Checking
+    the field here is what survives the fix.
 
     THE SCOPE DIFFERS PER BYTE, and each difference is the line between a guard
     and a lockout:
@@ -1613,9 +1638,10 @@ def _unwritable_byte_error(script: SieveScript) -> str | None:
     does with the octets after it is undefined and one plausible reading runs
     them. CRLF stays legal because every CR in it is followed by LF.
 
-    A NUL, in everything EXCEPT a `RawBlock`'s own `text` and `source`. RFC
-    5228's `octet-not-crlf` excludes %x00, so a NUL is never valid Sieve, and
-    against a C-implemented server truncation at it is the classic desync.
+    A NUL, in everything EXCEPT a `RawBlock`'s own `text` and `source` — the
+    quoted Condition and Action fields above included. RFC 5228's
+    `octet-not-crlf` excludes %x00, so a NUL is never valid Sieve, and against a
+    C-implemented server truncation at it is the classic desync.
 
     The exemption is meant for the file that ALREADY holds one — a NUL that
     breaks lexing takes the whole file down the `usable == False` path and comes
@@ -1709,6 +1735,10 @@ def _unwritable_byte_error(script: SieveScript) -> str | None:
         if isinstance(entry, Rule):
             one_comment_line.append(entry.name)
             no_nul.append(entry.source)
+            for cond in entry.conditions:
+                no_nul.extend((cond.header, cond.value, cond.comparator))
+            for action in entry.actions:
+                no_nul.append(action.argument)
         else:
             one_comment_line.append(entry.comment)
             written_verbatim.append(entry.text)
