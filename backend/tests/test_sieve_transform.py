@@ -23,7 +23,7 @@ import pytest
 import sieve_transform as st
 from sievelib.parser import Parser as SieveLibParser
 
-from tests.conftest import CORPUS, corpus_id
+from tests.conftest import CORPUS, corpus_id, corpus_params
 
 BACKEND = Path(__file__).resolve().parent.parent
 
@@ -32,7 +32,7 @@ BACKEND = Path(__file__).resolve().parent.parent
 # Two tiers, both parametrized by every test below:
 #
 #   test_scripts/*.sieve         Three scripts captured from real servers, plus
-#                                twelve hand-written files with one construct
+#                                eighteen hand-written files with one construct
 #                                family each. Written to be read: if you need to
 #                                know what the parser does with `:comparator`,
 #                                modifiers-comparator.sieve is the answer.
@@ -49,34 +49,17 @@ BACKEND = Path(__file__).resolve().parent.parent
 VENDOR_SCRIPTS = [p for p in CORPUS if p.parent.name == "vendor"]
 
 
-def _corpus(known_red: dict[str, str] | None = None) -> list[object]:
-    """Every fixture as a param, xfailing the ones with a defect someone owns.
-
-    A fixture that reproduces a defect is NOT edited until it passes — see
-    test_scripts/AGENTS.md. It stays truthful and is pinned `xfail(strict=True)`
-    naming the bead that owns the fix. Strict is the whole point: the day the
-    fix lands the XPASS breaks this suite, so a pin cannot outlive its defect.
-    """
-    red = known_red or {}
-    params = []
-    for path in CORPUS:
-        fixture_id = corpus_id(path)
-        marks = (
-            [pytest.mark.xfail(strict=True, reason=red[fixture_id])] if fixture_id in red else []
-        )
-        params.append(pytest.param(path, id=fixture_id, marks=marks))
-    return params
-
-
-# Both fixtures that were pinned here are green: areyousievious-8fg.15 fixed
-# the disabled-Rule name accretion and the require losses they reproduced. The
-# pins were `xfail(strict=True)` precisely so they could not outlive the
-# defects, and this is them not outliving them.
+# The pin mechanism lives in `tests/conftest.py` as `corpus_params`, beside the
+# corpus itself — four modules parametrize over it with pins now.
+#
+# The two fixtures pinned here for areyousievious-8fg.15 are green: it fixed the
+# disabled-Rule name accretion and the require losses they reproduced, and the
+# pins went with the defects, which is `strict` doing its job.
 
 # ── Round-trip stability ──
 
 
-@pytest.mark.parametrize("path", _corpus())
+@pytest.mark.parametrize("path", corpus_params())
 def test_round_trip_is_idempotent(path: Path) -> None:
     """parse -> generate must reach a fixed point, in TEXT and in AST.
 
@@ -113,7 +96,17 @@ def _without_spans(entries: list[st.Entry]) -> list[st.Entry]:
     return [st._without_span(e) for e in entries]
 
 
-@pytest.mark.parametrize("path", _corpus())
+@pytest.mark.parametrize(
+    "path",
+    corpus_params(
+        {
+            # Both reach sievelib, which this test uses as its "and still valid
+            # Sieve" oracle, and both are refused for one reason.
+            "modifiers-comparator-declared.sieve": "areyousievious-3o4: sievelib's comparator whitelist refuses the collation i;ascii-numeric, so our pre-flight refuses a name RFC 5228 §2.7.3 mandates a require for",
+            "match-relational.sieve": "areyousievious-3o4: sievelib's comparator whitelist refuses the collation i;ascii-numeric, so our pre-flight refuses a name RFC 5228 §2.7.3 mandates a require for",
+        }
+    ),
+)
 def test_round_trip_preserves_every_entry_and_require(path: Path) -> None:
     """Nothing may be dropped by the first normalising pass.
 
@@ -192,8 +185,11 @@ RECOGNITION_CENSUS = {
     "lexical-brace-in-a-string.sieve": (2, 0),
     "lexical-commented-action.sieve": (1, 0),
     "lexical-nested-if.sieve": (0, 1),
+    "lexical-bracket-comment-scope.sieve": (1, 2),
     "match-regex.sieve": (2, 0),
+    "match-relational.sieve": (0, 1),
     "modifiers-address-part.sieve": (3, 0),
+    "modifiers-comparator-declared.sieve": (1, 0),
     "modifiers-comparator.sieve": (2, 0),
     "modifiers-either-order.sieve": (2, 0),
     "multiple-requires.sieve": (1, 0),
@@ -250,7 +246,7 @@ RECOGNITION_CENSUS = {
 }
 
 
-@pytest.mark.parametrize("path", _corpus())
+@pytest.mark.parametrize("path", corpus_params())
 def test_recognition_does_not_regress(path: Path) -> None:
     """Every fixture keeps its recognised rules/raw split; new fixtures must be censused."""
     fixture_id = corpus_id(path)

@@ -60,7 +60,7 @@ import pytest
 import sieve_transform as st
 from sievelib.parser import Parser as SieveLibParser
 
-from tests.conftest import CORPUS, corpus_id
+from tests.conftest import CORPUS, CORPUS_ROOT, corpus_id, corpus_params
 
 _QUOTED = re.compile(r'"((?:[^"\\]|\\.)*)"')
 _ESCAPE = re.compile(r"\\(.)", re.DOTALL)
@@ -159,9 +159,20 @@ def test_regeneration_preserves_meaning(path: Path) -> None:
     )
 
 
+@pytest.mark.xfail(
+    strict=True,
+    reason="areyousievious-3o4: sievelib's comparator whitelist refuses the collation i;ascii-numeric, so our pre-flight refuses a name RFC 5228 §2.7.3 mandates a require for",
+)
 def test_every_fixture_is_readable_by_the_oracle() -> None:
     """The skip above is a safety valve, not a plan. If it starts firing, the
-    oracle is quietly covering less than it appears to."""
+    oracle is quietly covering less than it appears to.
+
+    It is firing, on the two fixtures carrying `i;ascii-numeric`, and this pin
+    is that sentence made loud rather than left in a skip reason. The valve is
+    working exactly as designed — `test_regeneration_preserves_meaning` now
+    skips those two instead of asserting something it cannot check — and the
+    cost is real: for as long as 3o4 is open, nothing checks that regenerating
+    a script with a declared collation preserves its meaning."""
     unreadable = [p.name for p in CORPUS if meaning(p.read_text()) is None]
     assert not unreadable, f"sievelib cannot parse: {unreadable}"
 
@@ -292,7 +303,14 @@ def test_the_preflight_judges_only_regenerated_spans() -> None:
     assert st.preflight_error(script) is None
 
 
-@pytest.mark.parametrize("path", CORPUS, ids=corpus_id)
+@pytest.mark.parametrize(
+    "path",
+    corpus_params(
+        {
+            "modifiers-comparator-declared.sieve": "areyousievious-3o4: sievelib's comparator whitelist refuses the collation i;ascii-numeric, so our pre-flight refuses a name RFC 5228 §2.7.3 mandates a require for"
+        }
+    ),
+)
 def test_no_fixture_is_refused_by_its_own_preflight(path: Path) -> None:
     """The pre-flight is mandatory on the save path, so a false positive is a
     user locked out of saving. Every fixture in the corpus — including all 45
@@ -321,3 +339,47 @@ def test_the_normaliser_folds_case_and_nothing_else(change: tuple[str, str], fla
     base = 'if header :comparator "i;octet" :is "Subject" "one" { keep; }\n'
     assert meaning(base) is not None, "premise: sievelib reads this"
     assert (meaning(base) != meaning(base.replace(*change))) is flagged
+
+
+# ── What the oracle sees that we do not (areyousievious-hr6) ──
+
+
+def test_a_bracketed_comment_hides_a_rule_from_the_server_and_not_from_us() -> None:
+    """The divergence measured rather than described.
+
+    `lexical-bracket-comment-scope.sieve` holds three `if` blocks, and the
+    middle one is inside a `/* ... */`. We project THREE entries; sievelib —
+    which is the closest thing here to what the server will do — sees TWO
+    rules, correctly leaving the commented-out one out. So a user's UI shows a
+    filter that is not running.
+
+    Worse than the display: `/*` and `*/` land in SEPARATE entries, so
+    reordering can carry a Rule into or out of the commented region and
+    silently enable a filter the user disabled. That is bead
+    areyousievious-hr6, pre-existing on main. This test is green on purpose —
+    it pins the CURRENT divergence so the fix has a number to move, and it is
+    not an xfail because nothing here asserts the behaviour is right.
+    """
+    text = (CORPUS_ROOT / "lexical-bracket-comment-scope.sieve").read_text()
+    script = st.parse_sieve(text)
+
+    assert len(script.entries) == 3, "we split it into three entries"
+    assert text.count('fileinto "') == 3, "premise: three filing actions are written down"
+
+    parser = SieveLibParser()
+    assert parser.parse(text.encode()), "premise: this is valid Sieve"
+    dumped = io.StringIO()
+    parser.dump(dumped)
+    executed = dumped.getvalue()
+    assert executed.count("fileinto (type: action)") == 2, (
+        "the server executes two of the three — if this is now 3, hr6 moved, "
+        "and this test should say so rather than be edited to match"
+    )
+    assert '"B"' not in executed, (
+        "the folder inside the bracketed comment must not reach the server — "
+        "our UI shows that rule as live and it is not"
+    )
+
+    opener = next(i for i, e in enumerate(script.entries) if "/*" in e.source)
+    closer = next(i for i, e in enumerate(script.entries) if "*/" in e.source)
+    assert opener != closer, "the comment's two ends are in different entries, which is the hazard"

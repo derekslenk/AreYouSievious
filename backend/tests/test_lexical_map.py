@@ -346,6 +346,10 @@ def test_parsing_is_thread_safe_because_only_the_lexer_is_borrowed() -> None:
 # ── Where this bead's fix stops ──
 
 
+@pytest.mark.xfail(
+    strict=True,
+    reason="areyousievious-3o4: sievelib's comparator whitelist refuses the collation i;ascii-numeric, so our pre-flight refuses a name RFC 5228 §2.7.3 mandates a require for",
+)
 def test_every_rule_we_recognise_is_sieve_sievelib_accepts() -> None:
     """A standing check on the projection, and the measurement `.11` needs.
 

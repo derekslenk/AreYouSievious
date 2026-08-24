@@ -18,10 +18,10 @@ from pathlib import Path
 import pytest
 import sieve_transform as st
 
+from tests.conftest import corpus_params
 from tests.fakes import FakeScriptStore
 
 BACKEND = Path(__file__).resolve().parent.parent
-FIXTURES = sorted(p for p in (BACKEND / "test_scripts").rglob("*.sieve") if p.stat().st_size > 0)
 
 
 def _round_tripped(text: str) -> st.Entry:
@@ -227,7 +227,12 @@ def test_the_endpoint_rejects_a_hostile_tail_without_writing(authed_client):
 
 
 @pytest.mark.parametrize(
-    "path", FIXTURES, ids=lambda p: str(p.relative_to(BACKEND / "test_scripts"))
+    "path",
+    corpus_params(
+        {
+            "modifiers-comparator-declared.sieve": "areyousievious-3o4: sievelib's comparator whitelist refuses the collation i;ascii-numeric, so our pre-flight refuses a name RFC 5228 §2.7.3 mandates a require for"
+        }
+    ),
 )
 def test_no_real_script_is_refused_by_the_boundary_guard(path: Path):
     """A guard that refuses a real script locks a user out of their own
