@@ -891,7 +891,7 @@
         "summary": "Get Script"
       },
       "put": {
-        "description": "Save script from JSON rules (generates Sieve).",
+        "description": "Save script from JSON rules (generates Sieve).\n\nPRE-FLIGHT (areyousievious-8fg.13): the Sieve we generated is checked\nagainst an independent grammar before it is sent. A Rule whose last\nCondition was deleted generates `if anyof ( ) {`, which a real server\nrefuses \u2014 the error contract already made that rejection honest, and this\nmeans we never send it at all.\n\nONLY the spans we regenerated are checked, never the RawBlocks. sievelib\ndoes not know `include`, `addheader` or `spamtest` though real servers do,\nso validating the whole script would refuse working scripts over a\nconstruct we never touched.",
         "operationId": "save_script_api_scripts__name__put",
         "parameters": [
           {

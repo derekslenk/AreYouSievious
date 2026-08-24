@@ -167,6 +167,17 @@ export interface paths {
         /**
          * Save Script
          * @description Save script from JSON rules (generates Sieve).
+         *
+         *     PRE-FLIGHT (areyousievious-8fg.13): the Sieve we generated is checked
+         *     against an independent grammar before it is sent. A Rule whose last
+         *     Condition was deleted generates `if anyof ( ) {`, which a real server
+         *     refuses — the error contract already made that rejection honest, and this
+         *     means we never send it at all.
+         *
+         *     ONLY the spans we regenerated are checked, never the RawBlocks. sievelib
+         *     does not know `include`, `addheader` or `spamtest` though real servers do,
+         *     so validating the whole script would refuse working scripts over a
+         *     construct we never touched.
          */
         put: operations["save_script_api_scripts__name__put"];
         post?: never;

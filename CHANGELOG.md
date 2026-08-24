@@ -19,6 +19,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- sievelib AST oracle in CI: every fixture is parsed, regenerated and compared by an independent grammar, so a change to what a script MEANS fails the build. Normalises only the differences made on purpose (`require`, header-name case, string escaping) and is tested to bite in both directions (areyousievious-8fg.13)
+- Runtime pre-flight before PUT: a Rule whose last Condition was deleted generates `if anyof ( ) {`, and the save is now refused with the compiler diagnostic rather than sent (areyousievious-8fg.13)
+
 - `docs/DEPLOY.md`: Coolify deployment runbook (Dockerfile build pack, the environment variables that matter in production, and the two behaviours that surprise operators — in-memory sessions, and the SSRF guard refusing a private mail server). The app now warns at startup when `AYS_TRUSTED_PROXIES` is empty, which behind a reverse proxy means every client shares one login rate-limit bucket
 
 - `POST /api/scripts/preview` renders one Rule through the backend generator, and the SPA's duplicate generator (`previewRule`) is deleted. The preview is now the bytes a save writes, asserted as such; the duplicate had diverged five ways, including showing nothing for a Rule whose last Condition was deleted while a save wrote invalid Sieve (areyousievious-8fg.17)
@@ -40,6 +43,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `save_script` endpoint converted from `async def` to `sync def` to avoid event-loop blocking on ManageSieve I/O
 
 ### Fixed
+
+- Sieve escapes now follow RFC 5228 §2.4.2, where a backslash before any character is that character. Previously only `\"` and `\\` were handled, so every other escape survived parsing and was escaped again on the way out — `:regex "^a\.b$"` (dot matches anything) became `"^a\\.b$"` (literal dot), and `addflag "\Flagged Big"` became the flag `\Flagged Big` (areyousievious-8fg.13)
+- Multi-line top-level commands are read as one statement instead of one line at a time. A multi-line `vacation` became four raw blocks, and generation separates entries with a blank line — so a blank line was injected into the vacation message text (areyousievious-8fg.13)
 
 - Narrowing projection: a block is only read as an editable Rule when every construct in it is one the builder models. Previously a partly-understood block was projected anyway — an `allof` holding one `header` test and two `date` tests came back carrying the header test alone, so a rule that filed mail only during office hours regenerated to file it at every hour (areyousievious-8fg.11)
 - Tagged arguments now parse in any order, as RFC 5228 §2.7.1 allows and the RFC's own example writes: `address :is :all "from" "x"` was previously unreadable while `address :all :is "from" "x"` was fine (areyousievious-8fg.11)
