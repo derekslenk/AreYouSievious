@@ -51,7 +51,11 @@ class Rule:
     cannot persist an id, so any the server minted would be a fresh value on every
     parse. Clients mint their own render keys and strip them at the wire. Dropping
     the id also makes Rule comparable by value, which is what lets tests assert
-    exact round-trip fidelity rather than mere stability.
+    exact round-trip fidelity rather than mere stability. `source` joins that
+    value equality while being content-of-origin rather than meaning, so a
+    comparison asking whether two Rules DO the same thing must clear it first —
+    two Rules identical in every effect differ here whenever they were written
+    down differently.
     """
 
     name: str = ""
@@ -76,6 +80,11 @@ class RawBlock:
     text: str
     comment: str = ""
     source: str = ""
+    """The exact bytes this block was parsed from, including its leading gap.
+
+    Same field, same rules and same reasons as `Rule.source` — a RawBlock is an
+    Entry too, and the decomposition covers every entry or it covers none.
+    """
 
 
 Entry = Rule | RawBlock
@@ -420,6 +429,51 @@ class SieveParser:
         self.line_idx = 0
         self.depth = depth
         self.lex = _LexicalMap(text)
+        # First line not yet claimed by the preamble, the requires or an
+        # entry's span. Moves ONLY on a successful consumption, in `_append`
+        # and `_record_requires`; the backtracking helpers reset `line_idx`
+        # without touching it, which is what leaves a refused attempt's bytes
+        # available to whichever entry eventually claims them.
+        self._span_start = 0
+
+    def _span(self, start: int, end: int) -> str:
+        """The exact bytes of lines[start:end], separators included.
+
+        `text.split("\\n")` drops the separators, so joining a range back needs
+        a trailing "\\n" for every line EXCEPT one ending at the true end of a
+        file that does not end in a newline. Getting this wrong shifts every
+        subsequent span by one byte and the reassembly invariant catches it.
+        """
+        if start >= end:
+            return ""
+        chunk = "\n".join(self.lines[start:end])
+        return chunk if end == len(self.lines) else chunk + "\n"
+
+    def _append(self, script: SieveScript, entry: Entry) -> None:
+        """Append an entry and hand it every byte since the last one.
+
+        The leading gap — blank lines, the `# --- name ---` line, any comment
+        above it — is part of the span, so a reordered Rule takes its name with
+        it. There is no separate "filler" category: a byte is either preamble,
+        part of the requires, inside exactly one entry's span, or tail.
+        """
+        entry.source = self._span(self._span_start, self.line_idx)
+        self._span_start = self.line_idx
+        script.entries.append(entry)
+
+    def _record_requires(self, script: SieveScript, statement_start: int) -> None:
+        """Split the region [span_start, line_idx) at the `require` statement.
+
+        Everything before the statement is preamble on the FIRST require and
+        part of `requires_source` on any later one — a comment sitting between
+        two `require` statements belongs with them, not with the rule after.
+        """
+        if not script.requires_source:
+            script.preamble += self._span(self._span_start, statement_start)
+            script.requires_source = self._span(statement_start, self.line_idx)
+        else:
+            script.requires_source += self._span(self._span_start, self.line_idx)
+        self._span_start = self.line_idx
 
     def parse(self) -> SieveScript:
         if not self.lex.usable:
@@ -435,8 +489,14 @@ class SieveParser:
             # tells outcomes apart from the result, never from an exception,
             # because raising here would lock a user out of their own filters
             # over one stray byte.
+            #
+            # `text` is stripped of its trailing newlines and `source` is not:
+            # the span has to be the WHOLE text or the decomposition loses the
+            # bytes `rstrip` took, on exactly the file we understand least.
             body = self.text.rstrip("\n")
-            return SieveScript(entries=[RawBlock(text=body)] if body.strip() else [])
+            if not body.strip():
+                return SieveScript(tail=self.text)
+            return SieveScript(entries=[RawBlock(text=body, source=self.text)])
 
         script = SieveScript()
         pending_comment = ""
@@ -459,23 +519,25 @@ class SieveParser:
                 # since by gen1 both sides had already lost it. RFC 5228 §3.2
                 # shows multiple statements and Horde/Ingo emits them
                 # (areyousievious-8fg.15).
+                statement_start = self.line_idx
                 statement, clean = self._consume_statement()
                 if not clean:
                     # Not a `require` we can read. Keep its bytes rather than
                     # guess at them.
-                    script.entries.append(RawBlock(text=statement, comment=pending_comment))
+                    self._append(script, RawBlock(text=statement, comment=pending_comment))
                     pending_comment = ""
                     continue
                 for extension in self._parse_require(statement):
                     if extension not in script.requires:
                         script.requires.append(extension)
+                self._record_requires(script, statement_start)
                 continue
 
             # Disabled rule (commented out with ## prefix) — check before comment handler
             if line.startswith("## ") and self.line_idx >= failed_run_end:
                 disabled_rule = self._try_parse_disabled_block(pending_comment)
                 if disabled_rule:
-                    script.entries.append(disabled_rule)
+                    self._append(script, disabled_rule)
                     pending_comment = ""
                     continue
                 # Not a disabled rule. Do not try again at every line of the
@@ -502,11 +564,11 @@ class SieveParser:
                 rule = self._try_parse_rule(pending_comment)
                 if rule:
                     self._auto_name_rule(rule)
-                    script.entries.append(rule)
+                    self._append(script, rule)
                 else:
                     # Couldn't parse - store as raw block
                     raw_text = self._consume_block()
-                    script.entries.append(RawBlock(text=raw_text, comment=pending_comment))
+                    self._append(script, RawBlock(text=raw_text, comment=pending_comment))
                 pending_comment = ""
                 continue
 
@@ -518,9 +580,12 @@ class SieveParser:
             # oracle (areyousievious-8fg.13): the message text a user would
             # receive was not the message text they wrote.
             raw_text = self._consume_raw_statement()
-            script.entries.append(RawBlock(text=raw_text, comment=pending_comment))
+            self._append(script, RawBlock(text=raw_text, comment=pending_comment))
             pending_comment = ""
 
+        # Whatever is left is the tail: blank lines and trailing comments that
+        # no entry claimed.
+        script.tail = self._span(self._span_start, len(self.lines))
         return script
 
     @staticmethod

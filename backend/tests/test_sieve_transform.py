@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import re
 import time
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -100,6 +101,11 @@ def test_round_trip_is_idempotent(path: Path) -> None:
     assert ast3 == ast2, f"{path.name}: parsed AST is not a fixed point"
 
 
+def _without_spans(entries: list[st.Entry]) -> list[st.Entry]:
+    """The entries compared by meaning alone, with their spans cleared."""
+    return [replace(e, source="") for e in entries]
+
+
 @pytest.mark.parametrize("path", _corpus())
 def test_round_trip_preserves_every_entry_and_require(path: Path) -> None:
     """Nothing may be dropped by the first normalising pass.
@@ -135,7 +141,18 @@ def test_round_trip_preserves_every_entry_and_require(path: Path) -> None:
     second = st.parse_sieve(st.generate_sieve(first))
     third = st.parse_sieve(st.generate_sieve(second))
 
-    assert second.entries == first.entries, f"{path.name}: entries changed on round-trip"
+    # Compared WITHOUT `source`, which is provenance rather than content: the
+    # bytes an entry was parsed from, not what it means. `first` was parsed
+    # from the user's file and `second` from our regeneration of it, so their
+    # spans differ wherever house style differs from the original — a leading
+    # blank line, an indent — while every field that decides what the filter
+    # DOES is identical. Asserting the spans equal here would be asserting that
+    # generation is byte-identical, which is a different property with its own
+    # test over this same corpus (`test_verbatim_reemission.py`); folding it in
+    # here would make one failure mean either of two unrelated things.
+    assert _without_spans(second.entries) == _without_spans(first.entries), (
+        f"{path.name}: entries changed on round-trip"
+    )
     assert set(second.requires) <= set(first.requires), (
         f"{path.name}: the round trip INVENTED a require: "
         f"{sorted(set(second.requires) - set(first.requires))}"
