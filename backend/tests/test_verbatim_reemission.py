@@ -57,6 +57,14 @@ def test_raw_block_spans_survive_the_json_round_trip():
 
 
 BACKEND = Path(__file__).resolve().parent.parent
+
+# The same corpus definition, filter included, as `test_sieve_transform.py`'s
+# TEST_SCRIPTS. It excludes nothing today — there is no empty fixture — and it
+# is kept only so the two suites are parametrized over provably the same set,
+# which is what lets Task 5 lift ONE definition into a conftest fixture rather
+# than reconcile two that had drifted. The empty file is a real case for this
+# decomposition and is covered directly, by `test_an_empty_file_is_all_tail`,
+# rather than by dropping the filter here and diverging.
 FIXTURES = sorted(p for p in (BACKEND / "test_scripts").rglob("*.sieve") if p.stat().st_size > 0)
 
 
@@ -105,3 +113,68 @@ def test_an_unlexable_file_is_one_span_covering_everything():
     text = "\x00 this is not sieve at all\n\n"
     script = st.parse_sieve(text)
     assert _reassemble(script) == text
+
+
+# ── The tail term ──
+#
+# No fixture in the corpus produces a non-empty tail, so the parametrized
+# invariant above never exercises the fourth term. Two mutations survived the
+# whole file because of that: `script.tail = ""` at the end of `parse`, and the
+# blank-and-unlexable branch returning `tail=""` instead of `tail=self.text`.
+# Both are the "byte in no span, lost on save" case that test's own docstring
+# names, so the tail gets hand-written coverage of its own.
+
+
+def test_a_trailing_comment_and_blank_lines_are_tail():
+    """Bytes after the last entry belong to no entry — they are not part of the
+    rule above them, or reordering that rule would drag the file's sign-off
+    along with it."""
+    text = "if true {\n  keep;\n}\n\n# trailing note\n"
+    script = st.parse_sieve(text)
+    assert script.entries[0].source == "if true {\n  keep;\n}\n"
+    assert script.tail == "\n# trailing note\n"
+    assert _reassemble(script) == text
+
+
+def test_a_file_of_nothing_but_blank_lines_is_all_tail():
+    text = "\n\n\n"
+    script = st.parse_sieve(text)
+    assert script.entries == []
+    assert script.tail == text
+    assert _reassemble(script) == text
+
+
+def test_an_empty_file_is_all_tail():
+    """`""` in, `""` out. The degenerate end of the decomposition, and the case
+    the `st_size > 0` filter on FIXTURES would otherwise leave unasserted."""
+    script = st.parse_sieve("")
+    assert script.entries == []
+    assert _reassemble(script) == ""
+
+
+def test_a_blank_unlexable_file_keeps_its_bytes_in_the_tail():
+    """Whitespace-only AND refused by the Lexer, which is the one path that
+    returns before the main loop with no entry to hang the bytes on. `\\xa0` is
+    non-breaking space: `str.strip()` removes it, so `body.strip()` is falsy and
+    this reaches the `tail=self.text` branch."""
+    text = "\xa0"
+    script = st.parse_sieve(text)
+    assert script.entries == []
+    assert script.tail == text
+    assert _reassemble(script) == text
+
+
+def test_a_require_after_an_entry_stays_where_it_was_written():
+    """RFC 5228 §3.2 puts every `require` before every command, so this file is
+    already invalid Sieve — but it reassembles or the invariant is not "for any
+    text x". `requires_source` is concatenated ahead of every entry, so these
+    bytes cannot go there: they would come back ABOVE the rule they follow."""
+    text = 'if true {\n  keep;\n}\nrequire ["fileinto"];\n'
+    script = st.parse_sieve(text)
+    assert _reassemble(script) == text
+    assert script.requires_source == ""
+    assert isinstance(script.entries[1], st.RawBlock)
+    # NOT harvested. The verbatim bytes still declare the extension; harvesting
+    # would have a regenerating save emit a canonical `require` at the top too,
+    # and the file would declare `fileinto` twice.
+    assert script.requires == []

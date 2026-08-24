@@ -103,8 +103,14 @@ class SieveScript:
     requires: list[str] = field(default_factory=list)
     entries: list[Entry] = field(default_factory=list)
     preamble: str = ""
-    """Bytes before the first `require`, or before the first entry when there
-    is none. Immovable: reordering Rules never moves the file's header."""
+    """Bytes before the first `require`. Immovable: reordering Rules never
+    moves the file's header.
+
+    Empty when the file has no `require`, and deliberately so — those leading
+    bytes go into the FIRST ENTRY'S span instead. A comment at the top of a
+    file with no `require` is a rule's `# --- name ---` far more often than it
+    is a file header, and a span that carries its own name is what lets a
+    reordered Rule take that name with it."""
     requires_source: str = ""
     """The exact bytes of the `require` statement(s), which may be several and
     may span lines. Re-emitted verbatim only when nothing in the file changed."""
@@ -524,6 +530,29 @@ class SieveParser:
                 if not clean:
                     # Not a `require` we can read. Keep its bytes rather than
                     # guess at them.
+                    self._append(script, RawBlock(text=statement, comment=pending_comment))
+                    pending_comment = ""
+                    continue
+                if script.entries:
+                    # A `require` that follows a command. RFC 5228 §3.2 says
+                    # every `require` precedes every other command, so this file
+                    # is already invalid Sieve — which is not a reason to drop
+                    # it. We do not own these files, and a RawBlock is what this
+                    # module does with a construct it cannot place in its model.
+                    #
+                    # It must not go to `requires_source`. That term is
+                    # concatenated AHEAD of every entry, so bytes routed there
+                    # once an entry has already claimed its span come back above
+                    # it, and `preamble + requires_source + Σ source + tail`
+                    # stops reproducing the file — the same bytes, in the wrong
+                    # order, which the reassembly invariant is stated to forbid.
+                    #
+                    # Its extensions are deliberately NOT harvested. Harvesting
+                    # them would make a later regenerating save emit a canonical
+                    # `require [...]` at the top AND re-emit this block, so the
+                    # file would declare the same extension twice. Left
+                    # unharvested the declaration survives exactly once, in the
+                    # verbatim bytes that already carry it.
                     self._append(script, RawBlock(text=statement, comment=pending_comment))
                     pending_comment = ""
                     continue
