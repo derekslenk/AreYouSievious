@@ -459,6 +459,11 @@ export interface components {
              */
             kind: "raw";
             /**
+             * Source
+             * @default
+             */
+            source: string;
+            /**
              * Text
              * @default
              */
@@ -497,6 +502,11 @@ export interface components {
              * @default
              */
             name: string;
+            /**
+             * Source
+             * @default
+             */
+            source: string;
         };
         /**
          * SaveRawRequest
@@ -521,8 +531,23 @@ export interface components {
         SaveScriptRequest: {
             /** Entries */
             entries?: (components["schemas"]["RuleDTO"] | components["schemas"]["RawBlockDTO"])[];
+            /**
+             * Preamble
+             * @default
+             */
+            preamble: string;
             /** Requires */
             requires?: string[];
+            /**
+             * Requires Source
+             * @default
+             */
+            requires_source: string;
+            /**
+             * Tail
+             * @default
+             */
+            tail: string;
         };
         /** ScriptListItem */
         ScriptListItem: {
@@ -545,8 +570,23 @@ export interface components {
         ScriptResponse: {
             /** Entries */
             entries?: (components["schemas"]["RuleDTO"] | components["schemas"]["RawBlockDTO"])[];
+            /**
+             * Preamble
+             * @default
+             */
+            preamble: string;
             /** Requires */
             requires?: string[];
+            /**
+             * Requires Source
+             * @default
+             */
+            requires_source: string;
+            /**
+             * Tail
+             * @default
+             */
+            tail: string;
         };
         /** ValidationError */
         ValidationError: {

@@ -345,6 +345,12 @@
             "title": "Kind",
             "type": "string"
           },
+          "source": {
+            "default": "",
+            "maxLength": 65536,
+            "title": "Source",
+            "type": "string"
+          },
           "text": {
             "default": "",
             "maxLength": 65536,
@@ -401,6 +407,12 @@
             "maxLength": 200,
             "title": "Name",
             "type": "string"
+          },
+          "source": {
+            "default": "",
+            "maxLength": 65536,
+            "title": "Source",
+            "type": "string"
           }
         },
         "title": "RuleDTO",
@@ -449,6 +461,12 @@
             "title": "Entries",
             "type": "array"
           },
+          "preamble": {
+            "default": "",
+            "maxLength": 65536,
+            "title": "Preamble",
+            "type": "string"
+          },
           "requires": {
             "items": {
               "type": "string"
@@ -456,6 +474,18 @@
             "maxItems": 64,
             "title": "Requires",
             "type": "array"
+          },
+          "requires_source": {
+            "default": "",
+            "maxLength": 8192,
+            "title": "Requires Source",
+            "type": "string"
+          },
+          "tail": {
+            "default": "",
+            "maxLength": 65536,
+            "title": "Tail",
+            "type": "string"
           }
         },
         "title": "SaveScriptRequest",
@@ -521,12 +551,30 @@
             "title": "Entries",
             "type": "array"
           },
+          "preamble": {
+            "default": "",
+            "maxLength": 65536,
+            "title": "Preamble",
+            "type": "string"
+          },
           "requires": {
             "items": {
               "type": "string"
             },
             "title": "Requires",
             "type": "array"
+          },
+          "requires_source": {
+            "default": "",
+            "maxLength": 8192,
+            "title": "Requires Source",
+            "type": "string"
+          },
+          "tail": {
+            "default": "",
+            "maxLength": 65536,
+            "title": "Tail",
+            "type": "string"
           }
         },
         "title": "ScriptResponse",
