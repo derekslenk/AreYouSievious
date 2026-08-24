@@ -96,10 +96,20 @@ def test_the_name_is_emitted_outside_the_commented_block() -> None:
 def test_the_legacy_poisoned_shape_is_normalised_on_the_way_in() -> None:
     """Scripts already carry the old shape, and we do not own the file.
 
-    A Rule saved by any previous version reads back as `# --- name`. The
-    reader accepts both spellings and normalises, so opening a poisoned script
-    shows the right name and saving it writes the clean shape — the accretion
-    unwinds rather than being frozen at whatever depth it reached.
+    A Rule saved by any previous version reads back as `# --- name`. The reader
+    accepts both spellings and normalises, so opening a poisoned script shows
+    the right name.
+
+    Normalisation happens ON THE WAY IN, and only there. An UNEDITED save now
+    re-emits the original bytes — the poisoned line comes back exactly as it
+    was — because a file nobody asked us to change is not one we rewrite. The
+    clean shape appears on the REGENERATING path: edit the rule and the
+    accretion unwinds to `# --- name ---`.
+
+    That is still a fix rather than a freeze, and the reason is the accretion's
+    mechanism: every deepening required a rewrite on every save, and there is
+    no longer a rewrite on every save. The shape stops getting worse whether or
+    not anyone edits it, and is corrected the moment anyone does.
     """
     legacy = """require ["fileinto"];
 

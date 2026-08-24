@@ -284,13 +284,17 @@ def test_parse_then_save_with_no_edits_is_byte_identical(path: Path):
     from both sides and it passed vacuously. This compares BYTES, which is the
     only comparison a user can check by looking at their file.
 
-    ONE SHAPE OF FILE IS EXEMPT, and deliberately: a file with no `require`
-    statement whose entries nonetheless need one. There is no `requires_source`
-    to re-emit, so the generator takes the computed set and prepends a canonical
-    `require [...];` — the save is a byte for byte match except for that added
-    line. `test_a_file_missing_its_require_gains_one_and_that_is_correct` pins
-    it and says why adding the line beats preserving the file. No fixture has
-    that shape, which is why this property holds over the whole corpus.
+    TWO SHAPES OF FILE ARE EXEMPT, and both deliberately. Neither can occur in
+    the corpus, which is why this property holds over all of it:
+
+      - A file with no `require` statement whose entries nonetheless need one.
+        There is no `requires_source` to re-emit, so the generator takes the
+        computed set and prepends a canonical `require [...];` — the save
+        matches byte for byte except for that added line. Pinned by
+        `test_a_file_missing_its_require_gains_one_and_that_is_correct`, which
+        says why adding the line beats preserving the file.
+      - The empty file, which comes back as `"\n"`. Pinned by
+        `test_an_empty_script_saves_as_one_newline`.
     """
     text = path.read_text()
     assert st.generate_sieve(st.parse_sieve(text)) == text
@@ -348,3 +352,43 @@ def test_editing_one_rule_leaves_every_other_line_alone(path: Path):
             continue
         assert entry.source.strip() in out, f"entry {i} was rewritten and should not have been"
     assert script.preamble in out
+
+
+def test_an_empty_script_saves_as_one_newline():
+    """The second exception to "an unedited save is byte-identical".
+
+    `""` in, `"\\n"` out. Both `generate`'s early return and its main path end
+    `... or "\\n"`, so a script with nothing in it produces a single newline
+    rather than an empty file. This is the OLD generator's behaviour, unchanged
+    by spans — not a regression this branch introduced — and it is pinned here
+    only so the exception list beside the acceptance property is complete
+    rather than partial. No corpus fixture is empty (`CORPUS` filters on
+    `st_size > 0`), so this cannot reach the parametrized property.
+    """
+    assert st.parse_sieve("").entries == []
+    assert st.generate_sieve(st.parse_sieve("")) == "\n"
+
+
+def test_an_empty_raw_block_last_does_not_leave_a_dangling_blank_line():
+    """`generate`'s trailing-newline branch, which only the WIRE can reach.
+
+    It is a no-op for anything the parser produces: `_canonical_span` returns
+    `body.strip("\\n") + "\\n"`, so a regenerated last entry already leaves `out`
+    ending in exactly one newline. But `RawBlockDTO.text` defaults to `""`, so
+    `{"kind": "raw"}` is a valid entry on the wire, its canonical span is a
+    bare `"\\n"`, and `_join` strips that to nothing — leaving the seam's blank
+    line dangling at the end of the file.
+
+    Measured rather than argued: deleting the branch changes this save's output
+    from one trailing newline to two, and the whole suite stayed green either
+    way. That silence is why this test exists.
+    """
+    script = st.SieveScript(
+        entries=[
+            st.Rule(name="A", actions=[st.Action(action_type="stop")]),
+            st.RawBlock(text=""),
+        ]
+    )
+    out = st.generate_sieve(script)
+    assert out.endswith("}\n"), repr(out)
+    assert not out.endswith("\n\n"), "the seam's blank line was left dangling"

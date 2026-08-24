@@ -1127,6 +1127,16 @@ class SieveGenerator:
         if verbatim and not verbatim[-1]:
             # The last entry regenerated, so its separation from the tail is
             # ours to settle. The tail itself is still appended as it stands.
+            #
+            # This is a no-op for every entry the PARSER can produce:
+            # `_canonical_span` returns `body.strip("\n") + "\n"`, so `out`
+            # already ends in exactly one newline. It is live for one entry the
+            # WIRE can produce — `RawBlockDTO.text` defaults to `""`, so
+            # `{"kind": "raw"}` is a valid entry whose canonical span is a bare
+            # "\n", `_join` strips that to nothing and leaves the seam's blank
+            # line dangling at the end of the file. Without this line that save
+            # ends "\n\n". Pinned by
+            # test_verbatim_reemission.py::test_an_empty_raw_block_last_does_not_leave_a_dangling_blank_line.
             out = out.rstrip("\n") + "\n"
         return (out + script.tail) or "\n"
 
@@ -1581,11 +1591,22 @@ def preflight_error(script: SieveScript) -> str | None:
 
 
 def generate_rule(rule: Rule) -> str:
-    """The Sieve one Rule contributes to a script, byte for byte.
+    """The house-style Sieve one Rule renders to, byte for byte.
 
-    Goes through the same `SieveGenerator.generate_entry` a save does, so a
-    preview cannot say one thing and a save write another. Note what this does
-    NOT include: the `require [...]` line, which is a property of the whole
-    script rather than of any one Rule.
+    Goes through the same `SieveGenerator.generate_entry` a regenerating save
+    does — one generator, not two. That sharing is the whole point of
+    areyousievious-8fg.17: the SPA used to carry `previewRule`, a second
+    implementation that had already diverged five ways from this one.
+
+    THIS IS NOT ALWAYS THE BYTES A SAVE WRITES, and since
+    areyousievious-8fg.14 it is not meant to be. A save re-emits an UNEDITED
+    Rule's original span verbatim and never reaches this function; only an
+    edited Rule takes the regenerating path. So what a preview shows is the
+    text a Rule would take IF IT WERE EDITED — which is exactly the disclosure
+    it is for, since the reformatting is what the user has not committed to
+    yet. An untouched Rule keeps its own bytes.
+
+    Note what this does NOT include: the `require [...]` line, which is a
+    property of the whole script rather than of any one Rule.
     """
     return SieveGenerator().generate_entry(rule)
