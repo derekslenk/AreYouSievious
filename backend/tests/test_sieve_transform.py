@@ -23,7 +23,7 @@ import pytest
 import sieve_transform as st
 from sievelib.parser import Parser as SieveLibParser
 
-from tests.conftest import CORPUS, corpus_id, corpus_params
+from tests.conftest import COMPARATOR_3O4, CORPUS, corpus_id, corpus_params
 
 BACKEND = Path(__file__).resolve().parent.parent
 
@@ -102,7 +102,7 @@ def _without_spans(entries: list[st.Entry]) -> list[st.Entry]:
         {
             # This test uses sievelib as its "and still valid Sieve" oracle, and
             # the declared collation is what sievelib refuses.
-            "modifiers-comparator-declared.sieve": "areyousievious-3o4: sievelib's comparator whitelist refuses the collation i;ascii-numeric, so our pre-flight refuses a name RFC 5228 §2.7.3 mandates a require for",
+            "modifiers-comparator-declared.sieve": COMPARATOR_3O4,
         }
     ),
 )

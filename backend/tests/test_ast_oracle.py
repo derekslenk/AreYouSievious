@@ -60,7 +60,7 @@ import pytest
 import sieve_transform as st
 from sievelib.parser import Parser as SieveLibParser
 
-from tests.conftest import CORPUS, CORPUS_ROOT, corpus_id, corpus_params
+from tests.conftest import COMPARATOR_3O4, CORPUS, CORPUS_ROOT, corpus_id, corpus_params
 
 _QUOTED = re.compile(r'"((?:[^"\\]|\\.)*)"')
 _ESCAPE = re.compile(r"\\(.)", re.DOTALL)
@@ -330,11 +330,7 @@ def test_the_preflight_judges_only_regenerated_spans() -> None:
 
 @pytest.mark.parametrize(
     "path",
-    corpus_params(
-        {
-            "modifiers-comparator-declared.sieve": "areyousievious-3o4: sievelib's comparator whitelist refuses the collation i;ascii-numeric, so our pre-flight refuses a name RFC 5228 §2.7.3 mandates a require for"
-        }
-    ),
+    corpus_params({"modifiers-comparator-declared.sieve": COMPARATOR_3O4}),
 )
 def test_no_fixture_is_refused_by_its_own_preflight(path: Path) -> None:
     """The pre-flight is mandatory on the save path, so a false positive is a

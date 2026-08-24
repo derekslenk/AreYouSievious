@@ -66,9 +66,9 @@ Keep that pattern. A fixture that reproduces a defect belonging to another bead 
 truthful and pinned, never edited until it passes.
 
 `modifiers-comparator-declared.sieve` is the current one, pinned to **areyousievious-3o4**
-across four tests — three as per-fixture `xfail(strict=True)`, and one as a named set
-(`RULES_THE_ORACLE_REFUSES`), because that one asserts over the whole corpus in a single
-assertion. One root cause: sievelib's comparator whitelist holds `i;octet` and
+across five places — three as per-fixture `xfail(strict=True)`, and two as named sets
+(`UNREADABLE_BY_THE_ORACLE` in `test_ast_oracle.py` and `RULES_THE_ORACLE_REFUSES` in
+`test_lexical_map.py`), each asserting over the whole corpus in a single assertion. One root cause: sievelib's comparator whitelist holds `i;octet` and
 `i;ascii-casemap` and nothing else, so it refuses `i;ascii-numeric` — and our pre-flight, our
 round-trip validity oracle and our AST oracle all run through sievelib.
 

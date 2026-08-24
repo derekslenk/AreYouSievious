@@ -18,7 +18,7 @@ from pathlib import Path
 import pytest
 import sieve_transform as st
 
-from tests.conftest import corpus_params
+from tests.conftest import COMPARATOR_3O4, corpus_params
 from tests.fakes import FakeScriptStore
 
 BACKEND = Path(__file__).resolve().parent.parent
@@ -228,11 +228,7 @@ def test_the_endpoint_rejects_a_hostile_tail_without_writing(authed_client):
 
 @pytest.mark.parametrize(
     "path",
-    corpus_params(
-        {
-            "modifiers-comparator-declared.sieve": "areyousievious-3o4: sievelib's comparator whitelist refuses the collation i;ascii-numeric, so our pre-flight refuses a name RFC 5228 §2.7.3 mandates a require for"
-        }
-    ),
+    corpus_params({"modifiers-comparator-declared.sieve": COMPARATOR_3O4}),
 )
 def test_no_real_script_is_refused_by_the_boundary_guard(path: Path):
     """A guard that refuses a real script locks a user out of their own
@@ -796,9 +792,10 @@ def test_a_collation_name_carries_a_semicolon_and_must_still_save():
     so a user with an ordinary relational spam-score rule could open their
     script and never save it again.
 
-    NO CORPUS FIXTURE USES A RELATIONAL TEST, which is why all 63 stayed green
-    through it. The corpus is the oracle only for the shapes it contains, and
-    this test is here because that one is missing from it.
+    Until this branch no corpus fixture used a relational test, which is why
+    the corpus stayed green through it. The corpus is the oracle only for the
+    shapes it contains; `match-relational.sieve` was added to close that gap,
+    and this test pins the endpoint half of it.
     """
     script = st.parse_sieve(_RELATIONAL_SPAM_SCORE)
     assert "comparator-i;ascii-numeric" in script.requires, "premise: we harvested it"

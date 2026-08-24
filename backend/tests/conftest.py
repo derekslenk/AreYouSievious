@@ -69,6 +69,16 @@ def corpus_id(path: Path) -> str:
     return str(path.relative_to(CORPUS_ROOT))
 
 
+# The one reason string shared by every `areyousievious-3o4` pin. It lives here,
+# beside `corpus_params`, so the three call sites cannot drift — the failure mode
+# the reviewer of PR #67 flagged, and the same drift `corpus_params` itself exists
+# to prevent. When 3o4 is fixed, the strict xfails XPASS-fail and demand removal.
+COMPARATOR_3O4 = (
+    "areyousievious-3o4: sievelib's comparator whitelist refuses the collation "
+    "i;ascii-numeric, so our pre-flight refuses a name RFC 5228 \u00a72.7.3 mandates a require for"
+)
+
+
 def corpus_params(known_red: dict[str, str] | None = None) -> list[object]:
     """Every fixture as a param, xfailing the ones with a defect someone owns.
 

@@ -1701,8 +1701,8 @@ def _unwritable_byte_error(script: SieveScript) -> str | None:
     Task 7 bug — hostile bytes, no entries, 200 — one field along.
 
     `[A-Za-z0-9][A-Za-z0-9._;/-]*` matched in FULL is a shape, not a list of
-    names, so an extension nobody here has heard of still saves; all 15 declared
-    across the 63 corpus fixtures match it, `vacation-seconds` and `imap4flags`
+    names, so an extension nobody here has heard of still saves; all 16 declared
+    across the corpus fixtures match it, `vacation-seconds` and `imap4flags`
     included. It subsumes the byte checks for this one field, since CR, LF and
     NUL are all outside the class. The interpolation is escaped as well, because
     every other string this generator writes is, and a guard that happens to sit
@@ -1716,7 +1716,7 @@ def _unwritable_byte_error(script: SieveScript) -> str | None:
     relational spam-score rule could open their script and never save it again.
     `_compute_requires` WRITES THAT NAME ITSELF, so the pre-flight was rejecting
     our own generator's output. No corpus fixture held a relational test or a
-    declared collation, which is exactly why all 63 stayed green: the corpus is
+    declared collation, which is exactly why the corpus stayed green: it is
     the oracle only for shapes it contains. Both shapes are in it now —
     `match-relational.sieve` and `modifiers-comparator-declared.sieve`, added by
     areyousievious-gey — so the corpus can fail for this reason today, and the
