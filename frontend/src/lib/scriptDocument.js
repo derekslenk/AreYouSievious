@@ -363,13 +363,14 @@ export function moveRule(doc, from, to) {
 }
 
 /**
- * Patch fields on the entry with render key `key`. Entries NOT being patched
- * are carried over through `cloneEntry`, so they no longer share mutable
- * objects with `doc`. The patched entry itself stays a shallow `{...e,
- * ...patch}`: it is already a new object, and `setConditions`/`setActions`
- * rely on that shallowness to chain — `setActions(setConditions(doc, key,
- * conds), key, acts)` must still hand back the exact `conds` reference,
- * which a clone here would silently replace with a copy.
+ * Patch fields on the entry with render key `key`. Every entry in the result
+ * — the patched one and every entry carried over untouched — goes through
+ * `cloneEntry`. For the patched entry that means merging `patch` in FIRST
+ * and cloning the merged object, not cloning `e` and spreading `patch` on
+ * top: the latter would leave a caller-supplied `patch` value (e.g. the
+ * array `setConditions`/`setActions` just built) aliased into the returned
+ * document, which is the same sharing bug in the other direction — a caller
+ * that goes on to mutate its own array would reach into the document.
  * @param {ScriptDocument} doc
  * @param {string} key
  * @param {object} patch
@@ -378,7 +379,7 @@ export function moveRule(doc, from, to) {
 export function updateEntry(doc, key, patch) {
   return {
     ...doc,
-    entries: doc.entries.map((e) => (e.key === key ? { ...e, ...patch } : cloneEntry(e))),
+    entries: doc.entries.map((e) => cloneEntry(e.key === key ? { ...e, ...patch } : e)),
   };
 }
 
