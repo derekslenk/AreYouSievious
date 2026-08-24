@@ -365,29 +365,29 @@ def test_the_normaliser_folds_case_and_nothing_else(change: tuple[str, str], fla
 # ── What the oracle sees that we do not (areyousievious-hr6) ──
 
 
-def test_a_bracketed_comment_swallows_the_live_rule_after_it() -> None:
-    """The divergence measured rather than described, and it is not the
-    divergence the first version of this test claimed.
+def test_a_bracketed_comment_no_longer_swallows_the_live_rule_after_it() -> None:
+    """The fix for areyousievious-hr6, pinned against the shape it replaced.
 
     `lexical-bracket-comment-scope.sieve` holds three `if` blocks: A live, B
     inside a `/* ... */`, C live. sievelib — the closest thing here to what the
-    server will do — executes A and C and correctly leaves B out. We produce
-    three entries, but NOT the three anyone would guess:
+    server will do — executes A and C and correctly leaves B out.
+
+    This fixture was added to pin the BROKEN split so the fix would have
+    something to move:
 
         [Rule("live") = A,  RawBlock("/*"),  RawBlock(B + "*/" + C)]
 
-    So B is not a Rule we show as live; it is raw text, and an earlier version
-    of this docstring was wrong to say the UI presents it as a running filter.
-    The real harm is the entry after it: **the live rule C is fused into the
-    same opaque block as the commented-out B**, along with its own
-    `# --- also live ---` name. C runs on the server and is uneditable here —
-    the builder cannot show it, name it or reorder it on its own — and any move
-    of that entry carries a disabled rule and a live one together as one lump.
+    The live rule C was fused into the opaque block with the commented-out B
+    and its own `# --- also live ---` name, so a rule the server runs could not
+    be shown, named or reordered on its own. Now the parser consumes the whole
+    `/* ... */` as one entry and C is a Rule again:
 
-    `/*` and `*/` also land in separate entries, so reordering can carry a Rule
-    into or out of the commented region. That is bead areyousievious-hr6,
-    pre-existing on main. Green on purpose: it pins the CURRENT shape so the fix
-    has something to move, and asserts nothing about that shape being right.
+        [Rule("live") = A,  RawBlock("/* ... */"),  Rule("also live") = C]
+
+    B stays raw text inside the comment's entry, which is correct — it is a
+    comment, and the server does not run it. What this asserts is the thing
+    that changed: our projection and sievelib now agree on which rules are
+    live.
     """
     text = (CORPUS_ROOT / "lexical-bracket-comment-scope.sieve").read_text()
     script = st.parse_sieve(text)
@@ -395,19 +395,20 @@ def test_a_bracketed_comment_swallows_the_live_rule_after_it() -> None:
     assert text.count('fileinto "') == 3, "premise: three filing actions are written down"
 
     # The SPLIT, not just the count — a count of three holds for any three
-    # entries, including the tidy split this does not produce.
-    assert [type(e).__name__ for e in script.entries] == ["Rule", "RawBlock", "RawBlock"], (
+    # entries, including the broken split this used to produce.
+    assert [type(e).__name__ for e in script.entries] == ["Rule", "RawBlock", "Rule"], (
         f"the split moved: {[type(e).__name__ for e in script.entries]}"
     )
-    first, opener, fused = script.entries
+    first, comment, after = script.entries
     assert first.name == "live" and [a.argument for a in first.actions] == ["A"]
-    assert opener.source.strip() == "/*", "the comment's opener is an entry all of its own"
-    assert '"B"' in fused.source and "*/" in fused.source, "the commented-out rule is in here"
-    assert '"C"' in fused.source, (
-        "and so is the LIVE rule after it — this is the hazard, not the display: "
-        "C runs on the server and cannot be edited, named or reordered alone"
+    assert comment.source.lstrip().startswith("/*") and "*/" in comment.source, (
+        "the whole bracketed comment is ONE entry, opener and closer together"
     )
-    assert "also live" in fused.source, "C's own name comment went into the lump with it"
+    assert '"B"' in comment.source, "the commented-out rule stays inside the comment's entry"
+    assert after.name == "also live" and [a.argument for a in after.actions] == ["C"], (
+        "the LIVE rule after the comment is a Rule again — editable, nameable, "
+        "reorderable on its own, which is the whole of areyousievious-hr6"
+    )
 
     parser = SieveLibParser()
     assert parser.parse(text.encode()), "premise: this is valid Sieve"

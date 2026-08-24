@@ -9,7 +9,7 @@ The Sieve fixture corpus. These are not samples for reading — `tests/test_siev
 ## Layout
 | Path | Description |
 |------|-------------|
-| `*.sieve` | Tier A: three scripts captured from real servers, plus eighteen hand-written files holding one construct family each |
+| `*.sieve` | Tier A: three scripts captured from real servers, plus twenty hand-written files holding one construct family each |
 | `vendor/*.sieve` | Tier B: sievelib's own parser corpus, vendored under MIT. A recogniser-reach benchmark, not a wish list |
 | `vendor/LICENSE-sievelib` | Attribution and licence for everything under `vendor/` |
 
@@ -42,7 +42,9 @@ One construct family per file, so "what does the parser do with X" has a single 
 | `lexical-commented-action.sieve` | A commented-out action inside a live block, which must stay commented out (`.10`) |
 | `modifiers-comparator-declared.sieve` | A collation outside the two RFC 5228 built-ins, so `require ["comparator-i;ascii-numeric"]` is mandatory. Red: **areyousievious-3o4** |
 | `match-relational.sieve` | A `:value "gt"` relational test — unmodelled, so a `RawBlock`. Carries `i;ascii-casemap` DELIBERATELY: under `i;ascii-numeric` it lands in `UNREADABLE_BY_THE_ORACLE` for the same reason as the fixture above and the oracle never sees its relational-ness at all |
-| `lexical-bracket-comment-scope.sieve` | A `/* */` comment whose scope crosses entries: live rule, commented-out rule, live rule. Green, and it documents **areyousievious-hr6** |
+| `lexical-bracket-comment-scope.sieve` | A `/* */` comment whose scope crosses entries: live rule, commented-out rule, live rule. Documents **areyousievious-hr6**, and green since the parser learned bracketed comments |
+| `bracketed-comment-between-rules.sieve` | A `/* ... */` between two live rules and another after the last one — the live rule below a comment used to be fused into the comment's `RawBlock` (`hr6`) |
+| `bracketed-comment-at-file-start.sieve` | A `/* ... */` before anything else, which is where the preamble boundary is easiest to get wrong (`hr6`) |
 
 ## For AI Agents
 

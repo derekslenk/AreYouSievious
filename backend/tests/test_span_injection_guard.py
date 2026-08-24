@@ -237,7 +237,7 @@ def test_no_real_script_is_refused_by_the_boundary_guard(path: Path):
     This is the test that stops this from being the `.13` failure again: a
     whole-script validator false-rejects forever on any extension sievelib
     lacks. `_boundary_error` runs OUR parser over the head and tail only, so it
-    does not inherit that — and 63 real scripts, 42 of which parse to no Rule
+    does not inherit that — and 65 real scripts, 42 of which parse to no Rule
     at all, are the evidence rather than the argument.
     """
     assert st.preflight_error(st.parse_sieve(path.read_text())) is None
