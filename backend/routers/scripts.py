@@ -141,6 +141,14 @@ def save_script(name: str, req: SaveScriptRequest, store: ScriptStore = Depends(
     does not know `include`, `addheader` or `spamtest` though real servers do,
     so validating the whole script would refuse working scripts over a
     construct we never touched.
+
+    THE SAME PRE-FLIGHT ALSO GUARDS THE VERBATIM BOUNDARY BYTES
+    (areyousievious-8fg.14). `preamble`, `requires_source` and `tail` arrive on
+    the wire and are written to the mail server unaltered, and unlike an
+    entry's `source` they have no entry to be compared against — so
+    `preflight_error` additionally refuses a head that parses to anything but
+    the requires we declare, and a tail that carries a statement at all. This
+    is the only call site: one request, one gate.
     """
     script = json_to_script(req.model_dump())
     problem = preflight_error(script)
