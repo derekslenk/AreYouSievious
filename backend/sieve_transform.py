@@ -1591,7 +1591,7 @@ def preflight_error(script: SieveScript) -> str | None:
 
 
 def generate_rule(rule: Rule) -> str:
-    """The house-style Sieve one Rule renders to, byte for byte.
+    """The house-style Sieve one Rule renders to.
 
     Goes through the same `SieveGenerator.generate_entry` a regenerating save
     does — one generator, not two. That sharing is the whole point of
@@ -1607,6 +1607,9 @@ def generate_rule(rule: Rule) -> str:
     yet. An untouched Rule keeps its own bytes.
 
     Note what this does NOT include: the `require [...]` line, which is a
-    property of the whole script rather than of any one Rule.
+    property of the whole script rather than of any one Rule — nor the trailing
+    newline, which `_canonical_span` appends when a save places this text among
+    its neighbours. Preview shows a Rule on its own, so it has no neighbours and
+    no separator to settle.
     """
     return SieveGenerator().generate_entry(rule)

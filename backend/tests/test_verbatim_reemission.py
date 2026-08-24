@@ -335,35 +335,42 @@ FIXTURES_WITH_A_RULE = 21
 
 
 def test_the_editing_property_reaches_exactly_the_fixtures_it_claims_to():
-    """A tripwire on the skip above, so the coverage cap can only move on purpose.
+    """Write the coverage cap down where someone will see it.
 
     42 of the 63 fixtures parse to no `Rule` at all — `vendor/` extension cases
     and deliberate raw fixtures that become `RawBlock`s by design — so
     `test_editing_one_rule_leaves_every_other_line_alone` skips them. Correct,
-    and not something to remove.
+    and not something to remove. But a skip reason only surfaces under `-rs`,
+    so nothing in a normal run says that this feature's headline behaviour is
+    checked on a third of the corpus. This test is that sentence, in a place a
+    reader lands on.
 
-    What is worth guarding is the DIRECTION of that number. This parser's
-    defects have been failures to recognise rather than failures to parse: it
-    succeeded and misread (`.13`, `.15`, the narrowing projection in `#64`).
-    A change of that shape would quietly move fixtures OUT of the recognised
-    set, into the skip bucket, and the editing property would erode with
-    nothing going red — the suite would still report the same number of passes.
-    Pinning the count makes that erosion a failure.
+    IT IS NOT THE REGRESSION DETECTOR, and an earlier version of this docstring
+    wrongly claimed it was. `test_sieve_transform.py::test_recognition_does_not_regress`
+    already pins `(len(rules), len(raw_blocks))` for every one of the 63 in
+    `RECOGNITION_CENSUS`, parametrized and strict. A fixture that stopped
+    yielding Rules fails THERE first and by name, which is strictly more useful
+    than watching this count slide 21 to 20. Expect the census to have named the
+    culprit before anyone reads this.
 
-    This pins a count, NOT a blessing. Several fixtures are outside the
+    This pins a count, NOT a blessing. Several fixtures sit outside the
     recognised set for reasons someone owns — `vendor/bracket-comment.sieve`
     parses to a single whole-file `RawBlock` because bracketed comments are
-    unmodelled, which is bead areyousievious-hr6 and pre-existing on main. If a
-    fix moves a fixture INTO the set, this test fails too; update the number,
-    which is the point of it being written down.
+    unmodelled, which is bead areyousievious-hr6 and pre-existing on main.
+
+    Nor does with-Rule/without-Rule measure how much the byte-identical property
+    constrains: forcing the verbatim path off fails 34 of the 63, and 21 of
+    those 34 have no Rule at all. Half the RawBlock-only fixtures do bind the
+    verbatim path, because their canonical rendering differs from their bytes.
+    The two splits are unrelated; this one is about the EDITING property only.
     """
     assert len(CORPUS) == 63, "the corpus changed size — recount before editing the number below"
-    with_a_rule = [p for p in CORPUS if st.parse_sieve(p.read_text()).rules]
+    with_a_rule = sorted(corpus_id(p) for p in CORPUS if st.parse_sieve(p.read_text()).rules)
     assert len(with_a_rule) == FIXTURES_WITH_A_RULE, (
         "the number of fixtures parsing to at least one Rule moved: "
-        f"{len(with_a_rule)} now, {FIXTURES_WITH_A_RULE} pinned. If recognition IMPROVED, "
-        "raise the number. If it REGRESSED, that is the defect this test exists to catch — "
-        f"missing: {sorted(corpus_id(p) for p in with_a_rule)}"
+        f"{len(with_a_rule)} now, {FIXTURES_WITH_A_RULE} pinned. If recognition IMPROVED, raise "
+        "the number. If it REGRESSED, read test_recognition_does_not_regress first — it names the "
+        f"fixture. Currently recognised: {with_a_rule}"
     )
 
 
