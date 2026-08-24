@@ -1529,6 +1529,23 @@ def span_is_faithful(entry: Entry) -> bool:
     It fails CLOSED. Every path that cannot vouch for the span returns False
     and the caller regenerates, which is correct but reformats — the failure
     mode is a cosmetic loss, never a wrong filter.
+
+    THE LEADING/TRAILING ASYMMETRY IS DELIBERATE. A span may carry comment and
+    blank lines ABOVE the entry beyond the one absorbed as its name, and may not
+    carry so much as a blank line BELOW it. That is not an oversight to be
+    tidied up: the leading gap is part of the span on purpose, because that is
+    what makes a reordered Rule take its `# --- name ---` — and any comment the
+    user wrote above it — along to its new position. Re-parsing a span with a
+    leading gap yields one entry and no preamble, precisely because the parser
+    puts that gap inside the entry. A TRAILING gap is different in kind: bytes
+    after an entry belong to whatever comes next, or to the file's tail, so a
+    span claiming them re-parses with a non-empty tail and is refused. Making
+    the two sides symmetrical breaks reordering, which is a core requirement.
+
+    The `not entry.source` line below is a REDUNDANT fast path, kept for
+    clarity. An empty span parses to zero entries, so `len(...) != 1` already
+    refuses it — deleting the line changes no result. It is marked so the next
+    reader does not spend time working out which case it uniquely catches.
     """
     if not entry.source:
         return False

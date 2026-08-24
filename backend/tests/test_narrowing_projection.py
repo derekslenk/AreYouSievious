@@ -36,6 +36,8 @@ from pathlib import Path
 import pytest
 import sieve_transform as st
 
+from tests.conftest import CORPUS
+
 BACKEND = Path(__file__).resolve().parent.parent
 
 
@@ -342,7 +344,7 @@ def test_every_rule_in_the_corpus_uses_only_modelled_constructs() -> None:
     silently, so nothing but a sweep like this would say so.
     """
     offenders = []
-    for path in sorted((BACKEND / "test_scripts").rglob("*.sieve")):
+    for path in CORPUS:
         text = _without_requires(path.read_text())
         script = st.parse_sieve(path.read_text())
         if not script.rules:

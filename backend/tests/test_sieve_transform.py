@@ -23,6 +23,8 @@ import pytest
 import sieve_transform as st
 from sievelib.parser import Parser as SieveLibParser
 
+from tests.conftest import CORPUS, corpus_id
+
 BACKEND = Path(__file__).resolve().parent.parent
 
 # ── Fixture corpus (areyousievious-8fg.3) ──
@@ -42,9 +44,9 @@ BACKEND = Path(__file__).resolve().parent.parent
 #                                test_vendor_corpus_reach_is_pinned rather than
 #                                asserted in a comment that can rot.
 
-FIXTURE_ROOT = BACKEND / "test_scripts"
-TEST_SCRIPTS = sorted(p for p in FIXTURE_ROOT.rglob("*.sieve") if p.stat().st_size > 0)
-VENDOR_SCRIPTS = [p for p in TEST_SCRIPTS if p.parent.name == "vendor"]
+# The corpus itself lives in `tests/conftest.py` — one definition, because it
+# is the oracle every property in this suite is asserted over.
+VENDOR_SCRIPTS = [p for p in CORPUS if p.parent.name == "vendor"]
 
 
 def _corpus(known_red: dict[str, str] | None = None) -> list[object]:
@@ -57,8 +59,8 @@ def _corpus(known_red: dict[str, str] | None = None) -> list[object]:
     """
     red = known_red or {}
     params = []
-    for path in TEST_SCRIPTS:
-        fixture_id = str(path.relative_to(FIXTURE_ROOT))
+    for path in CORPUS:
+        fixture_id = corpus_id(path)
         marks = (
             [pytest.mark.xfail(strict=True, reason=red[fixture_id])] if fixture_id in red else []
         )
@@ -251,7 +253,7 @@ RECOGNITION_CENSUS = {
 @pytest.mark.parametrize("path", _corpus())
 def test_recognition_does_not_regress(path: Path) -> None:
     """Every fixture keeps its recognised rules/raw split; new fixtures must be censused."""
-    fixture_id = str(path.relative_to(FIXTURE_ROOT))
+    fixture_id = corpus_id(path)
     assert fixture_id in RECOGNITION_CENSUS, (
         f"{fixture_id}: uncensused fixture — measure (len(rules), len(raw_blocks)) "
         "and add it to RECOGNITION_CENSUS"
@@ -332,7 +334,7 @@ def test_the_corpus_exercises_every_supported_construct() -> None:
     comparators: set[str] = set()
     negated = disabled = address_tests = header_tests = bare_ifs = wrapped_ifs = raw_blocks = 0
 
-    for path in TEST_SCRIPTS:
+    for path in CORPUS:
         script = st.parse_sieve(path.read_text())
         raw_blocks += len(script.raw_blocks)
         for rule in script.rules:
@@ -589,7 +591,7 @@ def test_parse_does_not_redos_on_unterminated_action_string() -> None:
 # user rules on save/load through the API.
 
 
-@pytest.mark.parametrize("path", TEST_SCRIPTS, ids=lambda p: p.name)
+@pytest.mark.parametrize("path", CORPUS, ids=corpus_id)
 def test_json_round_trip_stable(path: Path) -> None:
     """parse -> script_to_json -> json_to_script -> generate must produce
     the same Sieve text as parse -> generate (direct path).

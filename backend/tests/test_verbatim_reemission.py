@@ -17,6 +17,8 @@ from pathlib import Path
 import pytest
 import sieve_transform as st
 
+from tests.conftest import CORPUS, corpus_id
+
 
 def test_new_entries_carry_an_empty_span():
     """A Rule the builder minted was never parsed from anything, so it has no
@@ -56,18 +58,6 @@ def test_raw_block_spans_survive_the_json_round_trip():
     assert back.entries[0].source == "\nkeep;\n"
 
 
-BACKEND = Path(__file__).resolve().parent.parent
-
-# The same corpus definition, filter included, as `test_sieve_transform.py`'s
-# TEST_SCRIPTS. It excludes nothing today — there is no empty fixture — and it
-# is kept only so the two suites are parametrized over provably the same set,
-# which is what lets Task 5 lift ONE definition into a conftest fixture rather
-# than reconcile two that had drifted. The empty file is a real case for this
-# decomposition and is covered directly, by `test_an_empty_file_is_all_tail`,
-# rather than by dropping the filter here and diverging.
-FIXTURES = sorted(p for p in (BACKEND / "test_scripts").rglob("*.sieve") if p.stat().st_size > 0)
-
-
 def _reassemble(script: st.SieveScript) -> str:
     return (
         script.preamble
@@ -77,9 +67,7 @@ def _reassemble(script: st.SieveScript) -> str:
     )
 
 
-@pytest.mark.parametrize(
-    "path", FIXTURES, ids=lambda p: str(p.relative_to(BACKEND / "test_scripts"))
-)
+@pytest.mark.parametrize("path", CORPUS, ids=corpus_id)
 def test_the_spans_reassemble_the_original_file(path: Path):
     """Every byte belongs to exactly one span.
 
@@ -146,7 +134,7 @@ def test_a_file_of_nothing_but_blank_lines_is_all_tail():
 
 def test_an_empty_file_is_all_tail():
     """`""` in, `""` out. The degenerate end of the decomposition, and the case
-    the `st_size > 0` filter on FIXTURES would otherwise leave unasserted."""
+    the `st_size > 0` filter on `CORPUS` would otherwise leave unasserted."""
     script = st.parse_sieve("")
     assert script.entries == []
     assert _reassemble(script) == ""
@@ -282,3 +270,81 @@ def test_generation_scales_linearly_in_the_number_of_entries():
 
     small, large = elapsed(100), elapsed(400)
     assert large < small * 8, f"4x the entries cost {large / small:.1f}x the time"
+
+
+# ── The acceptance property ──
+
+
+@pytest.mark.parametrize("path", CORPUS, ids=corpus_id)
+def test_parse_then_save_with_no_edits_is_byte_identical(path: Path):
+    """The bead's acceptance criterion.
+
+    The old `generate(parse(x))` property could not express this: it compared
+    two parsed structures, so anything the parser did not understand was absent
+    from both sides and it passed vacuously. This compares BYTES, which is the
+    only comparison a user can check by looking at their file.
+
+    ONE SHAPE OF FILE IS EXEMPT, and deliberately: a file with no `require`
+    statement whose entries nonetheless need one. There is no `requires_source`
+    to re-emit, so the generator takes the computed set and prepends a canonical
+    `require [...];` — the save is a byte for byte match except for that added
+    line. `test_a_file_missing_its_require_gains_one_and_that_is_correct` pins
+    it and says why adding the line beats preserving the file. No fixture has
+    that shape, which is why this property holds over the whole corpus.
+    """
+    text = path.read_text()
+    assert st.generate_sieve(st.parse_sieve(text)) == text
+
+
+def test_a_file_missing_its_require_gains_one_and_that_is_correct():
+    """The one exception to "an unedited save is byte-identical".
+
+    `fileinto` without `require ["fileinto"];` is not a file we are declining to
+    reformat — it is invalid Sieve (RFC 5228 §2.10.5), and a real ManageSieve
+    server refuses to install it. Preserving it faithfully would hand the user
+    back a script their server will not take; adding the missing line makes it
+    installable. So this is the one place the generator writes a byte nobody
+    asked for, and it is strictly better than the alternative.
+
+    Deliberately NOT a corpus fixture: adding one would make
+    `test_parse_then_save_with_no_edits_is_byte_identical` fail, and the honest
+    fix would be exempting it there rather than here — which is how a documented
+    exception turns back into an undocumented hole.
+    """
+    text = 'if header :contains "subject" "box" {\n  fileinto "Box";\n}\n'
+    script = st.parse_sieve(text)
+    assert script.requires_source == "", "there is no require statement to re-emit"
+    assert script.requires == [], "and none was declared"
+
+    out = st.generate_sieve(script)
+    assert out == 'require ["fileinto"];\n' + text
+    # The rule itself still went out verbatim — the added line is the whole of
+    # the difference, not a regeneration of everything below it.
+    assert script.entries[0].source in out
+
+
+@pytest.mark.parametrize("path", CORPUS, ids=corpus_id)
+def test_editing_one_rule_leaves_every_other_line_alone(path: Path):
+    """The point of the whole feature, measured: change one Rule and count how
+    much of the file moved. Everything outside the edited rule must be
+    untouched, so the diff is bounded by that one entry."""
+    text = path.read_text()
+    script = st.parse_sieve(text)
+    rules = [i for i, e in enumerate(script.entries) if isinstance(e, st.Rule)]
+    if not rules:
+        pytest.skip("no Rule to edit in this fixture")
+    target = rules[0]
+    script.entries[target].name = script.entries[target].name + " (edited)"
+
+    out = st.generate_sieve(script)
+    # Assert on the ENTRIES, not on the head. Editing a rule puts the save on
+    # the regenerating path, where `require` goes out canonically and may
+    # legitimately differ from the bytes it was read from — asserting
+    # `out.startswith(preamble + requires_source + ...)` would fail on every
+    # fixture whose require line is not already in our house style, and the
+    # tempting "fix" is to weaken the test rather than read it.
+    for i, entry in enumerate(script.entries):
+        if i == target:
+            continue
+        assert entry.source.strip() in out, f"entry {i} was rewritten and should not have been"
+    assert script.preamble in out

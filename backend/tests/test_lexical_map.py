@@ -33,6 +33,8 @@ import sieve_transform as st
 from sievelib.parser import Lexer, Parser
 from sievelib.parser import ParseError as SieveLibParseError
 
+from tests.conftest import CORPUS, corpus_id
+
 BACKEND = Path(__file__).resolve().parent.parent
 
 
@@ -301,11 +303,7 @@ def test_the_fallback_is_narrow_by_construction() -> None:
         st._LexicalMap._scan("\ud800")
 
 
-@pytest.mark.parametrize(
-    "path",
-    sorted(p for p in (BACKEND / "test_scripts").rglob("*.sieve") if p.stat().st_size > 0),
-    ids=lambda p: str(p.relative_to(BACKEND / "test_scripts")),
-)
+@pytest.mark.parametrize("path", CORPUS, ids=corpus_id)
 def test_every_fixture_is_lexable(path: Path) -> None:
     """The fallback above is the safety net, not the plan. Every fixture —
     including all 45 third-party ones — must go through the real map, or the
@@ -365,7 +363,7 @@ def test_every_rule_we_recognise_is_sieve_sievelib_accepts() -> None:
     from sievelib.parser import Parser as SieveLibParser
 
     rejected = []
-    for path in sorted((BACKEND / "test_scripts").rglob("*.sieve")):
+    for path in CORPUS:
         script = st.parse_sieve(path.read_text())
         for rule in script.rules:
             alone = st.SieveScript(requires=list(script.requires), entries=[rule])

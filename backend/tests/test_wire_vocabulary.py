@@ -29,11 +29,8 @@ import pytest
 import sieve_transform as st
 from api_models import ScriptResponse
 
+from tests.conftest import CORPUS, corpus_id
 from tests.fakes import FakeScriptStore
-
-BACKEND = Path(__file__).resolve().parent.parent
-FIXTURES = sorted(p for p in (BACKEND / "test_scripts").rglob("*.sieve") if p.stat().st_size > 0)
-
 
 # ── The Literals say what the transform says ──
 
@@ -81,7 +78,7 @@ def test_a_new_action_type_would_fail_this_suite_rather_than_the_user() -> None:
 # ── Closing them must not break reading ──
 
 
-@pytest.mark.parametrize("path", FIXTURES, ids=lambda p: p.name)
+@pytest.mark.parametrize("path", CORPUS, ids=corpus_id)
 def test_every_fixture_survives_the_response_model(path: Path) -> None:
     """Parse a real script, serialise it, validate it as the route would.
 

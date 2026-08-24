@@ -60,8 +60,7 @@ import pytest
 import sieve_transform as st
 from sievelib.parser import Parser as SieveLibParser
 
-BACKEND = Path(__file__).resolve().parent.parent
-FIXTURES = sorted(p for p in (BACKEND / "test_scripts").rglob("*.sieve") if p.stat().st_size > 0)
+from tests.conftest import CORPUS, corpus_id
 
 _QUOTED = re.compile(r'"((?:[^"\\]|\\.)*)"')
 _ESCAPE = re.compile(r"\\(.)", re.DOTALL)
@@ -139,9 +138,7 @@ def meaning(text: str) -> list[str] | None:
 # ── The oracle ──
 
 
-@pytest.mark.parametrize(
-    "path", FIXTURES, ids=lambda p: str(p.relative_to(BACKEND / "test_scripts"))
-)
+@pytest.mark.parametrize("path", CORPUS, ids=corpus_id)
 def test_regeneration_preserves_meaning(path: Path) -> None:
     """Parse it, generate it, and ask sievelib whether it still says the same.
 
@@ -165,7 +162,7 @@ def test_regeneration_preserves_meaning(path: Path) -> None:
 def test_every_fixture_is_readable_by_the_oracle() -> None:
     """The skip above is a safety valve, not a plan. If it starts firing, the
     oracle is quietly covering less than it appears to."""
-    unreadable = [p.name for p in FIXTURES if meaning(p.read_text()) is None]
+    unreadable = [p.name for p in CORPUS if meaning(p.read_text()) is None]
     assert not unreadable, f"sievelib cannot parse: {unreadable}"
 
 
@@ -295,9 +292,7 @@ def test_the_preflight_judges_only_regenerated_spans() -> None:
     assert st.preflight_error(script) is None
 
 
-@pytest.mark.parametrize(
-    "path", FIXTURES, ids=lambda p: str(p.relative_to(BACKEND / "test_scripts"))
-)
+@pytest.mark.parametrize("path", CORPUS, ids=corpus_id)
 def test_no_fixture_is_refused_by_its_own_preflight(path: Path) -> None:
     """The pre-flight is mandatory on the save path, so a false positive is a
     user locked out of saving. Every fixture in the corpus — including all 45
