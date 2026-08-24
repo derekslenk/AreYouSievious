@@ -655,3 +655,105 @@ def test_the_endpoint_rejects_a_smuggled_require_item_without_writing(authed_cli
         r = _put(http, requires=[_REQUIRE_SMUGGLED])
     assert r.status_code == 400, r.text
     assert store.scripts == {"primary": "keep;\n"}, "the real script must be untouched"
+
+
+_RELATIONAL_SPAM_SCORE = (
+    'require ["relational", "comparator-i;ascii-numeric", "fileinto"];\n'
+    "\n"
+    "# --- Spam score ---\n"
+    'if header :value "gt" :comparator "i;ascii-numeric" "x-spam-score" "5" {\n'
+    '  fileinto "Junk";\n'
+    "}\n"
+)
+
+
+def test_a_collation_name_carries_a_semicolon_and_must_still_save():
+    """The extension whitelist's own turn at being `.13`, caught in review.
+
+    RFC 5228 §2.7.3 mandates `comparator-<name>` for any collation outside
+    `i;octet` and `i;ascii-casemap`, and every RFC 4790 collation name has a `;`
+    in it. Leaving `;` out of the class refused `comparator-i;ascii-numeric` —
+    so a user with an ordinary relational spam-score rule could open their
+    script and never save it again.
+
+    NO CORPUS FIXTURE USES A RELATIONAL TEST, which is why all 63 stayed green
+    through it. The corpus is the oracle only for the shapes it contains, and
+    this test is here because that one is missing from it.
+    """
+    script = st.parse_sieve(_RELATIONAL_SPAM_SCORE)
+    assert "comparator-i;ascii-numeric" in script.requires, "premise: we harvested it"
+    assert st.preflight_error(script) is None
+    assert st.generate_sieve(script) == _RELATIONAL_SPAM_SCORE, "and it round-trips"
+
+
+def test_our_own_generated_require_line_survives_our_own_preflight():
+    """The self-inflicted half, and the one worth locking: `_compute_requires`
+    writes `f"comparator-{cond.comparator}"` itself, so the guard was rejecting
+    this generator's own output. A rule built rather than parsed has no span and
+    takes the regenerating path, which is what puts that name on the wire.
+    """
+    rule = st.Rule(
+        name="Spam score",
+        conditions=[
+            st.Condition(
+                header="x-spam-score",
+                match_type="value",
+                value="5",
+                comparator="i;ascii-numeric",
+            )
+        ],
+        actions=[st.Action(action_type="fileinto", argument="Junk")],
+    )
+    generated = st.generate_sieve(st.SieveScript(entries=[rule]))
+    assert "comparator-i;ascii-numeric" in generated, "premise: we emit the name ourselves"
+    assert st.preflight_error(st.parse_sieve(generated)) is None
+
+
+@pytest.mark.parametrize(
+    "extension",
+    [
+        "comparator-i;ascii-numeric",
+        "comparator-i;octet",
+        "x-custom",
+        "5group",
+        "IMAP4FLAGS",
+        "vnd.dovecot.filter",
+        "a" * 300,
+        "date",
+        "index",
+    ],
+)
+def test_a_well_formed_extension_name_is_not_refused_2(extension: str):
+    assert st.preflight_error(st.SieveScript(requires=[extension])) is None
+
+
+def test_the_endpoint_saves_a_relational_rule_with_a_collation(authed_client):
+    """All the way through, because a lockout is only real at the endpoint.
+
+    It goes out as a RawBlock: `:value "gt"` is a relational test our builder
+    does not model, so the rule lands in the raw path and is re-emitted from its
+    span. That is the point rather than a caveat — the extension we cannot model
+    is exactly the one whose `require` line we must not refuse.
+    """
+    script = st.parse_sieve(_RELATIONAL_SPAM_SCORE)
+    entry = script.entries[0]
+    assert isinstance(entry, st.RawBlock), "premise: a relational test is raw to us"
+    store = FakeScriptStore({"primary": _RELATIONAL_SPAM_SCORE})
+    with authed_client(script_store=store) as http:
+        r = _put(
+            http,
+            requires=script.requires,
+            preamble=script.preamble,
+            requires_source=script.requires_source,
+            tail=script.tail,
+            entries=[
+                {
+                    "kind": "raw",
+                    "text": entry.text,
+                    "comment": entry.comment,
+                    "source": entry.source,
+                }
+            ],
+        )
+    assert r.status_code == 200, r.text
+    assert store.scripts["primary"] == _RELATIONAL_SPAM_SCORE, "byte-identical, nothing rewritten"

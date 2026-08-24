@@ -1568,7 +1568,7 @@ def span_is_faithful(entry: Entry) -> bool:
 
 
 _LONE_CR = re.compile(r"\r(?!\n)")
-_EXTENSION_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
+_EXTENSION_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._;/-]*")
 
 
 def _unwritable_byte_error(script: SieveScript) -> str | None:
@@ -1657,13 +1657,26 @@ def _unwritable_byte_error(script: SieveScript) -> str | None:
     a live `redirect` that sievelib pronounced valid Sieve. That is the original
     Task 7 bug — hostile bytes, no entries, 200 — one field along.
 
-    `[A-Za-z0-9][A-Za-z0-9._-]*` matched in full is a shape, not a list of names, so an
-    extension nobody here has heard of still saves; all 15 declared across the
-    63 corpus fixtures match it, `vacation-seconds` and `imap4flags` included.
-    It subsumes the byte checks for this one field, since CR, LF and NUL are all
-    outside the class. The interpolation is escaped as well, because every other
-    string this generator writes is, and a guard that happens to be upstream is
-    not a reason to emit text unescaped.
+    `[A-Za-z0-9][A-Za-z0-9._;/-]*` matched in FULL is a shape, not a list of
+    names, so an extension nobody here has heard of still saves; all 15 declared
+    across the 63 corpus fixtures match it, `vacation-seconds` and `imap4flags`
+    included. It subsumes the byte checks for this one field, since CR, LF and
+    NUL are all outside the class. The interpolation is escaped as well, because
+    every other string this generator writes is, and a guard that happens to sit
+    upstream is not a reason to emit text unescaped.
+
+    `;` AND `/` ARE IN THE CLASS BECAUSE COLLATION NAMES CARRY THEM, and leaving
+    them out was this guard's own turn at being `.13`. RFC 5228 §2.7.3 mandates
+    `comparator-<name>` for any collation outside `i;octet` and
+    `i;ascii-casemap`, and every RFC 4790 collation name has a `;` in it — so
+    `comparator-i;ascii-numeric` was refused, which meant a user with an ordinary
+    relational spam-score rule could open their script and never save it again.
+    `_compute_requires` WRITES THAT NAME ITSELF, so the pre-flight was rejecting
+    our own generator's output. No corpus fixture uses a relational test, which
+    is exactly why all 63 stayed green: the corpus is the oracle only for shapes
+    it contains. Neither character can break out of a quoted string, so this
+    costs nothing — and the escaping at `_requires_text` is what would hold if it
+    did.
 
     NOT CHECKED, DELIBERATELY: \x0b, \x0c, \x85, U+2028 and U+2029 all reach the
     output and all are legal comment octets under RFC 5228, which ends a comment
