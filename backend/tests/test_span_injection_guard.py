@@ -530,3 +530,78 @@ def test_the_endpoint_still_saves_a_script_that_already_holds_a_nul(authed_clien
         )
     assert r.status_code == 200, r.text
     assert store.scripts["primary"] == already, "and it comes back byte-identical"
+
+
+@pytest.mark.parametrize(
+    ("label", "gap"),
+    [
+        ("two comments", '# a\x00redirect "atk@e.com";\n# b\n'),
+        ("a blank line first", '\n# a\x00redirect "atk@e.com";\n# b\n'),
+        ("three comments", '# a\x00redirect "atk@e.com";\n# b\n# c\n'),
+    ],
+)
+def test_a_nul_in_a_raw_blocks_leading_gap_is_refused(label: str, gap: str):
+    """The same structural fact one level along from the Rule case.
+
+    `parse_sieve` keeps only the LAST comment line as `comment`; earlier lines
+    and blank lines stay in `source` and in no compared field, so they need only
+    survive `span_is_faithful` — which cannot see them. Only the single-comment
+    shape, where the NUL lands in `comment`, was refused before.
+
+    Marginal capability over `RawBlock.text` is nil, since that channel grants
+    arbitrary statements by design. What is wrong is that the exemption reached
+    further than its own stated reason, and that these bytes sit in no modelled
+    field, so they survive parse → display → save invisibly.
+    """
+    script = st.parse_sieve(gap + 'vacation :days 7 "Away";\n')
+    entry = script.entries[0]
+    assert isinstance(entry, st.RawBlock), "premise: one raw block"
+    assert "\x00" not in entry.comment, "premise: the NUL is in neither compared field"
+    assert "\x00" not in entry.text
+    assert st.span_is_faithful(entry), "premise: the span vouches for itself"
+    assert st.preflight_error(script) is not None
+
+
+def test_the_endpoint_rejects_a_nul_in_a_raw_blocks_leading_gap(authed_client):
+    hostile = '# a\x00redirect "atk@e.com";\n# b\nvacation :days 7 "Away";\n'
+    entry = st.parse_sieve(hostile).entries[0]
+    store = FakeScriptStore({"primary": "keep;\n"})
+    with authed_client(script_store=store) as http:
+        r = _put(
+            http,
+            entries=[
+                {
+                    "kind": "raw",
+                    "text": entry.text,
+                    "comment": entry.comment,
+                    "source": entry.source,
+                }
+            ],
+        )
+    assert r.status_code == 400, r.text
+    assert store.scripts == {"primary": "keep;\n"}, "the real script must be untouched"
+
+
+@pytest.mark.parametrize(
+    ("label", "text"),
+    [
+        (
+            "above the rule",
+            '# lead\x00x\n# --- n ---\nif header :contains "subject" "x" {\n  keep;\n}\n',
+        ),
+        ("inside a quoted value", 'if header :contains "subject" "sp\x00am" {\n  keep;\n}\n'),
+        (
+            "a trailing in-body comment",
+            'if header :contains "subject" "x" {\n  keep; # z\x00q\n}\n',
+        ),
+    ],
+)
+def test_a_nul_anywhere_in_a_rules_span_is_refused(label: str, text: str):
+    """The residual cost is the whole class, not the one instance of it that the
+    comment used to name. All three lex to a Rule and are faithful; all three are
+    refused. That is the cost already accepted for a lone CR, which is refused in
+    `source` unconditionally."""
+    script = st.parse_sieve(text)
+    assert isinstance(script.entries[0], st.Rule), "premise: this lexes to a Rule"
+    assert st.span_is_faithful(script.entries[0]), "premise: the span vouches for itself"
+    assert st.preflight_error(script) is not None
