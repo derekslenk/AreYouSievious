@@ -34,6 +34,22 @@ def _round_trips(text: str, times: int = 3) -> list[str]:
     return out
 
 
+def _regenerated(text: str) -> str:
+    """What a save writes when every entry has actually been edited.
+
+    An unedited script is now re-emitted byte for byte
+    (docs/adr/0002-the-file-is-a-sequence-of-spans.md), so the canonical
+    renderer — and with it `require` pruning and the one-statement rule — is
+    only reached by an entry that regenerates. Clearing the span is precisely
+    the state a Rule the builder minted is in: no pristine copy to compare
+    against, so nothing to re-emit.
+    """
+    script = st.parse_sieve(text)
+    for entry in script.entries:
+        entry.source = ""
+    return st.generate_sieve(script)
+
+
 # ── 1. The disabled-Rule name ──
 
 DISABLED = """require ["fileinto"];
@@ -95,7 +111,14 @@ def test_the_legacy_poisoned_shape_is_normalised_on_the_way_in() -> None:
     (rule,) = st.parse_sieve(legacy).rules
     assert rule.name == "GitHub notifications"
     assert not rule.enabled
-    assert "## # ---" not in st.generate_sieve(st.parse_sieve(legacy))
+    # A save that edits nothing no longer rewrites the file at all, so the
+    # poisoned line comes back exactly as it was. That FIXES the accretion
+    # rather than leaving it: every deepening needed a rewrite on every save,
+    # and there is no longer one.
+    assert st.generate_sieve(st.parse_sieve(legacy)) == legacy
+    # Editing the rule puts it on the regenerating path, and that is where the
+    # accretion unwinds to the clean shape.
+    assert "## # ---" not in _regenerated(legacy)
 
 
 def test_an_enabled_rule_still_carries_its_name_inside_nothing() -> None:
@@ -146,11 +169,9 @@ def test_a_multi_line_require_is_read_whole() -> None:
 def test_the_regenerated_script_has_exactly_one_require_line() -> None:
     """Whatever shape went in, one statement comes out — and nothing that was
     named in any of them is missing from it."""
-    generated = st.generate_sieve(
-        st.parse_sieve(
-            'require ["fileinto"];\nrequire [\n    "copy",\n    "reject"\n];\n\n'
-            'if header :is "a" "b" {\n    fileinto :copy "X";\n    reject "no";\n}\n'
-        )
+    generated = _regenerated(
+        'require ["fileinto"];\nrequire [\n    "copy",\n    "reject"\n];\n\n'
+        'if header :is "a" "b" {\n    fileinto :copy "X";\n    reject "no";\n}\n'
     )
     require_lines = [line for line in generated.split("\n") if line.startswith("require")]
     assert len(require_lines) == 1, generated
@@ -176,11 +197,21 @@ def test_an_extension_no_longer_used_is_dropped() -> None:
     an extension it does not use, and a server that does not offer `reject`
     refuses a script that no longer needs it.
     """
-    generated = st.generate_sieve(
-        st.parse_sieve('require ["fileinto", "reject"];\n\nif header :is "a" "b" {\n    keep;\n}\n')
+    # The swap is performed here rather than baked into the input, because
+    # pruning is now a property of REGENERATION: an untouched over-declared
+    # file keeps saying so rather than having a line rewritten that nobody
+    # asked us to touch.
+    script = st.parse_sieve(
+        'require ["fileinto", "reject"];\n\nif header :is "a" "b" {\n    reject "no";\n}\n'
     )
-    assert "reject" not in generated
-    assert "fileinto" not in generated, "nothing here files anything either"
+    (rule,) = script.rules
+    rule.actions = [st.Action(action_type="keep")]
+    generated = st.generate_sieve(script)
+    # On the REQUIRE LINE, not anywhere in the text: the name this rule was
+    # given at parse time is derived from what it did then, so it still reads
+    # `... \u2192 reject no`. That is a label, not a declaration, and it is the
+    # declaration that makes a server refuse the script.
+    assert [ln for ln in generated.split("\n") if ln.startswith("require")] == [], generated
 
 
 def test_pruning_stops_at_the_first_thing_we_do_not_understand() -> None:

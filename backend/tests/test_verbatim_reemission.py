@@ -178,3 +178,107 @@ def test_a_require_after_an_entry_stays_where_it_was_written():
     # would have a regenerating save emit a canonical `require` at the top too,
     # and the file would declare `fileinto` twice.
     assert script.requires == []
+
+
+_HOUSE_STYLE_IS_DIFFERENT = (
+    'require ["fileinto"];\n'
+    "\n"
+    "# --- Receipts ---\n"
+    'if anyof (header :contains "subject" "receipt")\n'
+    "{\n"
+    '\tfileinto "Receipts";\n'
+    "}\n"
+)
+
+
+def test_an_untouched_rule_re_emits_byte_identical():
+    """The brace on its own line and the tab indent are not our house style.
+    Before spans, a save rewrote both. Now nothing changed, so nothing moves."""
+    script = st.parse_sieve(_HOUSE_STYLE_IS_DIFFERENT)
+    assert st.generate_sieve(script) == _HOUSE_STYLE_IS_DIFFERENT
+
+
+def test_an_edited_rule_regenerates_and_its_neighbour_does_not():
+    text = (
+        'require ["fileinto"];\n'
+        "\n"
+        "# --- One ---\n"
+        'if anyof (header :contains "subject" "one")\n'
+        "{\n"
+        '\tfileinto "One";\n'
+        "}\n"
+        "\n"
+        "# --- Two ---\n"
+        'if anyof (header :contains "subject" "two")\n'
+        "{\n"
+        '\tfileinto "Two";\n'
+        "}\n"
+    )
+    script = st.parse_sieve(text)
+    script.entries[1].actions[0].argument = "Elsewhere"
+    out = st.generate_sieve(script)
+    assert '\tfileinto "One";' in out, "the untouched rule kept its tab indent"
+    assert '\tfileinto "Elsewhere";' not in out, "the edited rule is in house style"
+    assert 'fileinto "Elsewhere";' in out
+
+
+def test_a_reordered_rule_takes_its_name_line_with_it():
+    text = "# --- Alpha ---\nif true {\n  keep;\n}\n\n# --- Beta ---\nif false {\n  discard;\n}\n"
+    script = st.parse_sieve(text)
+    script.entries.reverse()
+    out = st.generate_sieve(script)
+    assert out.index("# --- Beta ---") < out.index("# --- Alpha ---")
+    assert out.index("# --- Beta ---") < out.index("discard;")
+
+
+def test_an_over_declared_require_survives_an_untouched_save():
+    """`_compute_requires` prunes on regeneration (areyousievious-8fg.15).
+    Pruning an untouched file would rewrite a line we were not asked to touch,
+    so it now happens only on a save that regenerates something."""
+    text = 'require ["fileinto", "reject"];\n\nif true {\n  keep;\n}\n'
+    assert st.generate_sieve(st.parse_sieve(text)) == text
+
+
+def test_editing_a_rule_still_prunes_the_require():
+    # A real test, not `if true`: `if true` has no recognisable test so it
+    # parses to a RawBlock, and `_compute_requires` preserves the declared set
+    # whole when any entry is a RawBlock — there would be nothing to prune.
+    text = (
+        'require ["fileinto", "reject"];\n'
+        "\n"
+        'if header :contains "subject" "box" {\n  fileinto "Box";\n}\n'
+    )
+    script = st.parse_sieve(text)
+    script.entries[0].actions[0].argument = "Other"
+    out = st.generate_sieve(script)
+    assert '"reject"' not in out
+
+
+def test_a_minted_rule_between_two_verbatim_ones_gets_one_blank_line_each_side():
+    text = "if true {\n  keep;\n}\n\nif false {\n  discard;\n}\n"
+    script = st.parse_sieve(text)
+    script.entries.insert(
+        1, st.Rule(name="New", conditions=[], actions=[st.Action(action_type="stop")])
+    )
+    out = st.generate_sieve(script)
+    assert "\n\n\n" not in out, "no run of blank lines at a verbatim/regenerated seam"
+    assert "}\nif" not in out, "entries are still separated"
+
+
+def test_generation_scales_linearly_in_the_number_of_entries():
+    """Not a benchmark — a shape check. 400 entries must not cost ~16x what
+    100 does. The disabled-block retry path was O(n^2) for exactly this
+    reason and 800 fragments took 1.5s on a request that admits 1 MiB."""
+    import time
+
+    def elapsed(n: int) -> float:
+        text = "".join(
+            f'if header :contains "subject" "s{i}" {{\n  keep;\n}}\n\n' for i in range(n)
+        )
+        script = st.parse_sieve(text)
+        start = time.perf_counter()
+        st.generate_sieve(script)
+        return time.perf_counter() - start
+
+    small, large = elapsed(100), elapsed(400)
+    assert large < small * 8, f"4x the entries cost {large / small:.1f}x the time"

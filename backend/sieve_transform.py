@@ -1094,27 +1094,96 @@ class SieveGenerator:
     """Generate Sieve script text from a SieveScript."""
 
     def generate(self, script: SieveScript) -> str:
-        parts = []
+        """The script's bytes: verbatim where nothing changed, canonical where it did.
 
-        # Require statement
-        requires = self._compute_requires(script)
-        if requires:
-            req_list = ", ".join(f'"{r}"' for r in requires)
-            parts.append(f"require [{req_list}];")
-            parts.append("")
+        Two paths per entry and no third. A span that `span_is_faithful`
+        vouches for goes out byte for byte — including the blank lines and the
+        `# --- name ---` above it, which is what lets a reordered Rule take its
+        name with it. Everything else is rendered in house style.
 
-        # Generate in order — position in `entries` IS the order
-        for entry in script.entries:
-            if isinstance(entry, Rule):
-                parts.append(self.generate_entry(entry))
-                parts.append("")
-            else:
-                if entry.comment:
-                    parts.append(f"# {entry.comment}")
-                parts.append(entry.text)
-                parts.append("")
+        The old implementation built a list of `parts` and joined it with
+        newlines, which imposed our own blank-line convention on every entry in
+        the file. That convention is exactly what we are no longer entitled to
+        impose on entries we were not asked to change.
+        """
+        verbatim = [span_is_faithful(e) for e in script.entries]
+        regenerated = not all(verbatim)
+        head = script.preamble + self._requires_text(script, regenerated=regenerated)
 
-        return "\n".join(parts).rstrip() + "\n"
+        if not regenerated and head == script.preamble + script.requires_source:
+            # NOTHING CHANGED, so nothing is post-processed — not the blank
+            # lines, not the trailing newline count, nothing. Every rule this
+            # generator could apply here would be it reformatting a file it was
+            # not asked to touch, which is the whole behaviour being removed.
+            # This early return is what makes the byte-identical property exact
+            # rather than nearly true.
+            return (head + "".join(e.source for e in script.entries) + script.tail) or "\n"
+
+        out = head
+        for entry, is_verbatim in zip(script.entries, verbatim, strict=True):
+            piece = entry.source if is_verbatim else self._canonical_span(entry)
+            out = self._join(out, piece, seam=not is_verbatim)
+
+        if verbatim and not verbatim[-1]:
+            # The last entry regenerated, so its separation from the tail is
+            # ours to settle. The tail itself is still appended as it stands.
+            out = out.rstrip("\n") + "\n"
+        return (out + script.tail) or "\n"
+
+    @staticmethod
+    def _join(out: str, piece: str, seam: bool) -> str:
+        """Append `piece`, settling blank lines ONLY at a seam a regeneration made.
+
+        This never reflows the document. A verbatim span's interior — and the
+        gap between two verbatim spans — is exactly what the user wrote,
+        including two blank lines between rules if that is what they wrote, and
+        including the blank lines inside a multi-line `vacation` message. An
+        earlier draft of this ran `re.sub(r"\\n{3,}", "\\n\\n", ...)` over the
+        whole output, which corrupts both: it is the same shape as the bug
+        `.13` fixed, where a blank line was injected into a vacation message
+        and changed the text a sender received.
+
+        The only place this generator is entitled to impose a convention is
+        where a regenerated span meets its neighbour, because a regenerated
+        span has no gap of its own and something has to separate it.
+        """
+        if not seam:
+            return out + piece
+        if not out:
+            return piece.lstrip("\n")
+        return out.rstrip("\n") + "\n\n" + piece.lstrip("\n")
+
+    def _canonical_span(self, entry: Entry) -> str:
+        """One regenerated entry's bytes. Separation is `_join`'s problem."""
+        if isinstance(entry, Rule):
+            body = self.generate_entry(entry)
+        else:
+            body = f"# {entry.comment}\n{entry.text}" if entry.comment else entry.text
+        return body.strip("\n") + "\n"
+
+    def _requires_text(self, script: SieveScript, regenerated: bool) -> str:
+        """The `require` statement(s), verbatim when the file was not rewritten.
+
+        Pruning (areyousievious-8fg.15) is a property of REGENERATION. An
+        untouched file that over-declares `reject` keeps saying so, because
+        rewriting that line would break the byte-identical property for a file
+        nobody edited. Once anything regenerates, the computed set governs and
+        the extension that no longer has a user is dropped.
+
+        Do NOT additionally gate this on `self._compute_requires(script) ==
+        script.requires`: pruning makes those two differ for exactly the
+        over-declared script this branch exists to leave alone, so that gate
+        would send every such file down the canonical path and defeat itself.
+        That the bytes agree with the declared list is `_boundary_error`'s job
+        (Task 7), and it holds by construction for a freshly parsed script.
+        """
+        if script.requires_source and not regenerated:
+            return script.requires_source
+        computed = self._compute_requires(script)
+        if not computed:
+            return ""
+        req_list = ", ".join(f'"{r}"' for r in computed)
+        return f"require [{req_list}];\n"
 
     def generate_entry(self, rule: Rule) -> str:
         """The exact bytes one Rule contributes to a script.

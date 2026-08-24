@@ -90,7 +90,12 @@ def test_a_commented_out_action_stays_commented_out() -> None:
 
     (rule,) = script.rules
     assert [a.argument for a in rule.actions] == ["Live"]
-    assert "Disabled" not in st.generate_sieve(script)
+    # The old assertion was "Disabled" is absent from the output, which held
+    # only because generation dropped every comment inside a block. Verbatim
+    # re-emission keeps the user's own line, so the check is now the thing the
+    # test is actually named for: it is still a COMMENT, never a live action.
+    out = st.generate_sieve(script)
+    assert [ln for ln in out.split("\n") if "Disabled" in ln] == ['    # fileinto "Disabled";'], out
 
 
 def test_none_of_the_three_ever_failed_loudly() -> None:
