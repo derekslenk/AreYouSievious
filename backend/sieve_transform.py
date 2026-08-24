@@ -1570,47 +1570,68 @@ def span_is_faithful(entry: Entry) -> bool:
 _LONE_CR = re.compile(r"\r(?!\n)")
 
 
-def _lone_cr_error(script: SieveScript) -> str | None:
-    """Whether any text we would write carries a CR that is not part of a CRLF.
+def _unwritable_byte_error(script: SieveScript) -> str | None:
+    """Whether any text we would write carries a byte that is not ours to write.
 
-    Found by fuzzing `_boundary_error`, and it is the one vector that got
-    through. Our parser splits on "\n" alone, so a bare CR is an ordinary
-    character in the middle of a line — and so
-    `# harmless note\rredirect "attacker@example.com";` is ONE comment to us,
-    and to sievelib, and therefore to the `.13` pre-flight as well. RFC 5228
-    says a comment runs to CRLF and excludes CR from its body, so what a real
-    server does with the bytes after that CR is undefined and at least one
-    plausible reading executes them. Three separate paths would have written it
-    verbatim:
+    One question — are these bytes ours to write — asked of every field that
+    becomes part of the script outside a quoted string. Values and arguments are
+    excluded because the generator escapes them into quoted strings, verified; a
+    byte there is a literal, not a statement. THE SCOPE DIFFERS PER BYTE, and
+    each difference is the line between a guard and a lockout:
 
-      - the boundary bytes, where a hostile `preamble` or `tail` needs no
-        cooperation from anything else;
-      - an entry's `source`, where the comment is absorbed as the Rule's NAME,
-        so a client that sends the matching `name` makes the span value-equal to
-        its entry and `span_is_faithful` vouches for it;
-      - a canonically rendered `RawBlock.comment` or `Rule.name`, which is
-        emitted as a `#` line and predates spans entirely.
+    A BARE LF, in `Rule.name` or `RawBlock.comment` ONLY. Those two are
+    interpolated into a single `# ` line — `f"# {comment}\n{text}"` and
+    `f"# --- {name} ---"` — so a newline in them ends the comment and everything
+    after it is a live statement. `RawBlock(comment='c\nredirect "a@b.com";')`
+    rendered as `# c\nredirect "a@b.com";\nkeep;` and was answered 200. This
+    needs no reading of the RFC, unlike the CR below: a bare LF ends a line for
+    every parser there is. It must NOT be asked of `text`, `source`, `preamble`,
+    `requires_source` or `tail`, all of which are many lines by definition.
 
-    One check rather than three, because it is one question — are these bytes
-    ours to write — asked of every field that becomes part of the script outside
-    a quoted string. Values and arguments are excluded because the generator
-    escapes them into quoted strings, verified; a CR there is a literal, not a
-    statement.
+    A LONE CR, in every field. We split lines on "\n" alone, so a bare CR is an
+    ordinary mid-line character and `# note\rredirect "a@b.com";` is ONE comment
+    to our parser, to sievelib, and therefore to the `.13` pre-flight too. RFC
+    5228 ends a comment at CRLF and excludes CR from its body, so what a server
+    does with the octets after it is undefined and one plausible reading runs
+    them. CRLF stays legal because every CR in it is followed by LF.
 
-    NO REAL SCRIPT LOSES BY THIS. Not one of the 63 corpus fixtures contains a
-    CR of any kind, CRLF line endings stay legal because every CR in them is
-    followed by LF, and a CR-only file is not valid Sieve to begin with.
+    A NUL, in everything EXCEPT `RawBlock.text` and `entry.source`. RFC 5228's
+    `octet-not-crlf` excludes %x00, so a NUL is never valid Sieve, and against a
+    C-implemented server it is the classic truncation desync. But a script that
+    ALREADY holds one fails to lex and comes back as a single whole-file
+    RawBlock, with the NUL in exactly those two fields and nowhere else —
+    verified. Refusing it there would lock a user out of saving their own file
+    over a byte that was already sitting on their server, which is a real cost
+    for no benefit: re-emitting bytes that are already there changes nothing,
+    and `RawBlock.text` is an arbitrary-text channel by design and by ADR 0002
+    regardless of what any of these checks say. Injecting a NUL into a preamble,
+    a tail or a comment is the opposite, and is refused.
+
+    NOT CHECKED, DELIBERATELY: \x0b, \x0c, \x85, U+2028 and U+2029 all reach the
+    output and all are legal comment octets under RFC 5228, which ends a comment
+    at CRLF and at nothing else. Python's `str.splitlines()` breaks on every one
+    of them, which is why a fuzz oracle built on it reports them and why this
+    one is built on CRLF/LF/CR instead. Refusing them would be superstition.
     """
-    texts: list[str] = [script.preamble, script.requires_source, script.tail]
+    one_comment_line: list[str] = []
+    written_verbatim: list[str] = [script.preamble, script.requires_source, script.tail]
     for entry in script.entries:
-        texts.append(entry.source)
+        written_verbatim.append(entry.source)
         if isinstance(entry, Rule):
-            texts.append(entry.name)
+            one_comment_line.append(entry.name)
         else:
-            texts.extend((entry.text, entry.comment))
-    for text in texts:
+            one_comment_line.append(entry.comment)
+            written_verbatim.append(entry.text)
+
+    for text in one_comment_line:
+        if "\n" in text:
+            return "a line break in a name or comment would end the comment it sits in"
+    for text in (*one_comment_line, *written_verbatim):
         if _LONE_CR.search(text):
             return "a carriage return would end a line for the server but not for us"
+    for text in (*one_comment_line, script.preamble, script.requires_source, script.tail):
+        if "\x00" in text:
+            return "a NUL would truncate the script for the server"
     return None
 
 
@@ -1697,13 +1718,13 @@ def preflight_error(script: SieveScript) -> str | None:
     SINCE areyousievious-8fg.14 IT ALSO COVERS THE BOUNDARY BYTES. The
     preamble, the `require` bytes and the tail cross the wire and are written
     to the mail server verbatim, and no entry exists to compare them against —
-    so `_boundary_error` checks them first, and `_lone_cr_error` checks every
-    field that becomes a line of the script for a CR the server would treat as
-    ending that line and we would not. Both ask a different question from the
+    so `_boundary_error` checks them first, and `_unwritable_byte_error` checks
+    every field that becomes a line of the script for a byte that would end that
+    line for the server and not for us. Both ask a different question from the
     one below — is this text ours to write at all, rather than will the server
     compile it — which is why they are separate functions and not more clauses.
     """
-    problem = _lone_cr_error(script) or _boundary_error(script)
+    problem = _unwritable_byte_error(script) or _boundary_error(script)
     if problem:
         return problem
     for rule in script.rules:

