@@ -456,3 +456,77 @@ def test_the_endpoint_rejects_a_nul_in_the_preamble_without_writing(authed_clien
         r = _put(http, preamble='# n\x00redirect "attacker@example.com";\n')
     assert r.status_code == 400, r.text
     assert store.scripts == {"primary": "keep;\n"}, "the real script must be untouched"
+
+
+def test_a_nul_above_a_rule_is_refused():
+    """The NUL exemption's first scoping was exploitable, and this is the shape
+    that broke it.
+
+    `source` is client-supplied and only has to survive `span_is_faithful` — and
+    a comment ABOVE a rule rides in the span BY DESIGN, in no compared field. So
+    a Rule's `source` is a free-text channel, and exempting it wrote
+    `# lead\\x00redirect "attacker@example.com";` to the mail server, 200 and
+    byte-identical. The exemption is now a RawBlock's own bytes only.
+    """
+    hostile = (
+        '# lead\x00redirect "attacker@example.com";\n'
+        "# --- n ---\n"
+        'if header :contains "subject" "x" {\n  keep;\n}\n'
+    )
+    script = st.parse_sieve(hostile)
+    assert isinstance(script.entries[0], st.Rule), "premise: this lexes to a Rule"
+    assert script.entries[0].name == "n", "premise: the NUL is in the span, not the name"
+    assert st.span_is_faithful(script.entries[0]), "premise: the span vouches for itself"
+    assert st.preflight_error(script) is not None
+
+
+def test_the_endpoint_rejects_a_nul_in_a_rule_span_without_writing(authed_client):
+    store = FakeScriptStore({"primary": "keep;\n"})
+    with authed_client(script_store=store) as http:
+        r = _put(
+            http,
+            entries=[
+                {
+                    "kind": "rule",
+                    "name": "n",
+                    "enabled": True,
+                    "match": "anyof",
+                    "conditions": [{"header": "subject", "match_type": "contains", "value": "x"}],
+                    "actions": [{"type": "keep"}],
+                    "source": '# lead\x00redirect "attacker@example.com";\n'
+                    "# --- n ---\n"
+                    'if header :contains "subject" "x" {\n  keep;\n}\n',
+                }
+            ],
+        )
+    assert r.status_code == 400, r.text
+    assert store.scripts == {"primary": "keep;\n"}, "the real script must be untouched"
+
+
+def test_the_endpoint_still_saves_a_script_that_already_holds_a_nul(authed_client):
+    """The lockout case the exemption exists for, driven all the way through.
+
+    A NUL that breaks lexing takes the whole file down the `usable == False`
+    path, so it comes back as ONE RawBlock carrying the entire text — and a
+    RawBlock's own bytes stay exempt, because re-emitting what is already on the
+    server changes nothing and `RawBlock.text` grants arbitrary statements by
+    design regardless.
+    """
+    already = "keep;\n\x00 broken\n"
+    parsed = st.parse_sieve(already)
+    assert isinstance(parsed.entries[0], st.RawBlock), "premise: unlexable, so one raw block"
+    store = FakeScriptStore({"primary": already})
+    with authed_client(script_store=store) as http:
+        r = _put(
+            http,
+            entries=[
+                {
+                    "kind": "raw",
+                    "text": parsed.entries[0].text,
+                    "comment": "",
+                    "source": parsed.entries[0].source,
+                }
+            ],
+        )
+    assert r.status_code == 200, r.text
+    assert store.scripts["primary"] == already, "and it comes back byte-identical"

