@@ -260,6 +260,20 @@ export function ruleEntries(doc) {
 // ── Mutations (each returns a new document) ──
 
 /**
+ * A deep copy of one entry, render keys and all.
+ *
+ * Every mutation returns a new document, and "new" has to mean new all the way
+ * down: a shallow rebuild of `entries` leaves each Entry shared with the
+ * input, so a later edit to a nested Condition reaches through both — and
+ * through the `snapshot()` a caller took to compare against.
+ * @param {Entry} e
+ * @returns {Entry}
+ */
+function cloneEntry(e) {
+  return structuredClone(e);
+}
+
+/**
  * A blank Condition, keyed. Key minting lives here so no component has to
  * know that render keys exist, let alone that they must not cross the wire.
  * @returns {Condition}
@@ -317,7 +331,7 @@ export function addRule(doc) {
 export function deleteRule(doc, index) {
   const target = ruleEntries(doc)[index];
   if (!target) return doc;
-  return { ...doc, entries: doc.entries.filter((e) => e !== target) };
+  return { ...doc, entries: doc.entries.filter((e) => e !== target).map(cloneEntry) };
 }
 
 /**
@@ -336,27 +350,36 @@ export function moveRule(doc, from, to) {
   if (from < 0 || from >= rules.length) return doc;
   if (to < 0 || to >= rules.length) return doc;
 
-  const reordered = [...rules];
+  const reordered = rules.map(cloneEntry);
   const [moved] = reordered.splice(from, 1);
   reordered.splice(to, 0, moved);
 
   // Write the new rule order back into the slots rules already occupied.
+  // Raw blocks are carried over too, cloned like everything else, so nothing
+  // in the returned document still shares a mutable object with `doc`.
   let n = 0;
-  const entries = doc.entries.map((e) => (e.kind === 'rule' ? reordered[n++] : e));
+  const entries = doc.entries.map((e) => (e.kind === 'rule' ? reordered[n++] : cloneEntry(e)));
   return { ...doc, entries };
 }
 
-
 /**
- * Patch fields on the entry with render key `key`. Untouched entries keep
- * their identity, so Svelte's keyed `{#each}` does not re-render them.
+ * Patch fields on the entry with render key `key`. Entries NOT being patched
+ * are carried over through `cloneEntry`, so they no longer share mutable
+ * objects with `doc`. The patched entry itself stays a shallow `{...e,
+ * ...patch}`: it is already a new object, and `setConditions`/`setActions`
+ * rely on that shallowness to chain — `setActions(setConditions(doc, key,
+ * conds), key, acts)` must still hand back the exact `conds` reference,
+ * which a clone here would silently replace with a copy.
  * @param {ScriptDocument} doc
  * @param {string} key
  * @param {object} patch
  * @returns {ScriptDocument}
  */
 export function updateEntry(doc, key, patch) {
-  return { ...doc, entries: doc.entries.map((e) => (e.key === key ? { ...e, ...patch } : e)) };
+  return {
+    ...doc,
+    entries: doc.entries.map((e) => (e.key === key ? { ...e, ...patch } : cloneEntry(e))),
+  };
 }
 
 /**

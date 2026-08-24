@@ -200,6 +200,60 @@ describe('moveRule', () => {
     expect(moveRule(doc, -1, 0)).toBe(doc);
     expect(moveRule(doc, 0, 5)).toBe(doc);
   });
+
+  it('leaves the original untouched, all the way down', () => {
+    // The old version of this test compared the two documents and passed on a
+    // SHALLOW copy: `moveRule` rebuilt the entries array but every Entry in it
+    // was the same object as before, so mutating a nested field reached
+    // through both. `snapshot()` exists to give callers a pristine copy to
+    // compare against; a mutation that shares objects with it makes that copy
+    // a lie.
+    const doc = fromWire({
+      requires: [],
+      preamble: '',
+      requires_source: '',
+      tail: '',
+      entries: [
+        { kind: 'rule', name: 'A', enabled: true, match: 'anyof',
+          conditions: [{ header: 'from', match_type: 'contains', value: 'a@example.com',
+            address_test: false, negate: false, address_part: '', comparator: '' }],
+          actions: [{ type: 'fileinto', argument: 'A' }], source: '' },
+        { kind: 'rule', name: 'B', enabled: true, match: 'anyof', conditions: [], actions: [],
+          source: '' },
+      ],
+    });
+    const before = snapshot(doc);
+    const moved = moveRule(doc, 0, 1);
+
+    // moveRule(doc, 0, 1) turns [A, B] into [B, A], so rule A is now at
+    // index 1. ruleEntries() is already typed as RuleEntry[] — no `kind`
+    // narrowing needed to reach `.conditions`/`.actions`.
+    ruleEntries(moved)[1].conditions[0].value = 'changed@example.com';
+    ruleEntries(moved)[1].actions[0].argument = 'Changed';
+
+    expect(sameWire(doc, before)).toBe(true);
+    expect(ruleEntries(doc)[0].conditions[0].value).toBe('a@example.com');
+    expect(ruleEntries(doc)[0].actions[0].argument).toBe('A');
+  });
+
+  it('keeps a reordered rule\'s span so the backend can re-emit its bytes', () => {
+    // Nothing else on this branch pins that a reorder keeps `source`. Losing
+    // it here would make the backend silently regenerate a rule that was only
+    // moved, not edited.
+    const doc = fromWire({
+      requires: [],
+      entries: [
+        { kind: 'rule', name: 'A', enabled: true, match: 'anyof', conditions: [], actions: [],
+          source: '# --- A ---\nif true {\n  keep;\n}\n' },
+        { kind: 'rule', name: 'B', enabled: true, match: 'anyof', conditions: [], actions: [],
+          source: '# --- B ---\nif false {\n  discard;\n}\n' },
+      ],
+    });
+    const moved = moveRule(doc, 0, 1);
+    expect(ruleEntries(moved).map((r) => r.name)).toEqual(['B', 'A']);
+    const a = ruleEntries(moved).find((r) => r.name === 'A');
+    expect(a?.source).toBe('# --- A ---\nif true {\n  keep;\n}\n');
+  });
 });
 
 describe('entryToWire', () => {
