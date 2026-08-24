@@ -35,6 +35,47 @@ from fastapi.testclient import TestClient  # noqa: E402
 CSRF = "csrf-test-token-value"
 
 
+# ── The corpus ──
+#
+# ONE definition of "every fixture", because the corpus is the oracle: seven
+# test modules parametrize over it, and seven spellings of an oracle can drift
+# into seven different claims about what "the whole corpus passes" means.
+CORPUS_ROOT = BACKEND / "test_scripts"
+
+CORPUS = sorted(p for p in CORPUS_ROOT.rglob("*.sieve") if p.stat().st_size > 0)
+"""Every fixture under `backend/test_scripts/`, empty files excluded.
+
+The `st_size > 0` filter excludes nothing today — there is no empty fixture —
+and it is kept deliberately. A zero-byte file is a degenerate input for the
+span decomposition (`"" == preamble + requires_source + tail`) and for anything
+that asserts a script round-trips through the wire, and it says nothing about
+the parser that a real script does not say better. It is covered directly, by
+`test_verbatim_reemission.py::test_an_empty_file_is_all_tail`, rather than by
+dropping the filter and having every parametrized property carry a degenerate
+case it has to special-case.
+
+This is a module-level constant rather than only a fixture because
+`@pytest.mark.parametrize` is evaluated at collection time, before any fixture
+runs. The `corpus` fixture below wraps it for tests that sweep it in a loop.
+"""
+
+
+def corpus_id(path: Path) -> str:
+    """A fixture's id: its path relative to the corpus root.
+
+    Relative rather than `path.name` so the vendored tier stays distinguishable
+    (`vendor/foo.sieve`) from a fixture of ours that happens to share a name.
+    """
+    return str(path.relative_to(CORPUS_ROOT))
+
+
+@pytest.fixture
+def corpus() -> list[Path]:
+    """`CORPUS`, for a test that sweeps the fixtures itself rather than being
+    parametrized over them."""
+    return CORPUS
+
+
 @pytest.fixture
 def make_app():
     """The app factory: build an app from explicit Settings (or defaults).

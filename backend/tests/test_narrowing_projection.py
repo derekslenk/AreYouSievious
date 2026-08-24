@@ -36,6 +36,8 @@ from pathlib import Path
 import pytest
 import sieve_transform as st
 
+from tests.conftest import CORPUS
+
 BACKEND = Path(__file__).resolve().parent.parent
 
 
@@ -256,15 +258,25 @@ def test_tagged_arguments_parse_in_any_order(test_source: str) -> None:
 def test_a_reordered_modifier_regenerates_in_rfc_order() -> None:
     """Accepting any order does not mean emitting any order — generation picks
     one (ADDRESS-PART, COMPARATOR, MATCH-TYPE) so the round trip has a fixed
-    point."""
-    generated = st.generate_sieve(
-        st.parse_sieve(
-            'require ["fileinto"];\n\n'
-            'if address :is :all "from" "tim@example.com" {\n    fileinto "X";\n}\n'
-        )
+    point.
+
+    The spans are cleared because an unedited script is now re-emitted byte for
+    byte (docs/adr/0002-the-file-is-a-sequence-of-spans.md); only an entry that
+    regenerates reaches the canonical renderer this test is about.
+    """
+
+    def regenerate(src: str) -> str:
+        script = st.parse_sieve(src)
+        for entry in script.entries:
+            entry.source = ""
+        return st.generate_sieve(script)
+
+    generated = regenerate(
+        'require ["fileinto"];\n\n'
+        'if address :is :all "from" "tim@example.com" {\n    fileinto "X";\n}\n'
     )
     assert 'address :all :is "from" "tim@example.com"' in generated
-    assert generated == st.generate_sieve(st.parse_sieve(generated))
+    assert generated == regenerate(generated)
 
 
 # ── parse_sieve never raises ──
@@ -332,7 +344,7 @@ def test_every_rule_in_the_corpus_uses_only_modelled_constructs() -> None:
     silently, so nothing but a sweep like this would say so.
     """
     offenders = []
-    for path in sorted((BACKEND / "test_scripts").rglob("*.sieve")):
+    for path in CORPUS:
         text = _without_requires(path.read_text())
         script = st.parse_sieve(path.read_text())
         if not script.rules:

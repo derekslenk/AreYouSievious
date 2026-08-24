@@ -115,13 +115,14 @@ The critical piece. Must be bidirectional and lossless for supported constructs.
 1. **Parse**: Use `sievelib.parser` to parse Sieve -> AST
 2. **Transform**: Walk AST, convert recognized `if/elsif/else` blocks to JSON rules
 3. **Preserve**: Any construct we don't recognize gets stored as a `raw` block (opaque Sieve text)
-4. **Generate**: JSON rules -> Sieve text via template rendering
-5. **Round-trip**: Raw blocks are emitted in their original position
+4. **Generate**: Two paths per entry and no third — an entry whose span still describes it byte-for-byte is re-emitted unchanged, and everything else renders through template rendering, in house style
+5. **Round-trip**: Raw blocks are emitted in their original position, and since ADR 0002 so is everything else: parsing decomposes the file into `preamble + requires_source + Σ entry.source + tail`, where every byte belongs to exactly one term
 
 This means:
 - Simple rules are fully editable in the UI
 - Complex/exotic Sieve stays as raw text (editable in Monaco)
 - We never clobber rules we don't understand
+- A script parsed and saved with no edits comes back byte-identical, and editing one Rule reformats only that Rule — not the whole file (see `docs/adr/0002-the-file-is-a-sequence-of-spans.md`)
 
 ### Required Sieve extensions
 
@@ -250,6 +251,11 @@ Optionally: launchd plist for auto-start on metastasis.
 4. **Progressive disclosure** — visual builder for simple rules, raw editor for complex ones
 5. **Single account focus** — but architecture doesn't prevent multi-account later
 6. **Dark mode default** — consistent with Slab aesthetic
+
+## Known Limitations
+
+- **Bracketed comments (RFC 5228 §2.3, `/* ... */`) are unmodelled.** The parser has no notion of that comment's extent, so `/*` becomes its own entry and the comment's scope crosses whatever entry boundaries the parser draws around it — reordering rules can move a rule into or out of a commented-out region. Pre-existing on `main`, tracked as bead `areyousievious-hr6`.
+- **The byte-identical save property (`docs/adr/0002-the-file-is-a-sequence-of-spans.md`) is exercised on 21 of the 63 corpus fixtures under `backend/test_scripts/`.** The other 42 parse to no `Rule` at all — mostly `vendor/` extension cases that become `RawBlock`s by design, plus `roundcube.sieve`, which parses as a single whole-file `RawBlock` — and have nothing to edit. That is the intended safety net working as designed rather than a defect, but it means the rule-editing behaviour has real coverage on less than half the corpus.
 
 ## Future (v2+)
 

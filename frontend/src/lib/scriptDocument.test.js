@@ -38,6 +38,9 @@ beforeEach(() => __resetKeys());
 /** A wire payload with rules and a raw block interleaved. */
 const WIRE = {
   requires: ['fileinto'],
+  preamble: '',
+  requires_source: '',
+  tail: '',
   entries: [
     {
       kind: 'rule',
@@ -56,8 +59,9 @@ const WIRE = {
         },
       ],
       actions: [{ type: 'fileinto', argument: 'A' }],
+      source: '',
     },
-    { kind: 'raw', text: '# untouched', comment: '' },
+    { kind: 'raw', text: '# untouched', comment: '', source: '' },
     {
       kind: 'rule',
       name: 'B',
@@ -75,6 +79,7 @@ const WIRE = {
         },
       ],
       actions: [{ type: 'fileinto', argument: 'B' }],
+      source: '',
     },
   ],
 };
@@ -112,7 +117,13 @@ describe('wire translation', () => {
   });
 
   it('tolerates a minimal payload', () => {
-    expect(toWire(fromWire({}))).toEqual({ requires: [], entries: [] });
+    expect(toWire(fromWire({}))).toEqual({
+      requires: [],
+      preamble: '',
+      requires_source: '',
+      tail: '',
+      entries: [],
+    });
   });
 });
 
@@ -188,6 +199,60 @@ describe('moveRule', () => {
     expect(moveRule(doc, 1, 1)).toBe(doc);
     expect(moveRule(doc, -1, 0)).toBe(doc);
     expect(moveRule(doc, 0, 5)).toBe(doc);
+  });
+
+  it('leaves the original untouched, all the way down', () => {
+    // The old version of this test compared the two documents and passed on a
+    // SHALLOW copy: `moveRule` rebuilt the entries array but every Entry in it
+    // was the same object as before, so mutating a nested field reached
+    // through both. `snapshot()` exists to give callers a pristine copy to
+    // compare against; a mutation that shares objects with it makes that copy
+    // a lie.
+    const doc = fromWire({
+      requires: [],
+      preamble: '',
+      requires_source: '',
+      tail: '',
+      entries: [
+        { kind: 'rule', name: 'A', enabled: true, match: 'anyof',
+          conditions: [{ header: 'from', match_type: 'contains', value: 'a@example.com',
+            address_test: false, negate: false, address_part: '', comparator: '' }],
+          actions: [{ type: 'fileinto', argument: 'A' }], source: '' },
+        { kind: 'rule', name: 'B', enabled: true, match: 'anyof', conditions: [], actions: [],
+          source: '' },
+      ],
+    });
+    const before = snapshot(doc);
+    const moved = moveRule(doc, 0, 1);
+
+    // moveRule(doc, 0, 1) turns [A, B] into [B, A], so rule A is now at
+    // index 1. ruleEntries() is already typed as RuleEntry[] — no `kind`
+    // narrowing needed to reach `.conditions`/`.actions`.
+    ruleEntries(moved)[1].conditions[0].value = 'changed@example.com';
+    ruleEntries(moved)[1].actions[0].argument = 'Changed';
+
+    expect(sameWire(doc, before)).toBe(true);
+    expect(ruleEntries(doc)[0].conditions[0].value).toBe('a@example.com');
+    expect(ruleEntries(doc)[0].actions[0].argument).toBe('A');
+  });
+
+  it('keeps a reordered rule\'s span so the backend can re-emit its bytes', () => {
+    // Nothing else on this branch pins that a reorder keeps `source`. Losing
+    // it here would make the backend silently regenerate a rule that was only
+    // moved, not edited.
+    const doc = fromWire({
+      requires: [],
+      entries: [
+        { kind: 'rule', name: 'A', enabled: true, match: 'anyof', conditions: [], actions: [],
+          source: '# --- A ---\nif true {\n  keep;\n}\n' },
+        { kind: 'rule', name: 'B', enabled: true, match: 'anyof', conditions: [], actions: [],
+          source: '# --- B ---\nif false {\n  discard;\n}\n' },
+      ],
+    });
+    const moved = moveRule(doc, 0, 1);
+    expect(ruleEntries(moved).map((r) => r.name)).toEqual(['B', 'A']);
+    const a = ruleEntries(moved).find((r) => r.name === 'A');
+    expect(a?.source).toBe('# --- A ---\nif true {\n  keep;\n}\n');
   });
 });
 
@@ -290,7 +355,9 @@ describe('updateEntry / setConditions / setActions', () => {
     expect(next).not.toBe(script);
     expect(ruleEntries(next)[0].name).toBe('Renamed');
     expect(ruleEntries(next)[0].enabled).toBe(false);
-    // untouched entries keep their identity — Svelte's keyed each relies on it
+    // untouched entries carry the same wire content, but not the same object
+    // — every entry is cloned, patched or not, so nothing in `next` can
+    // reach back into `script` (see 'is new all the way down' below).
     expect(next.entries.filter((e) => e.key !== rule.key)).toEqual(
       script.entries.filter((e) => e.key !== rule.key)
     );
@@ -298,14 +365,47 @@ describe('updateEntry / setConditions / setActions', () => {
     expect(ruleEntries(script)[0].name).toBe('A');
   });
 
+  it('is new all the way down, even for the entry being patched', () => {
+    // Reported against an earlier version of this fix: `{ ...e, ...patch }`
+    // copies top-level fields but SHARES `conditions`/`actions` with `e`, so
+    // mutating the patched entry's nested state in the returned document
+    // reached through to the input document. `updateEntry` must merge the
+    // patch in first and clone the result, not clone-then-spread.
+    const script = fromWire(WIRE);
+    const rule = ruleEntries(script)[0];
+    const pristine = snapshot(script);
+
+    const patched = updateEntry(script, rule.key, { name: 'B' });
+    ruleEntries(patched)[0].conditions[0].value = 'changed@example.com';
+    ruleEntries(patched)[0].actions[0].argument = 'Changed';
+
+    expect(sameWire(script, pristine)).toBe(true);
+    expect(ruleEntries(script)[0].conditions[0].value).toBe('a@x.com');
+    expect(ruleEntries(script)[0].actions[0].argument).toBe('A');
+  });
+
   it('setConditions and setActions replace the arrays wholesale', () => {
+    // "Wholesale" is a claim about CONTENT, not about object identity. An
+    // earlier version of this test asserted `.toBe(conds)` — that the exact
+    // array the caller built survives by reference into the document. That
+    // guarantee is the same aliasing bug in the other direction: a caller
+    // that mutates its own `conds` array after calling `setConditions` would
+    // reach into the document. `updateEntry` now clones the patch along with
+    // everything else, so this asserts the contents landed, not the
+    // reference.
     const script = fromWire(WIRE);
     const rule = ruleEntries(script)[0];
     const conds = [newCondition()];
     const acts = [newAction()];
     const next = setActions(setConditions(script, rule.key, conds), rule.key, acts);
-    expect(ruleEntries(next)[0].conditions).toBe(conds);
-    expect(ruleEntries(next)[0].actions).toBe(acts);
+    expect(ruleEntries(next)[0].conditions).toEqual(conds);
+    expect(ruleEntries(next)[0].actions).toEqual(acts);
+    expect(ruleEntries(next)[0].conditions).not.toBe(conds);
+    expect(ruleEntries(next)[0].actions).not.toBe(acts);
+
+    // and the caller's own arrays are untouched by anything downstream
+    conds[0].value = 'mutated-by-caller';
+    expect(ruleEntries(next)[0].conditions[0].value).not.toBe('mutated-by-caller');
   });
 
   it('an unknown key is a no-op on the entries', () => {
@@ -374,6 +474,9 @@ describe('vocabularies', () => {
     // with a <datalist> rather than a wider list here.
     const wire = {
       requires: [],
+      preamble: '',
+      requires_source: '',
+      tail: '',
       entries: [{
         kind: 'rule', name: 'Spam', enabled: true, match: 'anyof',
         conditions: [{
@@ -381,6 +484,7 @@ describe('vocabularies', () => {
           address_test: false, negate: false, address_part: '', comparator: '',
         }],
         actions: [{ type: 'fileinto', argument: 'Junk' }],
+        source: '',
       }],
     };
     const roundTripped = toWire(fromWire(wire));
@@ -394,5 +498,52 @@ describe('vocabularies', () => {
     });
     expect(actionSpec('keep')?.hasArg).toBe(false);
     expect(actionSpec('nonsense')).toBeUndefined();
+  });
+});
+
+describe('spans', () => {
+  it('carries a span from the wire and echoes it back unchanged', () => {
+    const payload = {
+      requires: ['fileinto'],
+      preamble: '# Generated by Roundcube\n',
+      requires_source: 'require ["fileinto"];\n',
+      tail: '\n',
+      entries: [
+        {
+          kind: 'rule',
+          name: 'Spam',
+          enabled: true,
+          match: 'anyof',
+          conditions: [],
+          actions: [],
+          source: '\n# --- Spam ---\nif true {\n  keep;\n}\n',
+        },
+      ],
+    };
+    const doc = fromWire(payload);
+    expect(doc.entries[0].source).toBe(payload.entries[0].source);
+    expect(toWire(doc)).toEqual(payload);
+  });
+
+  it('gives a rule the builder minted an empty span', () => {
+    // No span means no pristine copy to compare against, so the backend
+    // regenerates it. That is correct: there is nothing to preserve.
+    const doc = addRule({ requires: [], entries: [], preamble: '', requiresSource: '', tail: '' });
+    expect(doc.entries[0].source).toBe('');
+  });
+
+  it('keeps the span on an edited rule so the backend can compare against it', () => {
+    // The client never decides dirtiness. Clearing the span here would force a
+    // regeneration the backend might not have chosen — and would make an edit
+    // that is reverted still reformat the rule.
+    const doc = fromWire({
+      requires: [],
+      entries: [
+        { kind: 'rule', name: 'A', enabled: true, match: 'anyof', conditions: [], actions: [],
+          source: 'if true {\n  keep;\n}\n' },
+      ],
+    });
+    const edited = updateEntry(doc, doc.entries[0].key, { name: 'B' });
+    expect(edited.entries[0].source).toBe('if true {\n  keep;\n}\n');
   });
 });

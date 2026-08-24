@@ -133,7 +133,14 @@ export interface paths {
         put?: never;
         /**
          * Preview Rule
-         * @description Render one Rule as the Sieve a save would write.
+         * @description Render one Rule as the house-style Sieve an EDIT to it would write.
+         *
+         *     Since areyousievious-8fg.14 a save re-emits an unedited Rule's original
+         *     bytes and regenerates only what changed, so this is not the text every save
+         *     writes — it is the text this Rule takes once it is edited. That is what
+         *     makes it worth showing: the reformatting is the part the user has not
+         *     committed to, and they see it before they do. A Rule they leave alone keeps
+         *     the bytes it came with.
          *
          *     NO MAIL-SERVER DIAL. It depends on `get_session` and not on
          *     `get_script_store`, so it authenticates without opening a ManageSieve
@@ -142,8 +149,10 @@ export interface paths {
          *     against the user's own mail server.
          *
          *     It replaces `previewRule` in the SPA, which was a second implementation of
-         *     `SieveGenerator` that had already diverged five ways. Declared BEFORE the
-         *     `/{name}` routes so `preview` is read as a literal path segment.
+         *     `SieveGenerator` that had already diverged five ways. That sharing is still
+         *     real: preview and the regenerating save path go through one
+         *     `generate_entry`, so they cannot drift again. Declared BEFORE the `/{name}`
+         *     routes so `preview` is read as a literal path segment.
          */
         post: operations["preview_rule_api_scripts_preview_post"];
         delete?: never;
@@ -174,10 +183,18 @@ export interface paths {
          *     refuses — the error contract already made that rejection honest, and this
          *     means we never send it at all.
          *
-         *     ONLY the spans we regenerated are checked, never the RawBlocks. sievelib
+         *     ONLY the Rules are checked, never the RawBlocks. sievelib
          *     does not know `include`, `addheader` or `spamtest` though real servers do,
          *     so validating the whole script would refuse working scripts over a
          *     construct we never touched.
+         *
+         *     THE SAME PRE-FLIGHT ALSO GUARDS THE VERBATIM BOUNDARY BYTES
+         *     (areyousievious-8fg.14). `preamble`, `requires_source` and `tail` arrive on
+         *     the wire and are written to the mail server unaltered, and unlike an
+         *     entry's `source` they have no entry to be compared against — so
+         *     `preflight_error` additionally refuses a head that parses to anything but
+         *     the requires we declare, and a tail that carries a statement at all. This
+         *     is the only call site: one request, one gate.
          */
         put: operations["save_script_api_scripts__name__put"];
         post?: never;
@@ -459,6 +476,11 @@ export interface components {
              */
             kind: "raw";
             /**
+             * Source
+             * @default
+             */
+            source: string;
+            /**
              * Text
              * @default
              */
@@ -497,6 +519,11 @@ export interface components {
              * @default
              */
             name: string;
+            /**
+             * Source
+             * @default
+             */
+            source: string;
         };
         /**
          * SaveRawRequest
@@ -521,8 +548,23 @@ export interface components {
         SaveScriptRequest: {
             /** Entries */
             entries?: (components["schemas"]["RuleDTO"] | components["schemas"]["RawBlockDTO"])[];
+            /**
+             * Preamble
+             * @default
+             */
+            preamble: string;
             /** Requires */
             requires?: string[];
+            /**
+             * Requires Source
+             * @default
+             */
+            requires_source: string;
+            /**
+             * Tail
+             * @default
+             */
+            tail: string;
         };
         /** ScriptListItem */
         ScriptListItem: {
@@ -545,8 +587,23 @@ export interface components {
         ScriptResponse: {
             /** Entries */
             entries?: (components["schemas"]["RuleDTO"] | components["schemas"]["RawBlockDTO"])[];
+            /**
+             * Preamble
+             * @default
+             */
+            preamble: string;
             /** Requires */
             requires?: string[];
+            /**
+             * Requires Source
+             * @default
+             */
+            requires_source: string;
+            /**
+             * Tail
+             * @default
+             */
+            tail: string;
         };
         /** ValidationError */
         ValidationError: {

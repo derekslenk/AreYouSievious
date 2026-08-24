@@ -23,6 +23,8 @@ import pytest
 import sieve_transform as st
 from sievelib.parser import Parser as SieveLibParser
 
+from tests.conftest import CORPUS, corpus_id
+
 BACKEND = Path(__file__).resolve().parent.parent
 
 # ── Fixture corpus (areyousievious-8fg.3) ──
@@ -42,9 +44,9 @@ BACKEND = Path(__file__).resolve().parent.parent
 #                                test_vendor_corpus_reach_is_pinned rather than
 #                                asserted in a comment that can rot.
 
-FIXTURE_ROOT = BACKEND / "test_scripts"
-TEST_SCRIPTS = sorted(p for p in FIXTURE_ROOT.rglob("*.sieve") if p.stat().st_size > 0)
-VENDOR_SCRIPTS = [p for p in TEST_SCRIPTS if p.parent.name == "vendor"]
+# The corpus itself lives in `tests/conftest.py` — one definition, because it
+# is the oracle every property in this suite is asserted over.
+VENDOR_SCRIPTS = [p for p in CORPUS if p.parent.name == "vendor"]
 
 
 def _corpus(known_red: dict[str, str] | None = None) -> list[object]:
@@ -57,8 +59,8 @@ def _corpus(known_red: dict[str, str] | None = None) -> list[object]:
     """
     red = known_red or {}
     params = []
-    for path in TEST_SCRIPTS:
-        fixture_id = str(path.relative_to(FIXTURE_ROOT))
+    for path in CORPUS:
+        fixture_id = corpus_id(path)
         marks = (
             [pytest.mark.xfail(strict=True, reason=red[fixture_id])] if fixture_id in red else []
         )
@@ -100,6 +102,17 @@ def test_round_trip_is_idempotent(path: Path) -> None:
     assert ast3 == ast2, f"{path.name}: parsed AST is not a fixed point"
 
 
+def _without_spans(entries: list[st.Entry]) -> list[st.Entry]:
+    """The entries compared by meaning alone, with their spans cleared.
+
+    Defers to the module's own `_without_span`, which is the exclusion the
+    verbatim guard compares by. Two spellings of "ignore the span" could drift
+    apart, and then a test would be asserting a different notion of sameness
+    than the code it is meant to hold to.
+    """
+    return [st._without_span(e) for e in entries]
+
+
 @pytest.mark.parametrize("path", _corpus())
 def test_round_trip_preserves_every_entry_and_require(path: Path) -> None:
     """Nothing may be dropped by the first normalising pass.
@@ -135,7 +148,18 @@ def test_round_trip_preserves_every_entry_and_require(path: Path) -> None:
     second = st.parse_sieve(st.generate_sieve(first))
     third = st.parse_sieve(st.generate_sieve(second))
 
-    assert second.entries == first.entries, f"{path.name}: entries changed on round-trip"
+    # Compared WITHOUT `source`, which is provenance rather than content: the
+    # bytes an entry was parsed from, not what it means. `first` was parsed
+    # from the user's file and `second` from our regeneration of it, so their
+    # spans differ wherever house style differs from the original — a leading
+    # blank line, an indent — while every field that decides what the filter
+    # DOES is identical. Asserting the spans equal here would be asserting that
+    # generation is byte-identical, which is a different property with its own
+    # test over this same corpus (`test_verbatim_reemission.py`); folding it in
+    # here would make one failure mean either of two unrelated things.
+    assert _without_spans(second.entries) == _without_spans(first.entries), (
+        f"{path.name}: entries changed on round-trip"
+    )
     assert set(second.requires) <= set(first.requires), (
         f"{path.name}: the round trip INVENTED a require: "
         f"{sorted(set(second.requires) - set(first.requires))}"
@@ -229,7 +253,7 @@ RECOGNITION_CENSUS = {
 @pytest.mark.parametrize("path", _corpus())
 def test_recognition_does_not_regress(path: Path) -> None:
     """Every fixture keeps its recognised rules/raw split; new fixtures must be censused."""
-    fixture_id = str(path.relative_to(FIXTURE_ROOT))
+    fixture_id = corpus_id(path)
     assert fixture_id in RECOGNITION_CENSUS, (
         f"{fixture_id}: uncensused fixture — measure (len(rules), len(raw_blocks)) "
         "and add it to RECOGNITION_CENSUS"
@@ -310,7 +334,7 @@ def test_the_corpus_exercises_every_supported_construct() -> None:
     comparators: set[str] = set()
     negated = disabled = address_tests = header_tests = bare_ifs = wrapped_ifs = raw_blocks = 0
 
-    for path in TEST_SCRIPTS:
+    for path in CORPUS:
         script = st.parse_sieve(path.read_text())
         raw_blocks += len(script.raw_blocks)
         for rule in script.rules:
@@ -567,7 +591,7 @@ def test_parse_does_not_redos_on_unterminated_action_string() -> None:
 # user rules on save/load through the API.
 
 
-@pytest.mark.parametrize("path", TEST_SCRIPTS, ids=lambda p: p.name)
+@pytest.mark.parametrize("path", CORPUS, ids=corpus_id)
 def test_json_round_trip_stable(path: Path) -> None:
     """parse -> script_to_json -> json_to_script -> generate must produce
     the same Sieve text as parse -> generate (direct path).

@@ -345,6 +345,12 @@
             "title": "Kind",
             "type": "string"
           },
+          "source": {
+            "default": "",
+            "maxLength": 65536,
+            "title": "Source",
+            "type": "string"
+          },
           "text": {
             "default": "",
             "maxLength": 65536,
@@ -401,6 +407,12 @@
             "maxLength": 200,
             "title": "Name",
             "type": "string"
+          },
+          "source": {
+            "default": "",
+            "maxLength": 65536,
+            "title": "Source",
+            "type": "string"
           }
         },
         "title": "RuleDTO",
@@ -449,6 +461,12 @@
             "title": "Entries",
             "type": "array"
           },
+          "preamble": {
+            "default": "",
+            "maxLength": 65536,
+            "title": "Preamble",
+            "type": "string"
+          },
           "requires": {
             "items": {
               "type": "string"
@@ -456,6 +474,18 @@
             "maxItems": 64,
             "title": "Requires",
             "type": "array"
+          },
+          "requires_source": {
+            "default": "",
+            "maxLength": 8192,
+            "title": "Requires Source",
+            "type": "string"
+          },
+          "tail": {
+            "default": "",
+            "maxLength": 65536,
+            "title": "Tail",
+            "type": "string"
           }
         },
         "title": "SaveScriptRequest",
@@ -521,12 +551,30 @@
             "title": "Entries",
             "type": "array"
           },
+          "preamble": {
+            "default": "",
+            "maxLength": 65536,
+            "title": "Preamble",
+            "type": "string"
+          },
           "requires": {
             "items": {
               "type": "string"
             },
             "title": "Requires",
             "type": "array"
+          },
+          "requires_source": {
+            "default": "",
+            "maxLength": 8192,
+            "title": "Requires Source",
+            "type": "string"
+          },
+          "tail": {
+            "default": "",
+            "maxLength": 65536,
+            "title": "Tail",
+            "type": "string"
           }
         },
         "title": "ScriptResponse",
@@ -777,7 +825,7 @@
     },
     "/api/scripts/preview": {
       "post": {
-        "description": "Render one Rule as the Sieve a save would write.\n\nNO MAIL-SERVER DIAL. It depends on `get_session` and not on\n`get_script_store`, so it authenticates without opening a ManageSieve\nconnection \u2014 this runs on every keystroke behind a debounce, and a\nconnection per keystroke would be a self-inflicted denial of service\nagainst the user's own mail server.\n\nIt replaces `previewRule` in the SPA, which was a second implementation of\n`SieveGenerator` that had already diverged five ways. Declared BEFORE the\n`/{name}` routes so `preview` is read as a literal path segment.",
+        "description": "Render one Rule as the house-style Sieve an EDIT to it would write.\n\nSince areyousievious-8fg.14 a save re-emits an unedited Rule's original\nbytes and regenerates only what changed, so this is not the text every save\nwrites \u2014 it is the text this Rule takes once it is edited. That is what\nmakes it worth showing: the reformatting is the part the user has not\ncommitted to, and they see it before they do. A Rule they leave alone keeps\nthe bytes it came with.\n\nNO MAIL-SERVER DIAL. It depends on `get_session` and not on\n`get_script_store`, so it authenticates without opening a ManageSieve\nconnection \u2014 this runs on every keystroke behind a debounce, and a\nconnection per keystroke would be a self-inflicted denial of service\nagainst the user's own mail server.\n\nIt replaces `previewRule` in the SPA, which was a second implementation of\n`SieveGenerator` that had already diverged five ways. That sharing is still\nreal: preview and the regenerating save path go through one\n`generate_entry`, so they cannot drift again. Declared BEFORE the `/{name}`\nroutes so `preview` is read as a literal path segment.",
         "operationId": "preview_rule_api_scripts_preview_post",
         "requestBody": {
           "content": {
@@ -891,7 +939,7 @@
         "summary": "Get Script"
       },
       "put": {
-        "description": "Save script from JSON rules (generates Sieve).\n\nPRE-FLIGHT (areyousievious-8fg.13): the Sieve we generated is checked\nagainst an independent grammar before it is sent. A Rule whose last\nCondition was deleted generates `if anyof ( ) {`, which a real server\nrefuses \u2014 the error contract already made that rejection honest, and this\nmeans we never send it at all.\n\nONLY the spans we regenerated are checked, never the RawBlocks. sievelib\ndoes not know `include`, `addheader` or `spamtest` though real servers do,\nso validating the whole script would refuse working scripts over a\nconstruct we never touched.",
+        "description": "Save script from JSON rules (generates Sieve).\n\nPRE-FLIGHT (areyousievious-8fg.13): the Sieve we generated is checked\nagainst an independent grammar before it is sent. A Rule whose last\nCondition was deleted generates `if anyof ( ) {`, which a real server\nrefuses \u2014 the error contract already made that rejection honest, and this\nmeans we never send it at all.\n\nONLY the Rules are checked, never the RawBlocks. sievelib\ndoes not know `include`, `addheader` or `spamtest` though real servers do,\nso validating the whole script would refuse working scripts over a\nconstruct we never touched.\n\nTHE SAME PRE-FLIGHT ALSO GUARDS THE VERBATIM BOUNDARY BYTES\n(areyousievious-8fg.14). `preamble`, `requires_source` and `tail` arrive on\nthe wire and are written to the mail server unaltered, and unlike an\nentry's `source` they have no entry to be compared against \u2014 so\n`preflight_error` additionally refuses a head that parses to anything but\nthe requires we declare, and a tail that carries a statement at all. This\nis the only call site: one request, one gate.",
         "operationId": "save_script_api_scripts__name__put",
         "parameters": [
           {
