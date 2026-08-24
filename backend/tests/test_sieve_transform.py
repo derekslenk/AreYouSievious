@@ -100,10 +100,9 @@ def _without_spans(entries: list[st.Entry]) -> list[st.Entry]:
     "path",
     corpus_params(
         {
-            # Both reach sievelib, which this test uses as its "and still valid
-            # Sieve" oracle, and both are refused for one reason.
+            # This test uses sievelib as its "and still valid Sieve" oracle, and
+            # the declared collation is what sievelib refuses.
             "modifiers-comparator-declared.sieve": "areyousievious-3o4: sievelib's comparator whitelist refuses the collation i;ascii-numeric, so our pre-flight refuses a name RFC 5228 §2.7.3 mandates a require for",
-            "match-relational.sieve": "areyousievious-3o4: sievelib's comparator whitelist refuses the collation i;ascii-numeric, so our pre-flight refuses a name RFC 5228 §2.7.3 mandates a require for",
         }
     ),
 )

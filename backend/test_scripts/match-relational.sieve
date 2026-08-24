@@ -1,6 +1,6 @@
-require ["relational", "comparator-i;ascii-numeric", "fileinto"];
+require ["relational", "fileinto"];
 
-# --- spam score above a threshold ---
-if header :value "gt" :comparator "i;ascii-numeric" "x-spam-score" "5" {
-    fileinto "Junk";
+# --- a relational test: string ordering, not numeric ---
+if header :value "gt" :comparator "i;ascii-casemap" "x-batch" "m" {
+    fileinto "Late Batch";
 }

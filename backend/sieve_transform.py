@@ -1715,11 +1715,14 @@ def _unwritable_byte_error(script: SieveScript) -> str | None:
     `comparator-i;ascii-numeric` was refused, which meant a user with an ordinary
     relational spam-score rule could open their script and never save it again.
     `_compute_requires` WRITES THAT NAME ITSELF, so the pre-flight was rejecting
-    our own generator's output. No corpus fixture uses a relational test, which
-    is exactly why all 63 stayed green: the corpus is the oracle only for shapes
-    it contains. Neither character can break out of a quoted string, so this
-    costs nothing — and the escaping at `_requires_text` is what would hold if it
-    did.
+    our own generator's output. No corpus fixture held a relational test or a
+    declared collation, which is exactly why all 63 stayed green: the corpus is
+    the oracle only for shapes it contains. Both shapes are in it now —
+    `match-relational.sieve` and `modifiers-comparator-declared.sieve`, added by
+    areyousievious-gey — so the corpus can fail for this reason today, and the
+    second of them does, pinned to areyousievious-3o4. Neither character can
+    break out of a quoted string, so this costs nothing — and the escaping at
+    `_requires_text` is what would hold if it did.
 
     NOT CHECKED, DELIBERATELY: \x0b, \x0c, \x85, U+2028 and U+2029 all reach the
     output and all are legal comment octets under RFC 5228, which ends a comment

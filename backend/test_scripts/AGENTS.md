@@ -41,7 +41,7 @@ One construct family per file, so "what does the parser do with X" has a single 
 | `lexical-nested-if.sieve` | A nested block, which must reach `RawBlock` whole rather than have its inner condition dropped (`.10`) |
 | `lexical-commented-action.sieve` | A commented-out action inside a live block, which must stay commented out (`.10`) |
 | `modifiers-comparator-declared.sieve` | A collation outside the two RFC 5228 built-ins, so `require ["comparator-i;ascii-numeric"]` is mandatory. Red: **areyousievious-3o4** |
-| `match-relational.sieve` | A `:value "gt"` relational test — unmodelled, so a `RawBlock`. Red for the same collation, **areyousievious-3o4** |
+| `match-relational.sieve` | A `:value "gt"` relational test — unmodelled, so a `RawBlock`. Carries `i;ascii-casemap` DELIBERATELY: under `i;ascii-numeric` it lands in `UNREADABLE_BY_THE_ORACLE` for the same reason as the fixture above and the oracle never sees its relational-ness at all |
 | `lexical-bracket-comment-scope.sieve` | A `/* */` comment whose scope crosses entries: live rule, commented-out rule, live rule. Green, and it documents **areyousievious-hr6** |
 
 ## For AI Agents
@@ -65,13 +65,20 @@ means an unexpected PASS fails the suite, so a pin cannot outlive its defect.
 Keep that pattern. A fixture that reproduces a defect belonging to another bead lands
 truthful and pinned, never edited until it passes.
 
-`modifiers-comparator-declared.sieve` and `match-relational.sieve` are the current pair, both
-pinned to **areyousievious-3o4** across six tests — four as per-fixture `xfail(strict=True)`, and two as named sets, because those two assert over the whole corpus at once. One root cause: sievelib's comparator
-whitelist holds `i;octet` and `i;ascii-casemap` and nothing else, so it refuses
-`i;ascii-numeric` — and our pre-flight, our round-trip validity oracle and our AST oracle all
-run through sievelib. Note that sievelib parses a RELATIONAL test perfectly well; it is the
-collation alone that it refuses, which is why the relational fixture is red too rather than
-being the free addition it looks like.
+`modifiers-comparator-declared.sieve` is the current one, pinned to **areyousievious-3o4**
+across four tests — three as per-fixture `xfail(strict=True)`, and one as a named set
+(`RULES_THE_ORACLE_REFUSES`), because that one asserts over the whole corpus in a single
+assertion. One root cause: sievelib's comparator whitelist holds `i;octet` and
+`i;ascii-casemap` and nothing else, so it refuses `i;ascii-numeric` — and our pre-flight, our
+round-trip validity oracle and our AST oracle all run through sievelib.
+
+**sievelib parses a RELATIONAL test perfectly well.** Given `require ["relational"]`, both
+`:value "gt"` and `:count "eq"` are fine; the collation alone defeats it. That is why
+`match-relational.sieve` declares `i;ascii-casemap` and is GREEN: written with the numeric
+collation it was red for the collation, not for being relational, so it bought a second copy
+of the fixture above's coverage and gave the oracle no sight of a relational test at all. The
+numeric-collation shape is still covered, at the unit level, by `_RELATIONAL_SPAM_SCORE` in
+`tests/test_span_injection_guard.py`. A fixture must be red for its OWN shape or not at all.
 
 `lexical-bracket-comment-scope.sieve` is green and is still evidence: our projection sees
 three entries where sievelib sees two rules, because the commented-out rule between them is
