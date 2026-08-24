@@ -17,7 +17,6 @@ from __future__ import annotations
 
 import re
 import time
-from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -102,8 +101,14 @@ def test_round_trip_is_idempotent(path: Path) -> None:
 
 
 def _without_spans(entries: list[st.Entry]) -> list[st.Entry]:
-    """The entries compared by meaning alone, with their spans cleared."""
-    return [replace(e, source="") for e in entries]
+    """The entries compared by meaning alone, with their spans cleared.
+
+    Defers to the module's own `_without_span`, which is the exclusion the
+    verbatim guard compares by. Two spellings of "ignore the span" could drift
+    apart, and then a test would be asserting a different notion of sameness
+    than the code it is meant to hold to.
+    """
+    return [st._without_span(e) for e in entries]
 
 
 @pytest.mark.parametrize("path", _corpus())

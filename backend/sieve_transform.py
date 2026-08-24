@@ -13,7 +13,7 @@ Design principles:
 import bisect
 import re
 import threading
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 from sievelib.parser import Lexer, Parser
 from sievelib.parser import ParseError as SieveLibParseError
@@ -1431,6 +1431,44 @@ def sieve_is_parseable(text: str) -> str | None:
         if parser.parse(text.encode()):
             return None
         return str(parser.error)
+
+
+def _without_span(entry: Entry) -> Entry:
+    """A copy with `source` cleared, for comparison by value alone."""
+    return replace(entry, source="")
+
+
+def span_is_faithful(entry: Entry) -> bool:
+    """True when `entry.source` re-parses to exactly this entry and nothing else.
+
+    This is the whole of the dirty check. The span is the pristine copy the
+    entry was parsed from, so comparing against it needs no flag, no identity
+    and no cooperation from the client — which matters, because `source`
+    crosses the wire and comes back under the client's control.
+
+    Four things are required, and all four are load-bearing:
+
+      - EXACTLY ONE entry, so a span cannot carry a second statement. Append
+        `redirect "attacker@example.com";` to an otherwise honest span and this
+        is what refuses it.
+      - NO requires, so a span cannot declare an extension the file does not.
+      - NO preamble and NO tail, so a span cannot carry loose bytes on either
+        side of the entry it claims to be.
+      - VALUE EQUALITY ignoring `source` itself, so the bytes mean what the
+        entry says they mean.
+
+    It fails CLOSED. Every path that cannot vouch for the span returns False
+    and the caller regenerates, which is correct but reformats — the failure
+    mode is a cosmetic loss, never a wrong filter.
+    """
+    if not entry.source:
+        return False
+    reparsed = parse_sieve(entry.source)
+    if reparsed.requires or reparsed.preamble or reparsed.tail:
+        return False
+    if len(reparsed.entries) != 1:
+        return False
+    return _without_span(reparsed.entries[0]) == _without_span(entry)
 
 
 def preflight_error(script: SieveScript) -> str | None:
