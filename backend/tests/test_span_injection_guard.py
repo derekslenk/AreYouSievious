@@ -580,9 +580,12 @@ def test_a_line_ending_in_a_quoted_field_is_not_refused(field: dict):
     """
     script = _script_with(**field)
     assert st.preflight_error(script) is None
-    assert st.parse_sieve(st.generate_sieve(script)) == st.parse_sieve(st.generate_sieve(script)), (
-        "and it is still a fixed point"
-    )
+    # An earlier spelling of this compared one expression to ITSELF, which held
+    # for `RawBlock(text="}}}garbage{{{")` too. The property is that the byte
+    # survives a parse of what we generated: re-parsing must give back the same
+    # text, so nothing was swallowed, split or re-escaped on the way through.
+    generated = st.generate_sieve(script)
+    assert st.generate_sieve(st.parse_sieve(generated)) == generated, "not a fixed point"
 
 
 @pytest.mark.parametrize("field", _A_NUL_IN_A_QUOTED_FIELD)
@@ -612,6 +615,11 @@ def test_the_endpoint_rejects_a_nul_in_a_quoted_field_without_writing(authed_cli
             ],
         )
     assert r.status_code == 400, r.text
+    # The message, not just the status. A NUL in `comparator` earns a 400 from
+    # sievelib's comparator whitelist whether or not this guard exists, so on
+    # that param the status alone does not discriminate. The route puts
+    # `preflight_error`'s own words in the detail, which does.
+    assert "a NUL would truncate the script for the server" in r.text, r.text
     assert store.scripts == {"primary": "keep;\n"}, "the real script must be untouched"
 
 
