@@ -1192,7 +1192,7 @@ class SieveGenerator:
         computed = self._compute_requires(script)
         if not computed:
             return ""
-        req_list = ", ".join(f'"{r}"' for r in computed)
+        req_list = ", ".join(f'"{self._quote(r)}"' for r in computed)
         return f"require [{req_list}];\n"
 
     def generate_entry(self, rule: Rule) -> str:
@@ -1568,6 +1568,7 @@ def span_is_faithful(entry: Entry) -> bool:
 
 
 _LONE_CR = re.compile(r"\r(?!\n)")
+_EXTENSION_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
 
 
 def _unwritable_byte_error(script: SieveScript) -> str | None:
@@ -1599,13 +1600,19 @@ def _unwritable_byte_error(script: SieveScript) -> str | None:
     5228's `octet-not-crlf` excludes %x00, so a NUL is never valid Sieve, and
     against a C-implemented server truncation at it is the classic desync.
 
-    The exemption is for the file that ALREADY holds one: a NUL that breaks
-    lexing takes the whole file down the `usable == False` path, where it comes
-    back as a single RawBlock carrying the entire text. Refusing it there locks
-    a user out of saving their own file over a byte that was already sitting on
-    their server, and re-emitting bytes that are already there changes nothing —
-    while `RawBlock.text` grants arbitrary statements by design and by ADR 0002
-    regardless, so a NUL buys an attacker nothing he does not already have.
+    The exemption is meant for the file that ALREADY holds one — a NUL that
+    breaks lexing takes the whole file down the `usable == False` path and comes
+    back as a single RawBlock carrying the entire text — but WHAT THE CODE
+    ACTUALLY KEYS ON is narrower than that sentence and worth stating plainly: a
+    NUL anywhere in `RawBlock.text` exempts that entry's whole `source`. Both
+    sides of that test are bytes the client supplies, so it is usable on purpose:
+    put a NUL in `text` and one in the leading gap rides along. No capability is
+    gained, because the NUL in `text` is itself the unrestricted channel —
+    `RawBlock.text` grants arbitrary statements by design and by ADR 0002 — so a
+    tighter test would buy nothing while risking the lockout it exists to avoid.
+    Refusing it would lock a user out of saving their own file over a byte
+    already sitting on their server, and re-emitting bytes that are already there
+    changes nothing.
 
     SO THE EXEMPTION REACHES ONLY AS FAR AS THAT REASON DOES: a `source` is
     exempt when the NUL is in the block's own `text`, and not otherwise. Two
@@ -1640,6 +1647,24 @@ def _unwritable_byte_error(script: SieveScript) -> str | None:
     unconditionally; accepting it for one byte and not the other was two opposite
     principles applied to one shape.
 
+    A REQUIRE ITEM must look like an extension name, which is a whitelist rather
+    than a byte list because nothing else here can be: `_requires_text`
+    interpolates each item into `require ["..."];`, and `script.requires` is the
+    one client-supplied string the design never thought to check — it is what
+    `_boundary_error` checks the head bytes AGAINST, so it was read as the
+    trusted reference rather than as input. Unescaped, and with no entries in the
+    script at all, `requires=['fileinto"];\nredirect "atk@e.com";\n#']` rendered
+    a live `redirect` that sievelib pronounced valid Sieve. That is the original
+    Task 7 bug — hostile bytes, no entries, 200 — one field along.
+
+    `[A-Za-z0-9][A-Za-z0-9._-]*` matched in full is a shape, not a list of names, so an
+    extension nobody here has heard of still saves; all 15 declared across the
+    63 corpus fixtures match it, `vacation-seconds` and `imap4flags` included.
+    It subsumes the byte checks for this one field, since CR, LF and NUL are all
+    outside the class. The interpolation is escaped as well, because every other
+    string this generator writes is, and a guard that happens to be upstream is
+    not a reason to emit text unescaped.
+
     NOT CHECKED, DELIBERATELY: \x0b, \x0c, \x85, U+2028 and U+2029 all reach the
     output and all are legal comment octets under RFC 5228, which ends a comment
     at CRLF and at nothing else. Python's `str.splitlines()` breaks on every one
@@ -1662,6 +1687,13 @@ def _unwritable_byte_error(script: SieveScript) -> str | None:
                 # else the span holds is not covered by it.
                 no_nul.append(entry.source)
 
+    for extension in script.requires:
+        # `fullmatch`, not `match`: Python's `$` also matches BEFORE a trailing
+        # newline, so `"elsif\n"` satisfied an anchored pattern and rendered
+        # `require ["elsif` and `"];` on two lines. Caught by the fuzzer the
+        # first time it could see this field at all.
+        if not _EXTENSION_NAME.fullmatch(extension):
+            return f"not an extension name: {extension!r}"
     for text in one_comment_line:
         if "\n" in text:
             return "a line break in a name or comment would end the comment it sits in"

