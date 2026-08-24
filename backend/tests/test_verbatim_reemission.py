@@ -327,6 +327,46 @@ def test_a_file_missing_its_require_gains_one_and_that_is_correct():
     assert script.entries[0].source in out
 
 
+# How much of the corpus the editing property below actually reaches. Its skip
+# is honest — a fixture with no Rule has nothing to edit — but it is SILENT: the
+# reason only shows under `-rs`, so the suite reads as covering 63 fixtures
+# while the headline behaviour of this whole feature is verified on 21.
+FIXTURES_WITH_A_RULE = 21
+
+
+def test_the_editing_property_reaches_exactly_the_fixtures_it_claims_to():
+    """A tripwire on the skip above, so the coverage cap can only move on purpose.
+
+    42 of the 63 fixtures parse to no `Rule` at all — `vendor/` extension cases
+    and deliberate raw fixtures that become `RawBlock`s by design — so
+    `test_editing_one_rule_leaves_every_other_line_alone` skips them. Correct,
+    and not something to remove.
+
+    What is worth guarding is the DIRECTION of that number. This parser's
+    defects have been failures to recognise rather than failures to parse: it
+    succeeded and misread (`.13`, `.15`, the narrowing projection in `#64`).
+    A change of that shape would quietly move fixtures OUT of the recognised
+    set, into the skip bucket, and the editing property would erode with
+    nothing going red — the suite would still report the same number of passes.
+    Pinning the count makes that erosion a failure.
+
+    This pins a count, NOT a blessing. Several fixtures are outside the
+    recognised set for reasons someone owns — `vendor/bracket-comment.sieve`
+    parses to a single whole-file `RawBlock` because bracketed comments are
+    unmodelled, which is bead areyousievious-hr6 and pre-existing on main. If a
+    fix moves a fixture INTO the set, this test fails too; update the number,
+    which is the point of it being written down.
+    """
+    assert len(CORPUS) == 63, "the corpus changed size — recount before editing the number below"
+    with_a_rule = [p for p in CORPUS if st.parse_sieve(p.read_text()).rules]
+    assert len(with_a_rule) == FIXTURES_WITH_A_RULE, (
+        "the number of fixtures parsing to at least one Rule moved: "
+        f"{len(with_a_rule)} now, {FIXTURES_WITH_A_RULE} pinned. If recognition IMPROVED, "
+        "raise the number. If it REGRESSED, that is the defect this test exists to catch — "
+        f"missing: {sorted(corpus_id(p) for p in with_a_rule)}"
+    )
+
+
 @pytest.mark.parametrize("path", CORPUS, ids=corpus_id)
 def test_editing_one_rule_leaves_every_other_line_alone(path: Path):
     """The point of the whole feature, measured: change one Rule and count how
