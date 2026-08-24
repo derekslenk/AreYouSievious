@@ -106,9 +106,10 @@ class RuleDTO(BaseModel):
 
     Bounded like `RawBlockDTO.text` because it is the same kind of thing: text
     from the wire that may be written to the mail server unaltered. It is not
-    trusted on the strength of arriving here — a later task adds the guard that
-    re-parses it and refuses anything that is not exactly the entry it
-    accompanies.
+    trusted on the strength of arriving here: `sieve_transform.span_is_faithful`
+    re-parses it, and the generator re-emits it verbatim ONLY when that re-parse
+    yields exactly the entry it accompanies. A span that fails the test is not
+    an error — the entry is simply regenerated in house style instead.
     """
 
 
@@ -123,11 +124,13 @@ class RawBlockDTO(BaseModel):
     source: str = Field(default="", max_length=65536)
     """The bytes this entry was parsed from, echoed back on save.
 
-    Bounded like `RawBlockDTO.text` because it is the same kind of thing: text
-    from the wire that may be written to the mail server unaltered. It is not
-    trusted on the strength of arriving here — a later task adds the guard that
-    re-parses it and refuses anything that is not exactly the entry it
-    accompanies.
+    A SUPERSET of `text` above: the span also carries the blank and comment
+    lines that sit above the block, which is where `comment` was taken from. It
+    gets the same cap as `text` for the same reason — text from the wire that
+    may be written to the mail server unaltered. It is not trusted on the
+    strength of arriving here: `sieve_transform.span_is_faithful` re-parses it,
+    and the generator re-emits it verbatim ONLY when that re-parse yields
+    exactly the entry it accompanies.
     """
 
 

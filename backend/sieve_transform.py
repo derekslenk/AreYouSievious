@@ -1577,8 +1577,25 @@ def _unwritable_byte_error(script: SieveScript) -> str | None:
     One question — are these bytes ours to write — asked of every field that
     becomes part of the script outside a quoted string. Values and arguments are
     excluded because the generator escapes them into quoted strings, verified; a
-    byte there is a literal, not a statement. THE SCOPE DIFFERS PER BYTE, and
-    each difference is the line between a guard and a lockout:
+    byte there is a literal, not a statement.
+
+    THAT EXCLUSION ANSWERS STATEMENT INJECTION AND NOTHING ELSE, which is worth
+    saying plainly before the NUL clause below leans on a harm quoting does not
+    address. Escaping stops a byte from becoming a statement of its own; it does
+    not stop the byte from reaching the mail server. A Condition value holding a
+    NUL, and an Action argument holding one, both pass `preflight_error`, and
+    the generated `header :contains` and `fileinto` lines carry that byte raw
+    between the quotes — a lone CR in a value likewise. So each rule below is a
+    NARROWING of where such a byte may appear, never a seal: a server that
+    truncates its input at a NUL still has one to truncate at. That is accepted
+    rather than overlooked. No version of this app has ever checked a value for
+    these bytes — `_unwritable_byte_error` is new on this branch, and main had
+    no byte guard at all — so the gap is not a regression, and closing it is a
+    decision about what a value may contain, which is a different question from
+    which bytes are ours to write.
+
+    THE SCOPE DIFFERS PER BYTE, and each difference is the line between a guard
+    and a lockout:
 
     A BARE LF, in `Rule.name` or `RawBlock.comment` ONLY. Those two are
     interpolated into a single `# ` line — `f"# {comment}\n{text}"` and
@@ -1786,14 +1803,23 @@ def _boundary_error(script: SieveScript) -> str | None:
 def preflight_error(script: SieveScript) -> str | None:
     """Why the mail server would refuse this script, or None (`.13`).
 
-    ONLY THE SPANS WE REGENERATED are checked, never the RawBlocks, and that
-    scoping is load-bearing rather than an optimisation. sievelib's grammar has
-    real gaps — `include`, `addheader` and `spamtest` are all "unknown command"
-    to it though every real server takes them — so validating the whole script
-    would refuse working scripts forever, for a construct we never touched.
+    ONLY THE RULES are checked, never the RawBlocks, and that scoping is
+    load-bearing rather than an optimisation. sievelib's grammar has real gaps
+    — `include`, `addheader` and `spamtest` are all "unknown command" to it
+    though every real server takes them — so validating the whole script would
+    refuse working scripts forever, for a construct we never touched. A
+    RawBlock is where such a construct lives, and it is exempt.
 
-    Checking only what we generated is sound because a RawBlock is re-emitted
-    byte-identical and the server already accepted it once.
+    NOTE THAT THIS IS NOT THE SAME LINE AS "what we regenerated". The loop
+    below runs over every Rule unconditionally, including one whose span
+    `span_is_faithful` vouched for and which a save will therefore re-emit
+    verbatim rather than regenerate. `generate_sieve` takes the same verbatim
+    path here as it does on the save, so what sievelib sees for such a Rule is
+    that original span itself, under the require line it needs — the check is
+    over the bytes that will actually go out either way.
+
+    Skipping the RawBlocks is sound for a different reason: their bytes are
+    re-emitted byte-identical and the server already accepted them once.
 
     Each Rule is checked as its own little script, with the requires it needs,
     because sievelib treats a command whose extension was not required as a

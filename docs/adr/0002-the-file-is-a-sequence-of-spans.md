@@ -9,8 +9,16 @@ Accepted. Implements areyousievious-8fg.14.
 ## Context
 
 We edit filter files we did not write, on servers we do not own. Opening a
-Roundcube- or SOGo-authored script and changing one Rule rewrote every Rule
-in the file into our house style, because generation was the only path.
+SOGo-authored script and changing one Rule rewrote every Rule in the file into
+our house style, because generation was the only path.
+`backend/test_scripts/sogo.sieve` is that case: 14 Rules, every one of them
+reformatted by a save that touched one.
+
+Roundcube was the other name here, and it is the wrong example.
+`backend/test_scripts/roundcube.sieve` parses to no Rule at all — a single
+whole-file `RawBlock` — so there was never a Rule in it for a save to reformat.
+The Known Limitations section of `docs/ARCHITECTURE.md` records that same
+split across the corpus.
 
 The obvious fix — mark edited Rules dirty — does not survive contact with the
 data model. `Rule` carries no identity (ADR 0001), so a flag has nothing
@@ -48,7 +56,11 @@ allows. The guard fails closed: any doubt regenerates.
   `generate(parse(x))` property could not express this and passed vacuously on
   anything unrecognised.
 - Edited Rules still reformat into house style. That is disclosed by
-  construction: the preview endpoint shows the exact text before a save.
+  construction: the preview endpoint shows the text a Rule takes ONCE IT IS
+  EDITED. That is not the text every save writes — a Rule left alone is
+  re-emitted from its own span and never reaches the generator — and it is the
+  more useful thing to show, because the reformatting is precisely what the
+  user has not committed to yet.
 - `require` pruning (areyousievious-8fg.15) now happens only on a save that
   actually regenerates something. An untouched over-declared `require` line
   survives, because rewriting it would break the byte-identical property for a
