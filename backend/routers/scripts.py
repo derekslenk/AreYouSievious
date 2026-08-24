@@ -137,7 +137,7 @@ def save_script(name: str, req: SaveScriptRequest, store: ScriptStore = Depends(
     refuses — the error contract already made that rejection honest, and this
     means we never send it at all.
 
-    ONLY the spans we regenerated are checked, never the RawBlocks. sievelib
+    ONLY the Rules are checked, never the RawBlocks. sievelib
     does not know `include`, `addheader` or `spamtest` though real servers do,
     so validating the whole script would refuse working scripts over a
     construct we never touched.
