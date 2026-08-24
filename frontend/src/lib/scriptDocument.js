@@ -42,7 +42,7 @@
  *           & {key: string, conditions: Condition[], actions: Action[]}} RuleEntry
  * @typedef {WireRaw & {key: string}} RawEntry
  * @typedef {RuleEntry | RawEntry} Entry
- * @typedef {{requires: string[], entries: Entry[]}} ScriptDocument
+ * @typedef {{requires: string[], preamble: string, requiresSource: string, tail: string, entries: Entry[]}} ScriptDocument
  */
 
 // ── Vocabularies ──
@@ -135,14 +135,20 @@ export function __resetKeys() {
 
 /**
  * Build an editable document from a wire payload.
- * @param {{requires?: string[], entries?: object[]}} payload
+ * @param {{requires?: string[], preamble?: string, requires_source?: string, tail?: string, entries?: object[]}} payload
  * @returns {ScriptDocument}
  */
 export function fromWire(payload) {
   const entries = (payload?.entries ?? []).map((e) => {
     if (e.kind === 'raw') {
       /** @type {RawEntry} */
-      const raw = { key: key(), kind: 'raw', text: e.text ?? '', comment: e.comment ?? '' };
+      const raw = {
+        key: key(),
+        kind: 'raw',
+        text: e.text ?? '',
+        comment: e.comment ?? '',
+        source: e.source ?? '',
+      };
       return raw;
     }
     /** @type {RuleEntry} */
@@ -171,10 +177,17 @@ export function fromWire(payload) {
         type: a.type,
         argument: a.argument ?? '',
       })),
+      source: e.source ?? '',
     };
     return rule;
   });
-  return { requires: payload?.requires ?? [], entries };
+  return {
+    requires: payload?.requires ?? [],
+    preamble: payload?.preamble ?? '',
+    requiresSource: payload?.requires_source ?? '',
+    tail: payload?.tail ?? '',
+    entries,
+  };
 }
 
 /**
@@ -197,7 +210,7 @@ export function fromWire(payload) {
  */
 export function entryToWire(e) {
   return e.kind === 'raw'
-    ? { kind: 'raw', text: e.text, comment: e.comment }
+    ? { kind: 'raw', text: e.text, comment: e.comment, source: e.source }
     : {
         kind: 'rule',
         name: e.name,
@@ -213,16 +226,23 @@ export function entryToWire(e) {
           comparator: c.comparator,
         })),
         actions: e.actions.map((a) => ({ type: a.type, argument: a.argument })),
+        source: e.source,
       };
 }
 
 /**
  * Strip view state and produce the wire payload for a whole Script.
  * @param {ScriptDocument} doc
- * @returns {{requires: string[], entries: (WireRule | WireRaw)[]}}
+ * @returns {{requires: string[], preamble: string, requires_source: string, tail: string, entries: (WireRule | WireRaw)[]}}
  */
 export function toWire(doc) {
-  return { requires: doc.requires, entries: doc.entries.map(entryToWire) };
+  return {
+    requires: doc.requires,
+    preamble: doc.preamble ?? '',
+    requires_source: doc.requiresSource ?? '',
+    tail: doc.tail ?? '',
+    entries: doc.entries.map(entryToWire),
+  };
 }
 
 // ── Reading ──
@@ -280,6 +300,10 @@ export function addRule(doc) {
     match: 'anyof',
     conditions: [newCondition()],
     actions: [{ ...newAction(), argument: 'INBOX' }],
+    // No span means no pristine copy to compare against, so the backend
+    // regenerates it — stated outright rather than left undefined and
+    // leaned on the DTO default.
+    source: '',
   };
   return { ...doc, entries: [...doc.entries, rule] };
 }
