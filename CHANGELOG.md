@@ -8,6 +8,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Security
 
+- `source`, the bytes an entry is re-emitted from on save, crosses the wire and is never trusted on arrival: `span_is_faithful` re-parses it and refuses anything that is not exactly the entry it accompanies — one entry, no `require`, no preamble, no tail, value-equal to the submitted entry. The preamble, `require` bytes and tail have no entry to compare against, so `preflight_error`'s boundary check holds them to the same standard (areyousievious-8fg.14)
+- A `Rule.name` or `RawBlock.comment` carrying a line break or a NUL is refused before save. Both fields are interpolated into a single `# ` comment line, so either byte would end that comment and turn the rest of the field into a live statement the mail server executes; the same guard already refused a lone CR there for the same reason. NUL stays allowed in `RawBlock.text` and an entry's `source` — a script that already has one on the server can still be saved unchanged (areyousievious-bvy)
 - TLS context hardening: verify outbound IMAP TLS certificate chain; add connect/read timeouts to ManageSieve and IMAP sockets (Phase CP1)
 - ReDoS budget: replaced unbounded backtracking regex in Sieve quoted-string parser with a linear alternative
 - CRLF header-injection guard: strip `\r` and `\n` from Sieve script names before passing to ManageSieve `PUTSCRIPT`/`SETACTIVE` commands
@@ -19,6 +21,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- Parsing now decomposes a Sieve file into `preamble + requires_source + Σ entry.source + tail`, where every byte of the original belongs to exactly one term and each entry's span carries the blank lines and comments immediately above it. Saving re-emits an entry's span byte-for-byte when re-parsing it agrees with the entry, and renders it canonically only when it does not — so parsing and saving a script with no edits is byte-identical, not just construct-for-construct equivalent, and editing one Rule no longer reformats every other Rule into house style. Two exceptions are deliberate: a file with a `fileinto` and no `require` statement is invalid Sieve, so a save adds the canonical `require` line; and an empty script saves as a single newline. See `docs/adr/0002-the-file-is-a-sequence-of-spans.md` (areyousievious-8fg.14)
+- Preview and save can now render an unedited rule differently: preview always shows house style, which is what discloses to the user what a rule would look like *if* edited before they commit to a save that re-emits the original bytes instead. Both still go through the one `generate_entry`, so they cannot drift from each other (areyousievious-8fg.14)
 - sievelib AST oracle in CI: every fixture is parsed, regenerated and compared by an independent grammar, so a change to what a script MEANS fails the build. Normalises only the differences made on purpose (`require`, header-name case, string escaping) and is tested to bite in both directions (areyousievious-8fg.13)
 - Runtime pre-flight before PUT: a Rule whose last Condition was deleted generates `if anyof ( ) {`, and the save is now refused with the compiler diagnostic rather than sent (areyousievious-8fg.13)
 
@@ -37,6 +41,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- `require` pruning (areyousievious-8fg.15) now happens only on a save that regenerates at least one entry, rather than on every save. A script saved with no edits keeps its `require` line exactly as written, even if it over-declares an extension nothing in the file uses — rewriting that line would break the byte-identical guarantee above for a file nobody asked to change (areyousievious-8fg.14)
 - Closed wire vocabularies: `match`, `match_type` and an Action's `type` are Pydantic `Literal`s pinned against `sieve_transform`'s own vocabulary tuples, so a body naming a construct that does not exist is a 422 instead of a silently mis-generated script. The SPA now imports the generated `api-types.d.ts`, making `toWire` a type-checked whitelist (areyousievious-8fg.18)
 
 - CORS configuration tightened: explicit `allow_methods` and `allow_headers` replace wildcard (P1)

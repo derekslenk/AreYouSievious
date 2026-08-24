@@ -15,7 +15,7 @@ Project documentation: architecture notes, decision records, agent-skill configu
 ## Subdirectories
 | Directory | Purpose |
 |-----------|---------|
-| `adr/` | Numbered architecture decision records. `0001-identity-is-view-state.md` governs the wire format |
+| `adr/` | Numbered architecture decision records. `0001-identity-is-view-state.md` and `0002-the-file-is-a-sequence-of-spans.md` together govern the wire format |
 | `agents/` | Agent-skill configuration: `issue-tracker.md` (beads), `triage-labels.md`, `domain.md` |
 | `screenshots/` | UI screenshots used in README (login, dashboard, rule editor) |
 
