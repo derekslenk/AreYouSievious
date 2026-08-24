@@ -346,10 +346,16 @@ def test_parsing_is_thread_safe_because_only_the_lexer_is_borrowed() -> None:
 # ── Where this bead's fix stops ──
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="areyousievious-3o4: sievelib's comparator whitelist refuses the collation i;ascii-numeric, so our pre-flight refuses a name RFC 5228 §2.7.3 mandates a require for",
-)
+# The fixtures whose recognised Rules sievelib refuses, and the bead that owns
+# each. Asserted as an EXACT set below, never as an `xfail` on the test: this
+# test's claim is about all 66 fixtures, and a function-level marker would
+# switch that claim off for every one of them to accommodate this one.
+RULES_THE_ORACLE_REFUSES = {
+    "modifiers-comparator-declared.sieve": "areyousievious-3o4",
+}
+"""For one reason: sievelib's comparator whitelist holds i;octet and i;ascii-casemap and nothing else, so it refuses the collation i;ascii-numeric that RFC 5228 §2.7.3 mandates a require for."""
+
+
 def test_every_rule_we_recognise_is_sieve_sievelib_accepts() -> None:
     """A standing check on the projection, and the measurement `.11` needs.
 
@@ -363,17 +369,28 @@ def test_every_rule_we_recognise_is_sieve_sievelib_accepts() -> None:
     Adopting the gate is still not free — sievelib's Parser resets a CLASS
     attribute per parse, so it needs a process-wide lock that the Lexer does
     not — which is why `.10` takes the Lexer only.
+
+    The number is no longer 0: `modifiers-comparator-declared.sieve` yields a
+    Rule the oracle refuses, for a defect someone owns. That is held as an
+    exact set rather than as an exemption, so the measurement still runs over
+    every other fixture and a NEW refusal fails here by name.
     """
     from sievelib.parser import Parser as SieveLibParser
 
-    rejected = []
+    refused: dict[str, list[str]] = {}
     for path in CORPUS:
         script = st.parse_sieve(path.read_text())
         for rule in script.rules:
             alone = st.SieveScript(requires=list(script.requires), entries=[rule])
             if not SieveLibParser().parse(st.generate_sieve(alone).encode()):
-                rejected.append((path.name, rule.name))
-    assert not rejected, f"we recognise {len(rejected)} rules sievelib refuses: {rejected[:5]}"
+                refused.setdefault(corpus_id(path), []).append(rule.name)
+
+    known = set(RULES_THE_ORACLE_REFUSES)
+    assert set(refused) == known, (
+        f"we recognise rules sievelib refuses, owned by nobody: {refused}. "
+        f"Accepted again, so delete from RULES_THE_ORACLE_REFUSES: "
+        f"{sorted(known - set(refused))}"
+    )
 
 
 def test_a_command_we_do_not_model_is_not_silently_dropped() -> None:

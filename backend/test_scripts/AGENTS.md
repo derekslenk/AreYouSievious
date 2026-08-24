@@ -51,7 +51,8 @@ One construct family per file, so "what does the parser do with X" has a single 
 - Empty files are skipped (the collector filters on `st_size > 0`)
 - Every fixture here must be LEXABLE — `tests/test_lexical_map.py::test_every_fixture_is_lexable` says so. The parser falls back to character counting for text sievelib's Lexer refuses, and a fixture on that path is silently exempt from the defects `.10` closes
 - When you hit a Sieve construct the parser mishandles, add the smallest fixture that reproduces it, then fix the parser — **do not adjust a fixture to match current behaviour**
-- If the fix belongs to a bead you are not working, the fixture still lands truthful: register it in the `_corpus({...})` call of the tests it fails, with a reason naming the owning bead. Those pins are `xfail(strict=True)`, so the day the fix lands the XPASS fails the suite and the pin has to go. A pin cannot outlive its defect
+- If the fix belongs to a bead you are not working, the fixture still lands truthful: register it in the `corpus_params({...})` call (`tests/conftest.py`) of the tests it fails, with a reason naming the owning bead. Those pins are `xfail(strict=True)`, so the day the fix lands the XPASS fails the suite and the pin has to go. A pin cannot outlive its defect
+- **A test that asserts a property over the WHOLE corpus in one assertion takes a named set, never an `xfail`.** `xfail` is per-param, and a test that is not parametrized has one param: the whole corpus. Marking it does not narrow the claim to your fixture — it switches the claim off for all of them, and the next fixture to regress does so in silence. Assert the exact known-failing set instead (`UNREADABLE_BY_THE_ORACLE` in `tests/test_ast_oracle.py`, `RULES_THE_ORACLE_REFUSES` in `tests/test_lexical_map.py`). That still cannot outlive the defect — fixing it empties the set and the mismatch names the entries to delete — and it fails differently, by name, if a different fixture regresses
 - These files contain real addresses and folder names from the maintainer's mail. Do not add new fixtures carrying anyone else's PII; `tools/check-no-pii.sh` guards the fetch script but not this directory
 - `vendor/` is third-party test data published under MIT and is out of scope for that rule, but it is not synthetic either: a handful of its addresses are the sievelib author's own (`tonio@ngyn.org`) or RFC 5228's examples. Copy it wholesale via the tool, never hand-pick lines out of it
 
@@ -65,7 +66,7 @@ Keep that pattern. A fixture that reproduces a defect belonging to another bead 
 truthful and pinned, never edited until it passes.
 
 `modifiers-comparator-declared.sieve` and `match-relational.sieve` are the current pair, both
-pinned to **areyousievious-3o4** across six tests. One root cause: sievelib's comparator
+pinned to **areyousievious-3o4** across six tests — four as per-fixture `xfail(strict=True)`, and two as named sets, because those two assert over the whole corpus at once. One root cause: sievelib's comparator
 whitelist holds `i;octet` and `i;ascii-casemap` and nothing else, so it refuses
 `i;ascii-numeric` — and our pre-flight, our round-trip validity oracle and our AST oracle all
 run through sievelib. Note that sievelib parses a RELATIONAL test perfectly well; it is the

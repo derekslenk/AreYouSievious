@@ -159,22 +159,41 @@ def test_regeneration_preserves_meaning(path: Path) -> None:
     )
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="areyousievious-3o4: sievelib's comparator whitelist refuses the collation i;ascii-numeric, so our pre-flight refuses a name RFC 5228 §2.7.3 mandates a require for",
-)
+# The fixtures the oracle cannot read, and the bead that owns each. Named
+# rather than counted, and asserted as an EXACT set below.
+UNREADABLE_BY_THE_ORACLE = {
+    "modifiers-comparator-declared.sieve": "areyousievious-3o4",
+    "match-relational.sieve": "areyousievious-3o4",
+}
+"""Both for one reason: sievelib's comparator whitelist holds i;octet and i;ascii-casemap and nothing else, so it refuses the collation i;ascii-numeric that RFC 5228 §2.7.3 mandates a require for."""
+
+
 def test_every_fixture_is_readable_by_the_oracle() -> None:
     """The skip above is a safety valve, not a plan. If it starts firing, the
     oracle is quietly covering less than it appears to.
 
-    It is firing, on the two fixtures carrying `i;ascii-numeric`, and this pin
-    is that sentence made loud rather than left in a skip reason. The valve is
-    working exactly as designed — `test_regeneration_preserves_meaning` now
-    skips those two instead of asserting something it cannot check — and the
-    cost is real: for as long as 3o4 is open, nothing checks that regenerating
-    a script with a declared collation preserves its meaning."""
-    unreadable = [p.name for p in CORPUS if meaning(p.read_text()) is None]
-    assert not unreadable, f"sievelib cannot parse: {unreadable}"
+    It is firing, on the two fixtures carrying `i;ascii-numeric`, and the cost
+    is real: for as long as areyousievious-3o4 is open, nothing checks that
+    regenerating a script with a declared collation preserves its meaning.
+
+    SO THIS IS AN EXACT-SET ASSERTION AND NOT AN `xfail` ON THE TEST. The claim
+    here is about all 66 fixtures, and a function-level marker does not narrow
+    it to the two — it switches the claim off for every one of them, which is
+    word for word the silent cap this test exists to catch. A third fixture
+    going unreadable tomorrow would have xfailed quietly alongside the two.
+    Against the set it fails, and says which one.
+
+    It still cannot outlive the defect, which is what `strict` bought: fixing
+    3o4 empties `unreadable`, the set no longer matches, and the failure names
+    the entries to delete.
+    """
+    unreadable = {corpus_id(p) for p in CORPUS if meaning(p.read_text()) is None}
+    known = set(UNREADABLE_BY_THE_ORACLE)
+    assert unreadable == known, (
+        "the oracle's reach moved. Newly unreadable, owned by nobody: "
+        f"{sorted(unreadable - known)}. Readable again, so delete from "
+        f"UNREADABLE_BY_THE_ORACLE: {sorted(known - unreadable)}"
+    )
 
 
 # ── The oracle itself has to bite ──
