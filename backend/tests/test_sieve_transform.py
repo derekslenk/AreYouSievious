@@ -32,7 +32,7 @@ BACKEND = Path(__file__).resolve().parent.parent
 # Two tiers, both parametrized by every test below:
 #
 #   test_scripts/*.sieve         Three scripts captured from real servers, plus
-#                                eighteen hand-written files with one construct
+#                                twenty hand-written files with one construct
 #                                family each. Written to be read: if you need to
 #                                know what the parser does with `:comparator`,
 #                                modifiers-comparator.sieve is the answer.
@@ -177,6 +177,8 @@ def test_round_trip_preserves_every_entry_and_require(path: Path) -> None:
 # re-measure and update the pin here.
 RECOGNITION_CENSUS = {
     "actions-all.sieve": (2, 0),
+    "bracketed-comment-at-file-start.sieve": (1, 1),
+    "bracketed-comment-between-rules.sieve": (2, 2),
     "disabled-rules.sieve": (2, 0),
     "escaping.sieve": (2, 0),
     "grak.sieve": (26, 0),
@@ -184,7 +186,7 @@ RECOGNITION_CENSUS = {
     "lexical-brace-in-a-string.sieve": (2, 0),
     "lexical-commented-action.sieve": (1, 0),
     "lexical-nested-if.sieve": (0, 1),
-    "lexical-bracket-comment-scope.sieve": (1, 2),
+    "lexical-bracket-comment-scope.sieve": (2, 1),
     "match-regex.sieve": (2, 0),
     "match-relational.sieve": (0, 1),
     "modifiers-address-part.sieve": (3, 0),

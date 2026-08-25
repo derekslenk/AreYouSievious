@@ -318,6 +318,7 @@ class _LexicalMap:
 
     __slots__ = (
         "brace_delta",
+        "bracket_comment_lines",
         "identifiers",
         "masked_lines",
         "open_braces",
@@ -355,6 +356,7 @@ class _LexicalMap:
         self.semicolons = [0] * len(lines)
         self.open_parens = [0] * len(lines)
         self.identifiers: list[list[str]] = [[] for _ in lines]
+        self.bracket_comment_lines = [False] * len(lines)
         self.masked_lines = lines
         self.usable = False
 
@@ -406,6 +408,17 @@ class _LexicalMap:
                 for i in range(begin, begin + len(value)):
                     if masked[i] != 0x0A:
                         masked[i] = 0x20
+                if name == "bracket_comment":
+                    # WHICH lines a `/* ... */` occupies, which masking alone
+                    # cannot say — a masked line is indistinguishable from a
+                    # blank one, and the parser needs to consume the comment as
+                    # a UNIT (areyousievious-hr6). Marked from the line the
+                    # token opens on through the line its last byte lands on;
+                    # `value` is the whole comment, so its newlines are the
+                    # extent. A token is never empty, hence the -1.
+                    last = bisect.bisect_right(line_starts, begin + len(value) - 1) - 1
+                    for i in range(line, last + 1):
+                        self.bracket_comment_lines[i] = True
 
         # Masking only ever replaces whole tokens with ASCII spaces, so the
         # result is still the same valid UTF-8 line for line.
@@ -515,6 +528,22 @@ class SieveParser:
             # Skip empty lines
             if not line:
                 self.line_idx += 1
+                continue
+
+            # A bracketed comment (RFC 5228 §2.3), taken whole. BEFORE every
+            # other handler, because none of them knows where one ends: the
+            # `/*` line fell through to `_consume_raw_statement`, which scans
+            # forward to the next `;` — and the comment has no `;` of its own,
+            # so it ran on past the `*/` and fused the next LIVE rule into the
+            # same opaque RawBlock. A rule the server executes became
+            # un-editable text because a comment appeared above it
+            # (areyousievious-hr6).
+            comment_end = self._bracket_comment_run()
+            if comment_end:
+                raw_text = "\n".join(self.lines[self.line_idx : comment_end])
+                self.line_idx = comment_end
+                self._append(script, RawBlock(text=raw_text, comment=pending_comment))
+                pending_comment = ""
                 continue
 
             # Require statement
@@ -725,6 +754,39 @@ class SieveParser:
                 break
         self.line_idx = max(end, start + 1)
         return "\n".join(self.lines[start : self.line_idx]), False
+
+    def _bracket_comment_run(self) -> int:
+        """Exclusive end line of the run of bracketed comment starting here, or 0.
+
+        Driven off the LEXER's tokens, never off the text: `fileinto "a/*b";`
+        contains no comment, and any scan for a literal `/*` would say it does
+        and swallow the rest of the file. `test_scripts/vendor/`
+        `string-with-bracket-comment.sieve` is that case, and it stays one Rule.
+
+        Zero — no run — for a comment that SHARES its line with code, in either
+        direction: `discard; /*` opens a comment the statement handler is
+        already taking, and `*/ discard;` closes one on a line whose live
+        statement we must not swallow. The masked line answers both at once,
+        since masking leaves a comment as spaces: if every line of the run is
+        blank once masked, the run holds nothing but comment and is ours to
+        take. Otherwise nothing fires and the line keeps the handler it had.
+
+        A run rather than a single token so that `*/ /*` on one line — a
+        comment closing and another opening — comes out as one entry instead of
+        leaving the second one's tail orphaned.
+
+        Returns an exclusive end line, so 0 is unambiguously "no": a run
+        starting at line 0 still ends at 1 or later.
+        """
+        start = self.line_idx
+        if not self.lex.bracket_comment_lines[start]:
+            return 0
+        end = start
+        while end < len(self.lines) and self.lex.bracket_comment_lines[end]:
+            end += 1
+        if any(self.lex.masked_lines[i].strip() for i in range(start, end)):
+            return 0
+        return end
 
     def _consume_raw_statement(self) -> str:
         """The lines of the top-level statement starting here, verbatim.

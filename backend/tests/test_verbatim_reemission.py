@@ -329,15 +329,15 @@ def test_a_file_missing_its_require_gains_one_and_that_is_correct():
 
 # How much of the corpus the editing property below actually reaches. Its skip
 # is honest — a fixture with no Rule has nothing to edit — but it is SILENT: the
-# reason only shows under `-rs`, so the suite reads as covering 66 fixtures
-# while the headline behaviour of this whole feature is verified on 23.
-FIXTURES_WITH_A_RULE = 23
+# reason only shows under `-rs`, so the suite reads as covering 68 fixtures
+# while the headline behaviour of this whole feature is verified on 25.
+FIXTURES_WITH_A_RULE = 25
 
 
 def test_the_editing_property_reaches_exactly_the_fixtures_it_claims_to():
     """Write the coverage cap down where someone will see it.
 
-    43 of the 66 fixtures parse to no `Rule` at all — `vendor/` extension cases
+    43 of the 68 fixtures parse to no `Rule` at all — `vendor/` extension cases
     and deliberate raw fixtures that become `RawBlock`s by design — so
     `test_editing_one_rule_leaves_every_other_line_alone` skips them. Correct,
     and not something to remove. But a skip reason only surfaces under `-rs`,
@@ -347,24 +347,26 @@ def test_the_editing_property_reaches_exactly_the_fixtures_it_claims_to():
 
     IT IS NOT THE REGRESSION DETECTOR, and an earlier version of this docstring
     wrongly claimed it was. `test_sieve_transform.py::test_recognition_does_not_regress`
-    already pins `(len(rules), len(raw_blocks))` for every one of the 66 in
+    already pins `(len(rules), len(raw_blocks))` for every one of the 68 in
     `RECOGNITION_CENSUS`, parametrized and strict. A fixture that stopped
     yielding Rules fails THERE first and by name, which is strictly more useful
-    than watching this count slide 21 to 20. Expect the census to have named the
+    than watching this count slide 25 to 24. Expect the census to have named the
     culprit before anyone reads this.
 
     This pins a count, NOT a blessing. Several fixtures sit outside the
     recognised set for reasons someone owns — `vendor/bracket-comment.sieve`
-    parses to a single whole-file `RawBlock` because bracketed comments are
-    unmodelled, which is bead areyousievious-hr6 and pre-existing on main.
+    parses to a single whole-file `RawBlock` even after areyousievious-hr6 gave
+    the parser bracketed comments, because its comments are INTERLEAVED with
+    live code (`discard /* c */ ;`) rather than standing on their own lines, and
+    the projection does not model that.
 
     Nor does with-Rule/without-Rule measure how much the byte-identical property
-    constrains: forcing the verbatim path off fails 36 of the 66, and 22 of
+    constrains: forcing the verbatim path off fails 37 of the 68, and 22 of
     those 36 have no Rule at all. Half the RawBlock-only fixtures do bind the
     verbatim path, because their canonical rendering differs from their bytes.
     The two splits are unrelated; this one is about the EDITING property only.
     """
-    assert len(CORPUS) == 66, "the corpus changed size — recount before editing the number below"
+    assert len(CORPUS) == 68, "the corpus changed size — recount before editing the number below"
     with_a_rule = sorted(corpus_id(p) for p in CORPUS if st.parse_sieve(p.read_text()).rules)
     assert len(with_a_rule) == FIXTURES_WITH_A_RULE, (
         "the number of fixtures parsing to at least one Rule moved: "
