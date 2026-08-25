@@ -60,7 +60,7 @@ import pytest
 import sieve_transform as st
 from sievelib.parser import Parser as SieveLibParser
 
-from tests.conftest import CORPUS, corpus_id
+from tests.conftest import COMPARATOR_3O4, CORPUS, CORPUS_ROOT, corpus_id, corpus_params
 
 _QUOTED = re.compile(r'"((?:[^"\\]|\\.)*)"')
 _ESCAPE = re.compile(r"\\(.)", re.DOTALL)
@@ -103,13 +103,17 @@ def _normalise(dump: str) -> list[str]:
         # own — and a relational `header :count "eq" :is "Subject" "1"` would
         # have read `"eq"` as the header name.
         #
-        # Raised in review of this PR as unreachable, and checked: it is more
-        # unreachable than that, because sievelib cannot parse a relational
-        # test AT ALL, so `meaning()` returns None and the comparison never
-        # happens. This is therefore robustness in the normaliser, not a bug
-        # fix — worth having anyway, since the oracle is what every other
-        # claim in this suite leans on, and counting from the end is simpler
-        # than special-casing which tags carry arguments.
+        # Raised in review of this PR as unreachable. An earlier version of
+        # this comment said it was doubly so, "because sievelib cannot parse a
+        # relational test AT ALL" — that is WRONG, and `match-relational.sieve`
+        # is the fixture that disproves it: given `require ["relational"]`,
+        # sievelib parses both `:value "gt"` and `:count "eq"` quite happily.
+        # What it refuses is the COLLATION `i;ascii-numeric`, which is a
+        # different thing and is areyousievious-3o4. So the path is reachable
+        # whenever a relational test arrives under a collation sievelib knows,
+        # and counting from the end is the correctness of this loop rather than
+        # robustness in it — as well as being simpler than special-casing which
+        # tags carry arguments.
         if not any(stripped.startswith(f"{name} ") for name in _TESTS_WITH_A_HEADER_NAME):
             continue
         depth = _indent(line)
@@ -159,11 +163,43 @@ def test_regeneration_preserves_meaning(path: Path) -> None:
     )
 
 
+# The fixtures the oracle cannot read, and the bead that owns each. Named
+# rather than counted, and asserted as an EXACT set below.
+UNREADABLE_BY_THE_ORACLE = {
+    "modifiers-comparator-declared.sieve": "areyousievious-3o4",
+}
+"""Both for one reason: sievelib's comparator whitelist holds i;octet and i;ascii-casemap and nothing else, so it refuses the collation i;ascii-numeric that RFC 5228 §2.7.3 mandates a require for."""
+
+
 def test_every_fixture_is_readable_by_the_oracle() -> None:
     """The skip above is a safety valve, not a plan. If it starts firing, the
-    oracle is quietly covering less than it appears to."""
-    unreadable = [p.name for p in CORPUS if meaning(p.read_text()) is None]
-    assert not unreadable, f"sievelib cannot parse: {unreadable}"
+    oracle is quietly covering less than it appears to.
+
+    It is firing, on the one fixture carrying `i;ascii-numeric`, and the cost
+    is real: for as long as areyousievious-3o4 is open, nothing checks that
+    regenerating a script with a DECLARED collation preserves its meaning.
+    `match-relational.sieve` deliberately carries `i;ascii-casemap` instead, so
+    the relational shape itself stays inside the oracle's reach rather than
+    being lost behind the same defect twice.
+
+    SO THIS IS AN EXACT-SET ASSERTION AND NOT AN `xfail` ON THE TEST. The claim
+    here is about all 66 fixtures, and a function-level marker does not narrow
+    it to the known one — it switches the claim off for every one of them,
+    which is word for word the silent cap this test exists to catch. Another
+    fixture going unreadable tomorrow would have xfailed quietly alongside it.
+    Against the set it fails, and says which one.
+
+    It still cannot outlive the defect, which is what `strict` bought: fixing
+    3o4 empties `unreadable`, the set no longer matches, and the failure names
+    the entries to delete.
+    """
+    unreadable = {corpus_id(p) for p in CORPUS if meaning(p.read_text()) is None}
+    known = set(UNREADABLE_BY_THE_ORACLE)
+    assert unreadable == known, (
+        "the oracle's reach moved. Newly unreadable, owned by nobody: "
+        f"{sorted(unreadable - known)}. Readable again, so delete from "
+        f"UNREADABLE_BY_THE_ORACLE: {sorted(known - unreadable)}"
+    )
 
 
 # ── The oracle itself has to bite ──
@@ -292,7 +328,10 @@ def test_the_preflight_judges_only_regenerated_spans() -> None:
     assert st.preflight_error(script) is None
 
 
-@pytest.mark.parametrize("path", CORPUS, ids=corpus_id)
+@pytest.mark.parametrize(
+    "path",
+    corpus_params({"modifiers-comparator-declared.sieve": COMPARATOR_3O4}),
+)
 def test_no_fixture_is_refused_by_its_own_preflight(path: Path) -> None:
     """The pre-flight is mandatory on the save path, so a false positive is a
     user locked out of saving. Every fixture in the corpus — including all 45
@@ -321,3 +360,65 @@ def test_the_normaliser_folds_case_and_nothing_else(change: tuple[str, str], fla
     base = 'if header :comparator "i;octet" :is "Subject" "one" { keep; }\n'
     assert meaning(base) is not None, "premise: sievelib reads this"
     assert (meaning(base) != meaning(base.replace(*change))) is flagged
+
+
+# ── What the oracle sees that we do not (areyousievious-hr6) ──
+
+
+def test_a_bracketed_comment_swallows_the_live_rule_after_it() -> None:
+    """The divergence measured rather than described, and it is not the
+    divergence the first version of this test claimed.
+
+    `lexical-bracket-comment-scope.sieve` holds three `if` blocks: A live, B
+    inside a `/* ... */`, C live. sievelib — the closest thing here to what the
+    server will do — executes A and C and correctly leaves B out. We produce
+    three entries, but NOT the three anyone would guess:
+
+        [Rule("live") = A,  RawBlock("/*"),  RawBlock(B + "*/" + C)]
+
+    So B is not a Rule we show as live; it is raw text, and an earlier version
+    of this docstring was wrong to say the UI presents it as a running filter.
+    The real harm is the entry after it: **the live rule C is fused into the
+    same opaque block as the commented-out B**, along with its own
+    `# --- also live ---` name. C runs on the server and is uneditable here —
+    the builder cannot show it, name it or reorder it on its own — and any move
+    of that entry carries a disabled rule and a live one together as one lump.
+
+    `/*` and `*/` also land in separate entries, so reordering can carry a Rule
+    into or out of the commented region. That is bead areyousievious-hr6,
+    pre-existing on main. Green on purpose: it pins the CURRENT shape so the fix
+    has something to move, and asserts nothing about that shape being right.
+    """
+    text = (CORPUS_ROOT / "lexical-bracket-comment-scope.sieve").read_text()
+    script = st.parse_sieve(text)
+
+    assert text.count('fileinto "') == 3, "premise: three filing actions are written down"
+
+    # The SPLIT, not just the count — a count of three holds for any three
+    # entries, including the tidy split this does not produce.
+    assert [type(e).__name__ for e in script.entries] == ["Rule", "RawBlock", "RawBlock"], (
+        f"the split moved: {[type(e).__name__ for e in script.entries]}"
+    )
+    first, opener, fused = script.entries
+    assert first.name == "live" and [a.argument for a in first.actions] == ["A"]
+    assert opener.source.strip() == "/*", "the comment's opener is an entry all of its own"
+    assert '"B"' in fused.source and "*/" in fused.source, "the commented-out rule is in here"
+    assert '"C"' in fused.source, (
+        "and so is the LIVE rule after it — this is the hazard, not the display: "
+        "C runs on the server and cannot be edited, named or reordered alone"
+    )
+    assert "also live" in fused.source, "C's own name comment went into the lump with it"
+
+    parser = SieveLibParser()
+    assert parser.parse(text.encode()), "premise: this is valid Sieve"
+    dumped = io.StringIO()
+    parser.dump(dumped)
+    executed = dumped.getvalue()
+    assert executed.count("fileinto (type: action)") == 2, (
+        "the server executes two of the three — if this is now 3, hr6 moved, "
+        "and this test should say so rather than be edited to match"
+    )
+    assert '"B"' not in executed, (
+        "the folder inside the bracketed comment must not reach the server"
+    )
+    assert '"C"' in executed, "while C, fused into the same entry as B, does run"

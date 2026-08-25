@@ -18,10 +18,10 @@ from pathlib import Path
 import pytest
 import sieve_transform as st
 
+from tests.conftest import COMPARATOR_3O4, corpus_params
 from tests.fakes import FakeScriptStore
 
 BACKEND = Path(__file__).resolve().parent.parent
-FIXTURES = sorted(p for p in (BACKEND / "test_scripts").rglob("*.sieve") if p.stat().st_size > 0)
 
 
 def _round_tripped(text: str) -> st.Entry:
@@ -227,7 +227,8 @@ def test_the_endpoint_rejects_a_hostile_tail_without_writing(authed_client):
 
 
 @pytest.mark.parametrize(
-    "path", FIXTURES, ids=lambda p: str(p.relative_to(BACKEND / "test_scripts"))
+    "path",
+    corpus_params({"modifiers-comparator-declared.sieve": COMPARATOR_3O4}),
 )
 def test_no_real_script_is_refused_by_the_boundary_guard(path: Path):
     """A guard that refuses a real script locks a user out of their own
@@ -503,6 +504,121 @@ def test_the_endpoint_rejects_a_nul_in_a_rule_span_without_writing(authed_client
     assert store.scripts == {"primary": "keep;\n"}, "the real script must be untouched"
 
 
+# ── A NUL inside a quoted field (areyousievious-gey) ──
+#
+# The generator escapes these four into quoted strings, which answers STATEMENT
+# INJECTION and nothing else. The byte still reaches the mail server, and a
+# server that truncates its input at a NUL truncates the WHOLE SCRIPT there —
+# every rule after the offending one silently gone, while our UI keeps showing
+# them because our own parser is happy with a NUL between quotes. That is
+# deletion of a user's filters, which is the worst thing this module can do.
+
+
+def _script_with(*, header="subject", value="x", comparator="", argument="Junk") -> st.SieveScript:
+    """One Rule, varying only the free text the wire admits into a quoted string.
+
+    Built rather than parsed, so it carries no span and takes the REGENERATING
+    path — which is the path that puts these four fields on the wire at all.
+    """
+    return st.SieveScript(
+        requires=["fileinto"],
+        entries=[
+            st.Rule(
+                name="n",
+                conditions=[
+                    st.Condition(header=header, match_type="is", value=value, comparator=comparator)
+                ],
+                actions=[st.Action(action_type="fileinto", argument=argument)],
+            )
+        ],
+    )
+
+
+# `header`, `value` and `comparator` are `str` on the wire and `argument` is a
+# folder name or an address; the rest of a Condition and an Action are `Literal`
+# vocabularies in api_models with no NUL to smuggle. So these four ARE the free
+# text, which is why they are the four.
+_A_NUL_IN_A_QUOTED_FIELD = [
+    pytest.param({"value": "sp\x00am"}, id="condition-value"),
+    pytest.param({"argument": "a\x00b"}, id="action-argument"),
+    pytest.param({"header": "sub\x00ject"}, id="condition-header"),
+    pytest.param({"comparator": "i;ascii\x00numeric"}, id="condition-comparator"),
+]
+
+
+@pytest.mark.parametrize("field", _A_NUL_IN_A_QUOTED_FIELD)
+def test_a_nul_in_a_quoted_field_is_refused(field: dict):
+    """Including the premise, because the premise is the whole argument: the
+    byte survives quoting and lands in the text we would hand the server."""
+    script = _script_with(**field)
+    assert "\x00" in st.generate_sieve(script), "premise: quoting does not remove the byte"
+    assert st.preflight_error(script) == "a NUL would truncate the script for the server"
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        pytest.param({"value": "sp\ram"}, id="cr-in-a-value"),
+        pytest.param({"value": "sp\nam"}, id="lf-in-a-value"),
+        pytest.param({"argument": "a\rb"}, id="cr-in-an-argument"),
+        pytest.param({"argument": "a\nb"}, id="lf-in-an-argument"),
+        pytest.param({"header": "sub\rject"}, id="cr-in-a-header"),
+    ],
+)
+def test_a_line_ending_in_a_quoted_field_is_not_refused(field: dict):
+    """The narrowness is deliberate and this is what holds it there.
+
+    A line ending inside a quoted string cannot end the statement holding it —
+    the statement ends at the closing quote — so what a strict server does with
+    it is a LOUD refusal the user sees, not the silent truncation a NUL buys.
+    Widening this guard to CR or LF here would refuse a value a user may
+    legitimately want; the NUL clause above earns its cost and this does not.
+    """
+    script = _script_with(**field)
+    assert st.preflight_error(script) is None
+    # An earlier spelling of this compared one expression to ITSELF, which held
+    # for `RawBlock(text="}}}garbage{{{")` too. The property is that the byte
+    # survives a parse of what we generated: re-parsing must give back the same
+    # text, so nothing was swallowed, split or re-escaped on the way through.
+    generated = st.generate_sieve(script)
+    assert st.generate_sieve(st.parse_sieve(generated)) == generated, "not a fixed point"
+
+
+@pytest.mark.parametrize("field", _A_NUL_IN_A_QUOTED_FIELD)
+def test_the_endpoint_rejects_a_nul_in_a_quoted_field_without_writing(authed_client, field):
+    """Where it matters. A function-level check has missed things here before,
+    so the pin is the PUT and an untouched store."""
+    cond = {"header": "subject", "match_type": "is", "value": "x"}
+    action = {"type": "fileinto", "argument": "Junk"}
+    if "argument" in field:
+        action["argument"] = field["argument"]
+    else:
+        cond.update(field)
+    store = FakeScriptStore({"primary": "keep;\n"})
+    with authed_client(script_store=store) as http:
+        r = _put(
+            http,
+            requires=["fileinto"],
+            entries=[
+                {
+                    "kind": "rule",
+                    "name": "n",
+                    "enabled": True,
+                    "match": "anyof",
+                    "conditions": [cond],
+                    "actions": [action],
+                }
+            ],
+        )
+    assert r.status_code == 400, r.text
+    # The message, not just the status. A NUL in `comparator` earns a 400 from
+    # sievelib's comparator whitelist whether or not this guard exists, so on
+    # that param the status alone does not discriminate. The route puts
+    # `preflight_error`'s own words in the detail, which does.
+    assert "a NUL would truncate the script for the server" in r.text, r.text
+    assert store.scripts == {"primary": "keep;\n"}, "the real script must be untouched"
+
+
 def test_the_endpoint_still_saves_a_script_that_already_holds_a_nul(authed_client):
     """The lockout case the exemption exists for, driven all the way through.
 
@@ -676,9 +792,10 @@ def test_a_collation_name_carries_a_semicolon_and_must_still_save():
     so a user with an ordinary relational spam-score rule could open their
     script and never save it again.
 
-    NO CORPUS FIXTURE USES A RELATIONAL TEST, which is why all 63 stayed green
-    through it. The corpus is the oracle only for the shapes it contains, and
-    this test is here because that one is missing from it.
+    Until this branch no corpus fixture used a relational test, which is why
+    the corpus stayed green through it. The corpus is the oracle only for the
+    shapes it contains; `match-relational.sieve` was added to close that gap,
+    and this test pins the endpoint half of it.
     """
     script = st.parse_sieve(_RELATIONAL_SPAM_SCORE)
     assert "comparator-i;ascii-numeric" in script.requires, "premise: we harvested it"

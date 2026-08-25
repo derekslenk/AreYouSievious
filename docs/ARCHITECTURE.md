@@ -255,7 +255,7 @@ Optionally: launchd plist for auto-start on metastasis.
 ## Known Limitations
 
 - **Bracketed comments (RFC 5228 §2.3, `/* ... */`) are unmodelled.** The parser has no notion of that comment's extent, so `/*` becomes its own entry and the comment's scope crosses whatever entry boundaries the parser draws around it — reordering rules can move a rule into or out of a commented-out region. Pre-existing on `main`, tracked as bead `areyousievious-hr6`.
-- **The byte-identical save property (`docs/adr/0002-the-file-is-a-sequence-of-spans.md`) is exercised on 21 of the 63 corpus fixtures under `backend/test_scripts/`.** The other 42 parse to no `Rule` at all — mostly `vendor/` extension cases that become `RawBlock`s by design, plus `roundcube.sieve`, which parses as a single whole-file `RawBlock` — and have nothing to edit. That is the intended safety net working as designed rather than a defect, but it means the rule-editing behaviour has real coverage on less than half the corpus.
+- **The byte-identical save property (`docs/adr/0002-the-file-is-a-sequence-of-spans.md`) is exercised on 23 of the 66 corpus fixtures under `backend/test_scripts/`.** The other 43 parse to no `Rule` at all — mostly `vendor/` extension cases that become `RawBlock`s by design, plus `roundcube.sieve`, which parses as a single whole-file `RawBlock` — and have nothing to edit. That is the intended safety net working as designed rather than a defect, but it means the rule-editing behaviour has real coverage on less than half the corpus.
 
 ## Future (v2+)
 
