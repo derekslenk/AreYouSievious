@@ -177,6 +177,7 @@ def test_round_trip_preserves_every_entry_and_require(path: Path) -> None:
 # re-measure and update the pin here.
 RECOGNITION_CENSUS = {
     "actions-all.sieve": (2, 0),
+    "bracketed-comment-above-require.sieve": (2, 2),
     "bracketed-comment-at-file-start.sieve": (1, 1),
     "bracketed-comment-between-rules.sieve": (2, 2),
     "disabled-rules.sieve": (2, 0),

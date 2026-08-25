@@ -45,7 +45,14 @@ where the bytes are written rather than where they are edited.
 `source` crosses the wire. A client could therefore propose any bytes — so
 the verbatim path re-parses what it is given and refuses it unless the span
 yields exactly one entry, no requires, no preamble and no tail, and that entry
-is value-equal to the one submitted. The worst a hostile client can do is
+is value-equal to the one submitted. One shape needs its own reading of that
+rule: a span that IS a `require` statement and nothing else, which the parser
+makes an entry in its own right whenever something already stands above it
+(a bracketed comment, a `## ` disabled Rule). Read in isolation such a span
+lands in the requires slot rather than coming back as an entry, so it is
+re-parsed with a statement in front of it — the position it came from — and
+then held to the same four conditions and the same value equality
+(areyousievious-3xk). The worst a hostile client can do is
 choose alternate formatting of a rule whose meaning it already controls, which
 is strictly less than the existing verbatim `RawBlock.text` path already
 allows. The guard fails closed: any doubt regenerates.
