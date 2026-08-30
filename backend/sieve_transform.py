@@ -1304,6 +1304,10 @@ class SieveGenerator:
         EVERY entry is a Rule, i.e. when we understand the whole file. One
         RawBlock and the declared set is preserved whole, which is what the old
         floor did for every script.
+
+        AND THEN WHAT THE FILE'S OWN BYTES ALREADY SAY IS SUBTRACTED, because
+        this set becomes a `require` line the generator writes ABOVE entries it
+        re-emits verbatim — see `_requires_the_bytes_already_declare`.
         """
         # `bool(script.entries)` first: `all(...)` over an empty sequence is
         # True, so a require-only script counted as fully understood and had
@@ -1340,7 +1344,7 @@ class SieveGenerator:
                     requires.add(f"comparator-{cond.comparator}")
                 # address test is core Sieve, no require needed
 
-        return sorted(requires)
+        return sorted(requires - _requires_the_bytes_already_declare(script))
 
     def _generate_rule(self, rule: Rule) -> str:
         lines = []
@@ -1592,7 +1596,11 @@ def span_is_faithful(entry: Entry) -> bool:
       - EXACTLY ONE entry, so a span cannot carry a second statement. Append
         `redirect "attacker@example.com";` to an otherwise honest span and this
         is what refuses it.
-      - NO requires, so a span cannot declare an extension the file does not.
+      - NO requires, so a span cannot smuggle an extension in beside the entry
+        it claims to be. A span that is a `require` AND NOTHING ELSE is the one
+        exception, handled by `_unharvested_require_is_faithful` — the parser
+        makes such a span an entry in its own right, and refusing it there cost
+        the byte-identical property (areyousievious-3xk).
       - NO preamble and NO tail, so a span cannot carry loose bytes on either
         side of the entry it claims to be.
       - VALUE EQUALITY ignoring `source` itself, so the bytes mean what the
@@ -1622,11 +1630,109 @@ def span_is_faithful(entry: Entry) -> bool:
     if not entry.source:
         return False
     reparsed = parse_sieve(entry.source)
+    if reparsed.requires and not reparsed.entries:
+        # The span is a `require` statement the file left unharvested. Read in
+        # isolation it lands in the requires slot instead of coming back as an
+        # entry, so none of the four checks below can be asked of it — see
+        # `_unharvested_require_is_faithful`, which asks all four anyway.
+        return _unharvested_require_is_faithful(entry)
     if reparsed.requires or reparsed.preamble or reparsed.tail:
         return False
     if len(reparsed.entries) != 1:
         return False
     return _without_span(reparsed.entries[0]) == _without_span(entry)
+
+
+_REQUIRE_PROBE = "keep;\n"
+"""A statement to stand in front of a span, so a `require` inside it parses the
+way the file's own parse produced it. `keep;` is core Sieve: one line, its own
+terminator, and it needs no extension — so the probe cannot change what the span
+is measured to declare."""
+
+
+def _unharvested_require_is_faithful(entry: Entry) -> bool:
+    """True when a span whose `require` re-parses out of reach still IS this entry.
+
+    THE ORDINARY CHECK CANNOT REACH THIS ENTRY, and that is a fact about the
+    parser rather than about the span. `SieveParser.parse` harvests a `require`
+    into `script.requires` only while `script.entries` is still empty. Once
+    anything precedes it — a bracketed license header (RFC 5228 §2.3, and
+    perfectly legal there, since a comment is not a command), or a rule written
+    above it — the statement stays a RawBlock and its extensions are
+    deliberately NOT harvested, so that the bytes carry the declaration exactly
+    once.
+
+    Re-parsing such a span ALONE puts the statement first again, so it IS
+    harvested after all: zero entries, a non-empty `requires`, and the leading
+    blank line sitting in `preamble`. `span_is_faithful`'s "no requires, no
+    preamble, exactly one entry" then refuses a span that is an honest copy of
+    its own entry. The whole file regenerates, and the canonical `require` line
+    lands on top of the one the RawBlock re-emits — two declarations, and an
+    unedited save that is no longer byte-identical (areyousievious-3xk).
+
+    So re-parse it IN THE POSITION IT CAME FROM. With a statement in front the
+    parser takes the same RawBlock path it took on the file, and the result is
+    held to the SAME value equality as any other entry: exactly the probe's
+    statement and this one, nothing in the requires slot, nothing loose on
+    either side, and a value match ignoring `source`. No weaker rule, and no
+    second notion of what a faithful span is.
+
+    NOTHING NEW CAN BE WRITTEN THROUGH HERE, which is why relaxing the
+    no-requires rule costs nothing. A RawBlock's `text` is opaque text
+    re-emitted verbatim on BOTH paths — `_canonical_span` hands it back
+    unchanged — so a span vouched for here writes the same bytes the canonical
+    rendering would have written anyway. What changes is only whether they go
+    out with their own blank lines or with ours.
+    """
+    probe = parse_sieve(_REQUIRE_PROBE + entry.source)
+    if probe.requires or probe.requires_source or probe.preamble or probe.tail:
+        return False
+    if len(probe.entries) != 2:
+        return False
+    if probe.entries[1].source != entry.source:
+        # The probe's own statement did not claim exactly its own line, so the
+        # split is not the one the rest of this is reasoning about. Fail closed.
+        return False
+    return _without_span(probe.entries[1]) == _without_span(entry)
+
+
+def _requires_the_bytes_already_declare(script: SieveScript) -> set[str]:
+    """Extensions a RawBlock's own bytes declare, which the head must not repeat.
+
+    `SieveParser.parse` leaves a `require` that follows another entry as a
+    RawBlock and does not harvest it, on the stated ground that "left
+    unharvested the declaration survives exactly once, in the verbatim bytes
+    that already carry it". That sentence was an ASSERTION, not a lock:
+    `_requires_text` rendered the computed set regardless and the RawBlock
+    re-emitted its own copy below it, so a file with a bracketed license header
+    above its `require` came back declaring `fileinto` twice
+    (areyousievious-3xk). Subtracting what the bytes say is the lock.
+
+    NO POSITIONAL CARVE-OUT, and the tempting one is empty. It looks unsafe to
+    drop the head declaration when the RawBlock carrying it sits BELOW a rule
+    that needs the extension — the emitted script would then use `fileinto`
+    before declaring it. But RFC 5228 §3.2 requires every `require` to precede
+    every other command, so that file is refused for the position of its own
+    statement whatever we prepend — sievelib refuses the two-line case outright
+    — and the head line rescues nothing there, it only adds the second
+    declaration. The shapes that reach this path and are still VALID Sieve are
+    the ones whose preceding entry is not a command at all: a bracketed comment,
+    and a `## ` disabled Rule, which is comment text the recogniser reads back.
+    In both the statement already precedes every live rule.
+
+    Every RawBlock is asked, not only the ones the parser routed here, because
+    `text` arrives over the wire and both generation paths write it out
+    verbatim — what is emitted is the only thing that can be double-declared.
+
+    A declaration the parser did NOT read stays unread. A `require` inside a
+    bracketed comment, or under a `## ` disabled run, parses to no requires here
+    for the same reason it did on the way in, so nothing is subtracted on the
+    strength of bytes the server will never execute.
+    """
+    declared: set[str] = set()
+    for block in script.raw_blocks:
+        declared.update(parse_sieve(block.text).requires)
+    return declared
 
 
 _LONE_CR = re.compile(r"\r(?!\n)")
@@ -1831,6 +1937,23 @@ def _unwritable_byte_error(script: SieveScript) -> str | None:
     return None
 
 
+def _head_error(head: SieveScript, declared: list[str]) -> str | None:
+    """Why a parse of the head's bytes is not something we may write out.
+
+    Asked of the preamble alone and of the preamble with the `require` bytes
+    appended, because a statement can appear from the JOIN that neither half
+    holds on its own. Split out of `_boundary_error`'s loop so the second parse
+    is paid for only when the first one found nothing: a rejected save should
+    not parse the head twice to report the same refusal.
+    """
+    if head.entries:
+        return "preamble carries a statement"
+    undeclared = [r for r in head.requires if r not in declared]
+    if undeclared:
+        return f"require bytes declare an undeclared extension: {undeclared[0]}"
+    return None
+
+
 def _boundary_error(script: SieveScript) -> str | None:
     """What is wrong with the verbatim bytes that are not an entry's span.
 
@@ -1881,14 +2004,34 @@ def _boundary_error(script: SieveScript) -> str | None:
     real server does. Two things keep this clear of it: it runs OUR parser, not
     sievelib's, and it runs over the head and tail ONLY — never over an entry,
     which is where an unknown extension lives.
+
+    THE PREAMBLE ALONE MUST DECLARE NOTHING, checked after the pair above rather
+    than inside it. The undeclared-extension bound already held for a `require`
+    sitting in the preamble — one naming an extension the wire did not declare is
+    refused there, so nothing is smuggled — but one naming an extension the wire
+    DID declare satisfied both clauses: it parses into `head.requires` rather
+    than `head.entries`, and it declares exactly what it is allowed to. The
+    generator then wrote those preamble bytes AND `_requires_text`'s canonical
+    line, declaring the same extension twice (areyousievious-5vp). RFC 5228 §3.2
+    permits the repetition, so this was untidy output rather than a wrong filter,
+    and no path in the SPA produces it — it takes a hand-built request. It is
+    refused all the same, because `preamble` is documented (docs/adr/0002,
+    AGENTS.md) as immovable NON-`require` bytes, and a field whose stated shape
+    nothing enforces stops being a shape. The declaration belongs in
+    `requires_source`, which is the term the generator knows how to leave alone.
+
+    The order is deliberate: the undeclared-extension message is the one that
+    reports a bound being ATTACKED, so it keeps precedence over this one, which
+    reports a field being MISUSED.
     """
-    for text in (script.preamble, script.preamble + script.requires_source):
-        head = parse_sieve(text)
-        if head.entries:
-            return "preamble carries a statement"
-        undeclared = [r for r in head.requires if r not in script.requires]
-        if undeclared:
-            return f"require bytes declare an undeclared extension: {undeclared[0]}"
+    preamble_head = parse_sieve(script.preamble)
+    problem = _head_error(preamble_head, script.requires) or _head_error(
+        parse_sieve(script.preamble + script.requires_source), script.requires
+    )
+    if problem:
+        return problem
+    if preamble_head.requires:
+        return "preamble carries a require statement"
     tail = parse_sieve(script.tail)
     if tail.entries or tail.requires:
         return "trailing bytes carry a statement"
