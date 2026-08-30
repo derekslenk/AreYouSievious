@@ -1730,9 +1730,8 @@ def _requires_the_bytes_already_declare(script: SieveScript) -> set[str]:
     strength of bytes the server will never execute.
     """
     declared: set[str] = set()
-    for entry in script.entries:
-        if isinstance(entry, RawBlock):
-            declared.update(parse_sieve(entry.text).requires)
+    for block in script.raw_blocks:
+        declared.update(parse_sieve(block.text).requires)
     return declared
 
 
@@ -1938,6 +1937,23 @@ def _unwritable_byte_error(script: SieveScript) -> str | None:
     return None
 
 
+def _head_error(head: SieveScript, declared: list[str]) -> str | None:
+    """Why a parse of the head's bytes is not something we may write out.
+
+    Asked of the preamble alone and of the preamble with the `require` bytes
+    appended, because a statement can appear from the JOIN that neither half
+    holds on its own. Split out of `_boundary_error`'s loop so the second parse
+    is paid for only when the first one found nothing: a rejected save should
+    not parse the head twice to report the same refusal.
+    """
+    if head.entries:
+        return "preamble carries a statement"
+    undeclared = [r for r in head.requires if r not in declared]
+    if undeclared:
+        return f"require bytes declare an undeclared extension: {undeclared[0]}"
+    return None
+
+
 def _boundary_error(script: SieveScript) -> str | None:
     """What is wrong with the verbatim bytes that are not an entry's span.
 
@@ -2008,16 +2024,13 @@ def _boundary_error(script: SieveScript) -> str | None:
     reports a bound being ATTACKED, so it keeps precedence over this one, which
     reports a field being MISUSED.
     """
-    heads = [
-        parse_sieve(text) for text in (script.preamble, script.preamble + script.requires_source)
-    ]
-    for head in heads:
-        if head.entries:
-            return "preamble carries a statement"
-        undeclared = [r for r in head.requires if r not in script.requires]
-        if undeclared:
-            return f"require bytes declare an undeclared extension: {undeclared[0]}"
-    if heads[0].requires:
+    preamble_head = parse_sieve(script.preamble)
+    problem = _head_error(preamble_head, script.requires) or _head_error(
+        parse_sieve(script.preamble + script.requires_source), script.requires
+    )
+    if problem:
+        return problem
+    if preamble_head.requires:
         return "preamble carries a require statement"
     tail = parse_sieve(script.tail)
     if tail.entries or tail.requires:
